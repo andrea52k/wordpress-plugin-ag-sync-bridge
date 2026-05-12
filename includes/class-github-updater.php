@@ -13,7 +13,7 @@ class GitHub_Updater {
 	const SLUG           = 'ag-sync-bridge';
 	const ASSET_NAME     = 'ag-sync-bridge.zip';
 	const CACHE_KEY      = 'ag_sync_bridge_github_release';
-	const CACHE_TTL      = 21600;
+	const CACHE_TTL      = 1800;
 	const ASSET_QUERY_ARG = 'ag-sync-bridge-private-asset';
 
 	/**
@@ -40,7 +40,7 @@ class GitHub_Updater {
 			return $transient;
 		}
 
-		$release = $this->get_latest_release();
+		$release = $this->get_latest_release( $this->is_forced_update_check() );
 		if ( is_wp_error( $release ) || empty( $release ) ) {
 			return $transient;
 		}
@@ -62,7 +62,7 @@ class GitHub_Updater {
 			return $result;
 		}
 
-		$release = $this->get_latest_release();
+		$release = $this->get_latest_release( $this->is_forced_update_check() );
 		if ( is_wp_error( $release ) || empty( $release ) ) {
 			return $result;
 		}
@@ -135,9 +135,13 @@ class GitHub_Updater {
 		return $tmp_file;
 	}
 
-	private function get_latest_release() {
+	private function get_latest_release( $force_refresh = false ) {
+		if ( $force_refresh ) {
+			delete_site_transient( self::CACHE_KEY );
+		}
+
 		$cached = get_site_transient( self::CACHE_KEY );
-		if ( is_array( $cached ) ) {
+		if ( ! $force_refresh && is_array( $cached ) ) {
 			return $cached;
 		}
 
@@ -166,6 +170,14 @@ class GitHub_Updater {
 
 		set_site_transient( self::CACHE_KEY, $release, self::CACHE_TTL );
 		return $release;
+	}
+
+	private function is_forced_update_check() {
+		if ( isset( $_GET['force-check'] ) || isset( $_POST['force-check'] ) ) {
+			return true;
+		}
+
+		return defined( 'WP_CLI' ) && WP_CLI;
 	}
 
 	private function get_release_version( array $release ) {
