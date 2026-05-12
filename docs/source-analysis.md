@@ -57,7 +57,7 @@ Le differenze aggiungono funzionalita generiche, non solo branding:
 
 La versione canonica parte da `disinfestazione2`, perche e la base funzionalmente piu completa e meno site-specific.
 
-La versione finale della repo e `0.1.12`, perche incorpora anche patch generiche ricavate da `bonasia`.
+La prima versione canonica della repo e stata `0.1.12`, perche incorporava anche patch generiche ricavate da `bonasia`. La versione `0.1.13` aggiunge l'updater GitHub interno.
 
 ## Patch integrate da Bonasia
 

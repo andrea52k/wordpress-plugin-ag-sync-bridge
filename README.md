@@ -15,7 +15,7 @@ La base scelta e `disinfestazione2`, integrata con patch generiche utili trovate
 
 ## Versione
 
-Versione plugin: `0.1.12`
+Versione plugin: `0.1.13`
 
 Slug tecnico WordPress: `ag-sync-bridge`
 
@@ -46,6 +46,7 @@ Il plugin esclude la propria cartella dal full overwrite per non interrompere op
 ## Funzioni principali
 
 - Endpoint REST protetti con HMAC SHA-256, timestamp e anti-replay transient
+- Aggiornamenti plugin da GitHub Releases
 - Download snapshot streaming, chunked JSON e raw chunked
 - Upload snapshot diretto o a chunk
 - Import remoto asincrono con polling dello stato remoto
@@ -183,6 +184,40 @@ wp agsync unlock
 - `AG_SYNC_BRIDGE_MYSQL_BIN`
 - `AG_SYNC_BRIDGE_MYSQLDUMP_BIN`
 - `AG_SYNC_BRIDGE_ALLOW_GLOBAL_MYSQL_LIMITS`
+- `AG_SYNC_BRIDGE_GITHUB_TOKEN`
+
+## Aggiornamenti da GitHub
+
+Il plugin integra un updater per WordPress basato su GitHub Releases.
+
+Workflow release:
+
+1. Aggiorna `Version` e `AG_SYNC_BRIDGE_VERSION` in `ag-sync-bridge.php`.
+2. Crea uno ZIP con questa struttura:
+
+```text
+ag-sync-bridge/
+  ag-sync-bridge.php
+  includes/
+  assets/
+  uninstall.php
+  README.md
+```
+
+3. Pubblica una GitHub Release con tag tipo `v0.1.14`.
+4. Carica nella release l'asset chiamato esattamente `ag-sync-bridge.zip`.
+
+WordPress controllera l'ultima release e proporra l'aggiornamento nella schermata Plugin.
+
+La repo GitHub attuale e privata. Per aggiornare da una repo privata, ogni sito deve avere un token GitHub con permesso di sola lettura sul repository:
+
+```php
+define( 'AG_SYNC_BRIDGE_GITHUB_TOKEN', 'github_pat_xxx' );
+```
+
+Metti la costante in `wp-config.php`, sopra la riga `/* That's all, stop editing! */`.
+
+Se la repo viene resa pubblica, il token non serve.
 
 ## Limiti tecnici
 

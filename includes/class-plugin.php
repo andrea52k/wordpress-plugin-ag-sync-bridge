@@ -90,6 +90,11 @@ class Plugin {
 	private $admin_page;
 
 	/**
+	 * @var GitHub_Updater
+	 */
+	private $github_updater;
+
+	/**
 	 * @var bool
 	 */
 	private $booted = false;
@@ -121,6 +126,7 @@ class Plugin {
 		$this->auth            = new Auth( $this->config, $this->logger );
 		$this->rest_controller = new Rest_Controller( $this->config, $this->logger, $this->file_system, $this->exporter, $this->importer, $this->sync, $this->auth );
 		$this->admin_page      = new Admin_Page( $this->config, $this->logger, $this->file_system, $this->sync );
+		$this->github_updater  = new GitHub_Updater();
 
 		add_action( 'plugins_loaded', array( $this, 'init' ) );
 	}
@@ -134,6 +140,7 @@ class Plugin {
 
 		$this->config->ensure_defaults();
 		$this->file_system->prepare_runtime_dirs();
+		$this->github_updater->register();
 
 		add_action( 'rest_api_init', array( $this->rest_controller, 'register_routes' ) );
 		add_action( 'admin_menu', array( $this->admin_page, 'register_menu' ) );
