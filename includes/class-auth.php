@@ -1,0 +1,98 @@
+<?php
+namespace AGSyncBridge;
+
+use WP_Error;
+use WP_REST_Request;
+
+if ( ! defined( 'ABSPATH' ) ) {
+	exit;
+}
+
+class Auth {
+	/**
+	 * @var Config
+	 */
+	private $config;
+
+	/**
+	 * @var Logger
+	 */
+	private $logger;
+
+	public function __construct( Config $config, Logger $logger ) {
+		$this->config = $config;
+		$this->logger = $logger;
+	}
+
+	public function build_headers( $method, $route ) {
+		$timestamp = time();
+		$nonce     = wp_generate_uuid4();
+		return array(
+			'X-AGSB-Timestamp' => (string) $timestamp,
+			'X-AGSB-Nonce'     => $nonce,
+			'X-AGSB-Signature' => $this->sign( $method, $route, $timestamp, $nonce ),
+			'X-AGSB-Origin'    => home_url(),
+		);
+	}
+
+	public function verify_rest_request( WP_REST_Request $request ) {
+		$secret = $this->config->get_secret();
+		if ( '' === $secret ) {
+			return new WP_Error( 'ag_sync_bridge_missing_secret', __( 'Shared secret is not configured.', 'ag-sync-bridge' ), array( 'status' => 403 ) );
+		}
+
+		$timestamp = $request->get_header( 'x-agsb-timestamp' );
+		$signature = $request->get_header( 'x-agsb-signature' );
+		$nonce     = sanitize_text_field( (string) $request->get_header( 'x-agsb-nonce' ) );
+		$route     = $request->get_route();
+		$method    = $request->get_method();
+
+		if ( ! $timestamp || ! $signature ) {
+			return new WP_Error( 'ag_sync_bridge_missing_auth', __( 'Missing AG Sync Bridge authentication headers.', 'ag-sync-bridge' ), array( 'status' => 403 ) );
+		}
+
+		if ( abs( time() - (int) $timestamp ) > 300 ) {
+			return new WP_Error( 'ag_sync_bridge_expired_request', __( 'Request timestamp is outside the allowed window.', 'ag-sync-bridge' ), array( 'status' => 403 ) );
+		}
+
+		$signature_mode = '';
+		$expected       = $nonce ? $this->sign( $method, $route, (int) $timestamp, $nonce ) : '';
+		$legacy         = $this->sign( $method, $route, (int) $timestamp );
+
+		if ( $expected && hash_equals( $expected, $signature ) ) {
+			$signature_mode = 'nonce';
+		} elseif ( hash_equals( $legacy, $signature ) ) {
+			$signature_mode = 'legacy';
+			$nonce          = '';
+		} else {
+			return new WP_Error( 'ag_sync_bridge_bad_signature', __( 'Invalid AG Sync Bridge signature.', 'ag-sync-bridge' ), array( 'status' => 403 ) );
+		}
+
+		$replay_key = 'ag_sync_bridge_sig_' . md5( $signature_mode . '|' . $signature . '|' . $route . '|' . $timestamp . '|' . $nonce );
+		if ( get_transient( $replay_key ) ) {
+			return new WP_Error( 'ag_sync_bridge_replay_blocked', __( 'Replay blocked for this request.', 'ag-sync-bridge' ), array( 'status' => 403 ) );
+		}
+
+		set_transient( $replay_key, 1, 10 * MINUTE_IN_SECONDS );
+		$this->config->set_state_value(
+			'last_authenticated_request',
+			array(
+				'at'     => gmdate( 'c' ),
+				'route'  => $route,
+				'method' => strtoupper( $method ),
+				'origin' => (string) $request->get_header( 'x-agsb-origin' ),
+				'mode'   => $signature_mode,
+				'status' => 'ok',
+			)
+		);
+		return true;
+	}
+
+	private function sign( $method, $route, $timestamp, $nonce = '' ) {
+		$payload = strtoupper( $method ) . "\n" . $route . "\n" . (int) $timestamp;
+		if ( '' !== $nonce ) {
+			$payload .= "\n" . $nonce;
+		}
+		return hash_hmac( 'sha256', $payload, $this->config->get_secret() );
+	}
+}

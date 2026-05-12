@@ -1,0 +1,1206 @@
+<?php
+namespace AGSyncBridge;
+
+use mysqli;
+use WP_Error;
+
+if ( ! defined( 'ABSPATH' ) ) {
+	exit;
+}
+
+class Database_Service {
+	const IMPORT_MAX_ALLOWED_PACKET = 134217728;
+	const IMPORT_NET_TIMEOUT        = 120;
+
+	/**
+	 * @var Config
+	 */
+	private $config;
+
+	/**
+	 * @var Logger
+	 */
+	private $logger;
+
+	public function __construct( Config $config, Logger $logger ) {
+		$this->config = $config;
+		$this->logger = $logger;
+	}
+
+	public function export_to_file( $file_path ) {
+		@set_time_limit( 0 );
+		@ini_set( 'memory_limit', '-1' );
+
+		$file_path = normalize_path( $file_path );
+
+		if ( $this->can_use_cli_tools() ) {
+			$result = $this->export_via_cli( $file_path );
+			if ( ! is_wp_error( $result ) ) {
+				return array(
+					'method'    => 'mysqldump',
+					'file_path' => $file_path,
+				);
+			}
+
+			$this->logger->warning( 'mysqldump export failed. Falling back to PHP exporter.', array( 'error' => $result->get_error_message() ) );
+		}
+
+		$result = $this->export_via_php( $file_path );
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+
+		return array(
+			'method'    => 'php',
+			'file_path' => $file_path,
+		);
+	}
+
+	public function import_from_file( $file_path, array $args = array() ) {
+		@set_time_limit( 0 );
+
+		$file_path = normalize_path( $file_path );
+
+		if ( ! file_exists( $file_path ) ) {
+			return new WP_Error( 'ag_sync_bridge_missing_sql', __( 'Database SQL file not found.', 'ag-sync-bridge' ) );
+		}
+
+		$source_prefix = (string) array_get( $args, 'source_prefix', '' );
+		$target_prefix = (string) array_get( $args, 'target_prefix', '' );
+		$prepared      = $this->prepare_sql_for_import( $file_path, $source_prefix, $target_prefix );
+		if ( is_wp_error( $prepared ) ) {
+			return $prepared;
+		}
+
+		$import_path  = array_get( $prepared, 'path', $file_path );
+		$cleanup_path = array_get( $prepared, 'cleanup_path', '' );
+
+		if ( ! empty( $prepared['prefix_remapped'] ) || ! empty( $prepared['sandbox_lines_removed'] ) ) {
+			$this->logger->info(
+				'Prepared SQL import.',
+				array(
+					'source_prefix'         => $source_prefix,
+					'target_prefix'         => $target_prefix,
+					'prefix_remapped'       => ! empty( $prepared['prefix_remapped'] ),
+					'sandbox_lines_removed' => (int) array_get( $prepared, 'sandbox_lines_removed', 0 ),
+				)
+			);
+		}
+
+		try {
+			if ( $this->can_use_cli_tools() ) {
+				$result = $this->import_via_cli( $import_path );
+				if ( ! is_wp_error( $result ) ) {
+					return array(
+						'method'        => 'mysql',
+						'source_prefix' => $source_prefix,
+						'target_prefix' => $target_prefix,
+					);
+				}
+
+				$this->logger->warning( 'mysql import failed. Falling back to PHP importer.', array( 'error' => $result->get_error_message() ) );
+			}
+
+			$result = $this->import_via_php( $import_path );
+			if ( ! is_wp_error( $result ) ) {
+				return array(
+					'method'        => 'php',
+					'source_prefix' => $source_prefix,
+					'target_prefix' => $target_prefix,
+				);
+			}
+		} finally {
+			if ( $cleanup_path && file_exists( $cleanup_path ) ) {
+				@unlink( $cleanup_path );
+			}
+		}
+
+		return $result;
+	}
+
+	public function get_table_prefix() {
+		global $wpdb;
+
+		return (string) $wpdb->prefix;
+	}
+
+	public function capture_environment_state() {
+		return array(
+			'settings'       => get_option( Config::OPTION_SETTINGS, array() ),
+			'state'          => get_option( Config::OPTION_STATE, array() ),
+			'recent_logs'    => get_option( Config::OPTION_RECENT_LOGS, array() ),
+			'active_plugins' => $this->get_active_plugins(),
+			'siteurl'        => get_option( 'siteurl' ),
+			'home'           => get_option( 'home' ),
+		);
+	}
+
+	public function get_active_plugins() {
+		return $this->sanitize_active_plugins( get_option( 'active_plugins', array() ) );
+	}
+
+	public function refresh_runtime_cache() {
+		wp_cache_flush();
+
+		if ( function_exists( 'wp_load_alloptions' ) ) {
+			wp_load_alloptions( true );
+		}
+	}
+
+	public function restore_environment_state( array $state, $active_plugins = null ) {
+		Plugin::suspend_settings_update_handlers();
+
+		try {
+			update_option( Config::OPTION_SETTINGS, array_get( $state, 'settings', array() ), false );
+			update_option( Config::OPTION_STATE, array_get( $state, 'state', array() ), false );
+			update_option( Config::OPTION_RECENT_LOGS, array_get( $state, 'recent_logs', array() ), false );
+		} finally {
+			Plugin::resume_settings_update_handlers();
+		}
+
+		if ( null === $active_plugins ) {
+			$active_plugins = array_get( $state, 'active_plugins', array() );
+		}
+
+		update_option( 'active_plugins', $this->normalize_active_plugins_for_target( $active_plugins ), false );
+
+		if ( array_key_exists( 'siteurl', $state ) ) {
+			update_option( 'siteurl', array_get( $state, 'siteurl', '' ), false );
+		}
+
+		if ( array_key_exists( 'home', $state ) ) {
+			update_option( 'home', array_get( $state, 'home', '' ), false );
+		}
+
+		wp_cache_flush();
+	}
+
+	public function sync_active_plugins( array $desired_plugins ) {
+		require_once ABSPATH . 'wp-admin/includes/plugin.php';
+
+		if ( function_exists( 'wp_clean_plugins_cache' ) ) {
+			wp_clean_plugins_cache( true );
+		}
+
+		$current_plugins = array_values(
+			array_filter(
+				$this->get_active_plugins(),
+				array( $this, 'is_not_bridge_plugin_basename' )
+			)
+		);
+		$desired_plugins = array_values(
+			array_filter(
+				$this->normalize_active_plugins_for_target( $desired_plugins ),
+				array( $this, 'is_not_bridge_plugin_basename' )
+			)
+		);
+
+		$to_deactivate = array_values( array_diff( $current_plugins, $desired_plugins ) );
+		if ( ! empty( $to_deactivate ) ) {
+			deactivate_plugins( $to_deactivate, false, false );
+		}
+
+		foreach ( $desired_plugins as $plugin ) {
+			if ( is_plugin_active( $plugin ) ) {
+				continue;
+			}
+
+			$result = activate_plugin( $plugin, '', false, false );
+			if ( is_wp_error( $result ) ) {
+				return new WP_Error(
+					'ag_sync_bridge_plugin_activation_failed',
+					sprintf(
+						/* translators: %s: plugin basename */
+						__( 'Unable to activate synced plugin: %s', 'ag-sync-bridge' ),
+						$plugin
+					),
+					array(
+						'plugin' => $plugin,
+						'error'  => $result->get_error_message(),
+					)
+				);
+			}
+		}
+
+		$final_plugins = $this->normalize_active_plugins_for_target( $desired_plugins );
+		update_option( 'active_plugins', $final_plugins, false );
+
+		if ( function_exists( 'wp_clean_plugins_cache' ) ) {
+			wp_clean_plugins_cache( true );
+		}
+
+		wp_cache_flush();
+
+		return $final_plugins;
+	}
+
+	public function replace_urls( array $replacements, $table_prefix = '' ) {
+		global $wpdb;
+
+		if ( empty( $replacements ) ) {
+			return array(
+				'tables_scanned' => 0,
+				'rows_updated'   => 0,
+			);
+		}
+
+		$replacements = $this->expand_url_replacements( $replacements );
+
+		uksort(
+			$replacements,
+			static function ( $left, $right ) {
+				return strlen( $right ) <=> strlen( $left );
+			}
+		);
+
+		$tables       = $wpdb->get_col( 'SHOW TABLES' );
+		$tables       = is_array( $tables ) ? $tables : array();
+
+		if ( $table_prefix ) {
+			$tables = array_values(
+				array_filter(
+					$tables,
+					static function ( $table ) use ( $table_prefix ) {
+						return 0 === strpos( (string) $table, (string) $table_prefix );
+					}
+				)
+			);
+		}
+
+		$tables_count = 0;
+		$rows_updated = 0;
+
+		foreach ( $tables as $table ) {
+			$text_columns = $this->get_text_columns( $table );
+			if ( empty( $text_columns ) ) {
+				continue;
+			}
+
+			$tables_count++;
+			$primary_keys = $this->get_primary_keys( $table );
+			$offset       = 0;
+			$batch_size   = 200;
+
+			do {
+				$rows = $wpdb->get_results( "SELECT * FROM `{$table}` LIMIT {$batch_size} OFFSET {$offset}", ARRAY_A );
+				$rows = is_array( $rows ) ? $rows : array();
+
+				foreach ( $rows as $row ) {
+					$updates = array();
+
+					foreach ( $text_columns as $column ) {
+						if ( ! array_key_exists( $column, $row ) ) {
+							continue;
+						}
+
+						$changed   = false;
+						$new_value = $this->replace_in_database_string( $row[ $column ], $replacements, $changed );
+
+						if ( $changed ) {
+							$updates[ $column ] = $new_value;
+						}
+					}
+
+					if ( empty( $updates ) ) {
+						continue;
+					}
+
+					$where = array();
+
+					if ( ! empty( $primary_keys ) ) {
+						foreach ( $primary_keys as $primary_key ) {
+							$where[ $primary_key ] = array_get( $row, $primary_key );
+						}
+					} else {
+						$where = $row;
+					}
+
+					$updated = $wpdb->update( $table, $updates, $where );
+					if ( false !== $updated ) {
+						$rows_updated++;
+					}
+				}
+
+				$offset += count( $rows );
+			} while ( count( $rows ) === $batch_size );
+		}
+
+		wp_cache_flush();
+
+		return array(
+			'tables_scanned' => $tables_count,
+			'rows_updated'   => $rows_updated,
+		);
+	}
+
+	private function expand_url_replacements( array $replacements ) {
+		$expanded = array();
+
+		foreach ( $replacements as $source => $target ) {
+			$source = (string) $source;
+			$target = (string) $target;
+
+			if ( '' === $source ) {
+				continue;
+			}
+
+			$expanded[ $source ] = $target;
+
+			$escaped_source = str_replace( '/', '\\/', $source );
+			$escaped_target = str_replace( '/', '\\/', $target );
+
+			if ( $escaped_source !== $source ) {
+				$expanded[ $escaped_source ] = $escaped_target;
+			}
+		}
+
+		return $expanded;
+	}
+
+	public function remap_site_prefix_keys( $source_prefix, $target_prefix ) {
+		global $wpdb;
+
+		$source_prefix = (string) $source_prefix;
+		$target_prefix = (string) $target_prefix;
+
+		if ( '' === $source_prefix || '' === $target_prefix || $source_prefix === $target_prefix ) {
+			return array(
+				'options_renamed'  => 0,
+				'usermeta_renamed' => 0,
+			);
+		}
+
+		$options_renamed  = 0;
+		$usermeta_renamed = 0;
+
+		if ( $this->table_exists( $wpdb->options ) ) {
+			$renamed = $wpdb->query(
+				$wpdb->prepare(
+					"UPDATE `{$wpdb->options}` SET option_name = %s WHERE option_name = %s",
+					$target_prefix . 'user_roles',
+					$source_prefix . 'user_roles'
+				)
+			);
+
+			if ( false === $renamed ) {
+				return new WP_Error( 'ag_sync_bridge_option_prefix_failed', $wpdb->last_error ? $wpdb->last_error : __( 'Unable to remap prefixed options.', 'ag-sync-bridge' ) );
+			}
+
+			$options_renamed += (int) $renamed;
+		}
+
+		if ( $this->table_exists( $wpdb->usermeta ) ) {
+			$like    = $wpdb->esc_like( $source_prefix ) . '%';
+			$renamed = $wpdb->query(
+				$wpdb->prepare(
+					"UPDATE `{$wpdb->usermeta}` SET meta_key = CONCAT(%s, SUBSTRING(meta_key, %d)) WHERE meta_key LIKE %s",
+					$target_prefix,
+					strlen( $source_prefix ) + 1,
+					$like
+				)
+			);
+
+			if ( false === $renamed ) {
+				return new WP_Error( 'ag_sync_bridge_usermeta_prefix_failed', $wpdb->last_error ? $wpdb->last_error : __( 'Unable to remap prefixed usermeta keys.', 'ag-sync-bridge' ) );
+			}
+
+			$usermeta_renamed += (int) $renamed;
+		}
+
+		if ( $options_renamed || $usermeta_renamed ) {
+			$this->logger->info(
+				'Remapped prefixed WordPress keys after import.',
+				array(
+					'source_prefix'   => $source_prefix,
+					'target_prefix'   => $target_prefix,
+					'options_renamed' => $options_renamed,
+					'usermeta_renamed'=> $usermeta_renamed,
+				)
+			);
+		}
+
+		return array(
+			'options_renamed'  => $options_renamed,
+			'usermeta_renamed' => $usermeta_renamed,
+		);
+	}
+
+	private function export_via_cli( $file_path ) {
+		$binary = $this->locate_binary( 'mysqldump' );
+		if ( ! $binary ) {
+			return new WP_Error( 'ag_sync_bridge_mysqldump_missing', __( 'mysqldump binary not found.', 'ag-sync-bridge' ) );
+		}
+
+		$charset = $this->get_mysql_charset();
+		$args = $this->build_mysql_command_arguments( $binary );
+		array_splice(
+			$args,
+			1,
+			0,
+			array(
+				'--single-transaction',
+				'--skip-comments',
+				'--add-drop-table',
+				'--no-tablespaces',
+				'--skip-extended-insert',
+				'--max-allowed-packet=' . self::IMPORT_MAX_ALLOWED_PACKET,
+				'--default-character-set=' . $charset,
+			)
+		);
+
+		$command     = $this->build_shell_command( array_merge( $args, array( DB_NAME ) ) );
+		$descriptors = array(
+			1 => array( 'file', $file_path, 'w' ),
+			2 => array( 'pipe', 'w' ),
+		);
+		$pipes       = array();
+		$process     = proc_open( $command, $descriptors, $pipes, ABSPATH );
+
+		if ( ! is_resource( $process ) ) {
+			return new WP_Error( 'ag_sync_bridge_mysqldump_process', __( 'Unable to start mysqldump.', 'ag-sync-bridge' ) );
+		}
+
+		$error_output = stream_get_contents( $pipes[2] );
+		fclose( $pipes[2] );
+
+		$exit_code = proc_close( $process );
+
+		if ( 0 !== $exit_code ) {
+			return new WP_Error( 'ag_sync_bridge_mysqldump_failed', trim( (string) $error_output ) ?: __( 'mysqldump failed.', 'ag-sync-bridge' ) );
+		}
+
+		return true;
+	}
+
+	private function import_via_cli( $file_path ) {
+		$binary = $this->locate_binary( 'mysql' );
+		if ( ! $binary ) {
+			return new WP_Error( 'ag_sync_bridge_mysql_missing', __( 'mysql binary not found.', 'ag-sync-bridge' ) );
+		}
+
+		if ( defined( 'AG_SYNC_BRIDGE_ALLOW_GLOBAL_MYSQL_LIMITS' ) && AG_SYNC_BRIDGE_ALLOW_GLOBAL_MYSQL_LIMITS ) {
+			$this->prepare_mysql_import_limits();
+		}
+
+		$args = $this->build_mysql_command_arguments( $binary );
+		array_splice(
+			$args,
+			1,
+			0,
+			array(
+				'--default-character-set=' . $this->get_mysql_charset(),
+				'--binary-mode',
+				'--max-allowed-packet=' . self::IMPORT_MAX_ALLOWED_PACKET,
+			)
+		);
+		$args[] = DB_NAME;
+
+		$command     = $this->build_shell_command( $args );
+		$descriptors = array(
+			0 => array( 'file', $file_path, 'r' ),
+			1 => array( 'pipe', 'w' ),
+			2 => array( 'pipe', 'w' ),
+		);
+		$pipes       = array();
+		$process     = proc_open( $command, $descriptors, $pipes, ABSPATH );
+
+		if ( ! is_resource( $process ) ) {
+			return new WP_Error( 'ag_sync_bridge_mysql_process', __( 'Unable to start mysql import.', 'ag-sync-bridge' ) );
+		}
+
+		$stdout = stream_get_contents( $pipes[1] );
+		$stderr = stream_get_contents( $pipes[2] );
+		fclose( $pipes[1] );
+		fclose( $pipes[2] );
+
+		$exit_code = proc_close( $process );
+
+		if ( 0 !== $exit_code ) {
+			return new WP_Error( 'ag_sync_bridge_mysql_failed', trim( $stderr ?: $stdout ) ?: __( 'mysql import failed.', 'ag-sync-bridge' ) );
+		}
+
+		return true;
+	}
+
+	private function prepare_mysql_import_limits() {
+		$mysqli = $this->connect();
+		if ( is_wp_error( $mysqli ) ) {
+			$this->logger->warning( 'Unable to prepare MySQL import limits.', array( 'error' => $mysqli->get_error_message() ) );
+			return false;
+		}
+
+		$limits = array(
+			'max_allowed_packet' => self::IMPORT_MAX_ALLOWED_PACKET,
+			'net_read_timeout'   => self::IMPORT_NET_TIMEOUT,
+			'net_write_timeout'  => self::IMPORT_NET_TIMEOUT,
+		);
+
+		foreach ( $limits as $name => $value ) {
+			if ( ! $mysqli->query( 'SET GLOBAL ' . $name . ' = ' . absint( $value ) ) ) {
+				$this->logger->warning(
+					'Unable to update MySQL import limit.',
+					array(
+						'variable' => $name,
+						'value'    => $value,
+						'error'    => $mysqli->error,
+					)
+				);
+			}
+		}
+
+		$mysqli->close();
+		return true;
+	}
+
+	private function export_via_php( $file_path ) {
+		global $wpdb;
+
+		$mysqli = $this->connect();
+		if ( is_wp_error( $mysqli ) ) {
+			return $mysqli;
+		}
+
+		$handle = fopen( $file_path, 'wb' );
+		if ( ! $handle ) {
+			$mysqli->close();
+			return new WP_Error( 'ag_sync_bridge_sql_open', __( 'Unable to open SQL export file for writing.', 'ag-sync-bridge' ) );
+		}
+
+		fwrite( $handle, "-- AG Sync Bridge database export\n" );
+		fwrite( $handle, '-- Exported: ' . gmdate( 'c' ) . "\n\n" );
+		fwrite( $handle, 'SET NAMES ' . $this->get_mysql_charset() . ";\n" );
+
+		if ( $this->get_mysql_collation() ) {
+			fwrite( $handle, "SET collation_connection = '" . $this->get_mysql_collation() . "';\n" );
+		}
+
+		fwrite( $handle, "\n" );
+
+		$tables = $wpdb->get_col( 'SHOW TABLES' );
+		$tables = is_array( $tables ) ? $tables : array();
+
+		foreach ( $tables as $table ) {
+			$create_row = $wpdb->get_row( "SHOW CREATE TABLE `{$table}`", ARRAY_N );
+			if ( empty( $create_row[1] ) ) {
+				continue;
+			}
+
+			fwrite( $handle, "DROP TABLE IF EXISTS `{$table}`;\n" );
+			fwrite( $handle, $create_row[1] . ";\n\n" );
+
+			$result = $this->export_table_rows_via_php( $mysqli, $handle, $table );
+			if ( is_wp_error( $result ) ) {
+				fclose( $handle );
+				$mysqli->close();
+				return $result;
+			}
+
+			fwrite( $handle, "\n\n" );
+		}
+
+		fclose( $handle );
+		$mysqli->close();
+
+		return true;
+	}
+
+	private function export_table_rows_via_php( &$mysqli, $handle, $table ) {
+		$batch_size  = 100;
+		$offset      = 0;
+		$order_by    = $this->get_export_order_clause( $table );
+		$table_name  = $this->quote_identifier( $table );
+
+		while ( true ) {
+			$query  = "SELECT * FROM {$table_name}{$order_by} LIMIT {$batch_size} OFFSET {$offset}";
+			$result = $this->mysqli_query_with_reconnect( $mysqli, $query );
+
+			if ( is_wp_error( $result ) ) {
+				return $result;
+			}
+
+			$fields = $result->fetch_fields();
+			if ( empty( $fields ) ) {
+				$result->free();
+				return true;
+			}
+
+			$column_names = array();
+			foreach ( $fields as $field ) {
+				$column_names[] = $this->quote_identifier( $field->name );
+			}
+
+			$batch       = array();
+			$batch_bytes = 0;
+			$row_count   = 0;
+
+			while ( $row = $result->fetch_assoc() ) {
+				$row_count++;
+				$values = array();
+
+				foreach ( $fields as $field ) {
+					$value = $row[ $field->name ];
+					if ( null === $value ) {
+						$values[] = 'NULL';
+					} else {
+						$values[] = "'" . $mysqli->real_escape_string( (string) $value ) . "'";
+					}
+				}
+
+				$row_sql       = '(' . implode( ',', $values ) . ')';
+				$batch[]       = $row_sql;
+				$batch_bytes  += strlen( $row_sql );
+
+				if ( count( $batch ) >= 100 || $batch_bytes >= 1048576 ) {
+					$write = $this->write_insert_batch( $handle, $table, $column_names, $batch );
+					if ( is_wp_error( $write ) ) {
+						$result->free();
+						return $write;
+					}
+
+					$batch       = array();
+					$batch_bytes = 0;
+				}
+			}
+
+			if ( ! empty( $batch ) ) {
+				$write = $this->write_insert_batch( $handle, $table, $column_names, $batch );
+				if ( is_wp_error( $write ) ) {
+					$result->free();
+					return $write;
+				}
+			}
+
+			$result->free();
+
+			if ( $row_count < $batch_size ) {
+				return true;
+			}
+
+			$offset += $batch_size;
+		}
+	}
+
+	private function write_insert_batch( $handle, $table, array $column_names, array $batch ) {
+		if ( empty( $batch ) ) {
+			return true;
+		}
+
+		$sql = 'INSERT INTO ' . $this->quote_identifier( $table ) . ' (' . implode( ',', $column_names ) . ") VALUES\n" . implode( ",\n", $batch ) . ";\n";
+
+		if ( false === fwrite( $handle, $sql ) ) {
+			return new WP_Error( 'ag_sync_bridge_sql_write_failed', __( 'Unable to write SQL export file.', 'ag-sync-bridge' ) );
+		}
+
+		return true;
+	}
+
+	private function mysqli_query_with_reconnect( &$mysqli, $query ) {
+		$result = $mysqli->query( $query );
+		if ( false !== $result ) {
+			return $result;
+		}
+
+		$error = $mysqli->error;
+		$errno = (int) $mysqli->errno;
+
+		if ( ! $this->is_mysql_connection_error( $errno, $error ) ) {
+			return new WP_Error( 'ag_sync_bridge_sql_export_query', $error );
+		}
+
+		$this->logger->warning(
+			'MySQL connection lost during PHP database export. Reconnecting and retrying query.',
+			array(
+				'errno' => $errno,
+				'error' => $error,
+			)
+		);
+
+		@$mysqli->close();
+		$mysqli = $this->connect();
+		if ( is_wp_error( $mysqli ) ) {
+			return $mysqli;
+		}
+
+		$result = $mysqli->query( $query );
+		if ( false !== $result ) {
+			return $result;
+		}
+
+		return new WP_Error( 'ag_sync_bridge_sql_export_query', $mysqli->error ? $mysqli->error : $error );
+	}
+
+	private function is_mysql_connection_error( $errno, $error ) {
+		if ( in_array( (int) $errno, array( 2006, 2013, 2055 ), true ) ) {
+			return true;
+		}
+
+		$error = strtolower( (string) $error );
+		return false !== strpos( $error, 'server has gone away' ) || false !== strpos( $error, 'lost connection' );
+	}
+
+	private function get_export_order_clause( $table ) {
+		$keys = $this->get_primary_keys( $table );
+		if ( empty( $keys ) ) {
+			return '';
+		}
+
+		$quoted = array();
+		foreach ( $keys as $key ) {
+			$quoted[] = $this->quote_identifier( $key );
+		}
+
+		return ' ORDER BY ' . implode( ',', $quoted );
+	}
+
+	private function import_via_php( $file_path ) {
+		global $wpdb;
+
+		$charset = $this->get_mysql_charset();
+		$wpdb->query( 'SET NAMES ' . $charset );
+
+		if ( $this->get_mysql_collation() ) {
+			$wpdb->query( "SET collation_connection = '" . esc_sql( $this->get_mysql_collation() ) . "'" );
+		}
+
+		$handle = fopen( $file_path, 'rb' );
+		if ( ! $handle ) {
+			return new WP_Error( 'ag_sync_bridge_import_open', __( 'Unable to open SQL import file.', 'ag-sync-bridge' ) );
+		}
+
+		$statement = '';
+		$in_string = false;
+		$quote     = '';
+
+		while ( false !== ( $line = fgets( $handle ) ) ) {
+			$trimmed = trim( $line );
+
+			if ( ! $in_string && '' === $trimmed ) {
+				continue;
+			}
+
+			if ( ! $in_string && ( 0 === strpos( $trimmed, '--' ) || 0 === strpos( $trimmed, '#' ) || ( 0 === strpos( $trimmed, '/*' ) && 0 !== strpos( $trimmed, '/*!' ) ) ) ) {
+				continue;
+			}
+
+			$length = strlen( $line );
+
+			for ( $index = 0; $index < $length; $index++ ) {
+				$char      = $line[ $index ];
+				$statement .= $char;
+				$prev_char = $index > 0 ? $line[ $index - 1 ] : '';
+				$next_char = ( $index + 1 < $length ) ? $line[ $index + 1 ] : '';
+
+				if ( $in_string ) {
+					if ( $char === $quote && '\\' !== $prev_char && $quote !== $next_char ) {
+						$in_string = false;
+						$quote     = '';
+					}
+					continue;
+				}
+
+				if ( '\'' === $char || '"' === $char ) {
+					$in_string = true;
+					$quote     = $char;
+					continue;
+				}
+
+				if ( ';' === $char ) {
+					$query = trim( $statement );
+					$statement = '';
+
+					if ( '' === $query ) {
+						continue;
+					}
+
+					$result = $wpdb->query( $query );
+					if ( false === $result ) {
+						fclose( $handle );
+						return new WP_Error(
+							'ag_sync_bridge_import_query_failed',
+							$wpdb->last_error ? $wpdb->last_error : __( 'Database import query failed.', 'ag-sync-bridge' ),
+							array( 'query' => substr( $query, 0, 500 ) )
+						);
+					}
+				}
+			}
+		}
+
+		fclose( $handle );
+		return true;
+	}
+
+	private function prepare_sql_for_import( $file_path, $source_prefix, $target_prefix ) {
+		$temp_dir = $this->config->get_data_dir( 'temp' );
+		ensure_directory( $temp_dir );
+
+		$destination = normalize_path( $temp_dir . '/import-prefix-' . gmdate( 'Ymd-His' ) . '-' . wp_generate_password( 6, false, false ) . '.sql' );
+		$source      = fopen( $file_path, 'rb' );
+
+		if ( ! $source ) {
+			return new WP_Error( 'ag_sync_bridge_sql_rewrite_read', __( 'Unable to read SQL file for prefix rewrite.', 'ag-sync-bridge' ) );
+		}
+
+		$target = fopen( $destination, 'wb' );
+		if ( ! $target ) {
+			fclose( $source );
+			return new WP_Error( 'ag_sync_bridge_sql_rewrite_write', __( 'Unable to create rewritten SQL file.', 'ag-sync-bridge' ) );
+		}
+
+		$should_remap = ( $source_prefix && $target_prefix && $source_prefix !== $target_prefix );
+		$pattern      = $should_remap ? '/`' . preg_quote( $source_prefix, '/' ) . '([A-Za-z0-9_]+)`/' : '';
+		$removed      = 0;
+
+		try {
+			while ( false !== ( $line = fgets( $source ) ) ) {
+				if ( $this->is_mariadb_sandbox_comment( $line ) ) {
+					$removed++;
+					continue;
+				}
+
+				if ( $should_remap ) {
+					$line = preg_replace( $pattern, '`' . $target_prefix . '$1`', $line );
+				}
+
+				fwrite( $target, $line );
+			}
+		} finally {
+			fclose( $source );
+			fclose( $target );
+		}
+
+		return array(
+			'path'                  => $destination,
+			'cleanup_path'          => $destination,
+			'prefix_remapped'       => $should_remap,
+			'sandbox_lines_removed' => $removed,
+		);
+	}
+
+	private function is_mariadb_sandbox_comment( $line ) {
+		$line = ltrim( (string) $line );
+
+		if ( false === stripos( $line, 'sandbox' ) ) {
+			return false;
+		}
+
+		return (bool) preg_match( '/^\/\*(?:!|M!)?\d+\\\\-/', $line );
+	}
+
+	private function connect() {
+		$host_parts = $this->parse_db_host( DB_HOST );
+		$mysqli     = mysqli_init();
+
+		if ( ! $mysqli ) {
+			return new WP_Error( 'ag_sync_bridge_mysqli_init', __( 'Unable to initialize mysqli.', 'ag-sync-bridge' ) );
+		}
+
+		if ( defined( 'MYSQLI_OPT_CONNECT_TIMEOUT' ) ) {
+			@$mysqli->options( MYSQLI_OPT_CONNECT_TIMEOUT, 30 );
+		}
+
+		if ( defined( 'MYSQLI_OPT_READ_TIMEOUT' ) ) {
+			@$mysqli->options( MYSQLI_OPT_READ_TIMEOUT, 300 );
+		}
+
+		$connected = $mysqli->real_connect(
+			$host_parts['host'],
+			DB_USER,
+			DB_PASSWORD,
+			DB_NAME,
+			$host_parts['port'],
+			$host_parts['socket']
+		);
+
+		if ( ! $connected ) {
+			return new WP_Error( 'ag_sync_bridge_mysqli_connect', $mysqli->connect_error );
+		}
+
+		$mysqli->set_charset( DB_CHARSET );
+
+		return $mysqli;
+	}
+
+	private function can_use_cli_tools() {
+		return function_exists( 'proc_open' ) && $this->locate_binary( 'mysqldump' ) && $this->locate_binary( 'mysql' );
+	}
+
+	private function locate_binary( $name ) {
+		$constant = 'mysql' === $name ? 'AG_SYNC_BRIDGE_MYSQL_BIN' : 'AG_SYNC_BRIDGE_MYSQLDUMP_BIN';
+		if ( defined( $constant ) && file_exists( constant( $constant ) ) ) {
+			return constant( $constant );
+		}
+
+		$candidates = array();
+		$php_dir    = dirname( PHP_BINARY );
+		$root_dir   = dirname( $php_dir );
+
+		if ( 'Windows' === PHP_OS_FAMILY ) {
+			$candidates[] = $root_dir . '\\mysql\\bin\\' . $name . '.exe';
+			$candidates[] = $name . '.exe';
+		} else {
+			$candidates[] = '/usr/bin/' . $name;
+			$candidates[] = '/usr/local/bin/' . $name;
+			$candidates[] = $name;
+		}
+
+		foreach ( $candidates as $candidate ) {
+			if ( file_exists( $candidate ) || $candidate === $name || $candidate === $name . '.exe' ) {
+				return $candidate;
+			}
+		}
+
+		return '';
+	}
+
+	private function build_mysql_command_arguments( $binary ) {
+		$host_parts = $this->parse_db_host( DB_HOST );
+		$args       = array(
+			$binary,
+			'--host=' . $host_parts['host'],
+			'--user=' . DB_USER,
+		);
+
+		if ( DB_PASSWORD ) {
+			$args[] = '--password=' . DB_PASSWORD;
+		}
+
+		if ( ! empty( $host_parts['port'] ) ) {
+			$args[] = '--port=' . $host_parts['port'];
+		}
+
+		if ( ! empty( $host_parts['socket'] ) ) {
+			$args[] = '--socket=' . $host_parts['socket'];
+		}
+
+		return $args;
+	}
+
+	private function get_mysql_charset() {
+		$charset = defined( 'DB_CHARSET' ) ? trim( (string) DB_CHARSET ) : '';
+
+		if ( '' === $charset ) {
+			$charset = 'utf8mb4';
+		}
+
+		return $charset;
+	}
+
+	private function get_mysql_collation() {
+		$collation = defined( 'DB_COLLATE' ) ? trim( (string) DB_COLLATE ) : '';
+
+		if ( '' !== $collation ) {
+			return $collation;
+		}
+
+		global $wpdb;
+
+		if ( isset( $wpdb->collate ) && is_string( $wpdb->collate ) && '' !== trim( $wpdb->collate ) ) {
+			return trim( $wpdb->collate );
+		}
+
+		return '';
+	}
+
+	private function build_shell_command( array $arguments ) {
+		$escaped = array_map( array( $this, 'escape_shell_argument' ), $arguments );
+		return implode( ' ', $escaped );
+	}
+
+	private function escape_shell_argument( $argument ) {
+		$argument = (string) $argument;
+
+		if ( 'Windows' !== PHP_OS_FAMILY ) {
+			return escapeshellarg( $argument );
+		}
+
+		if ( '' === $argument ) {
+			return '""';
+		}
+
+		if ( preg_match( '/[\s"]/u', $argument ) ) {
+			return '"' . str_replace( '"', '\"', $argument ) . '"';
+		}
+
+		return $argument;
+	}
+
+	private function parse_db_host( $host_value ) {
+		$parts = array(
+			'host'   => 'localhost',
+			'port'   => null,
+			'socket' => null,
+		);
+
+		$host_value = (string) $host_value;
+
+		if ( false !== strpos( $host_value, ':' ) ) {
+			list( $host, $port ) = explode( ':', $host_value, 2 );
+			$parts['host'] = $host ? $host : 'localhost';
+			$parts['port'] = ctype_digit( (string) $port ) ? (int) $port : null;
+			return $parts;
+		}
+
+		$parts['host'] = $host_value ?: 'localhost';
+		return $parts;
+	}
+
+	private function quote_identifier( $identifier ) {
+		return '`' . str_replace( '`', '``', (string) $identifier ) . '`';
+	}
+
+	private function get_text_columns( $table ) {
+		global $wpdb;
+
+		$columns = $wpdb->get_results( "SHOW FULL COLUMNS FROM `{$table}`", ARRAY_A );
+		$columns = is_array( $columns ) ? $columns : array();
+		$textual = array();
+
+		foreach ( $columns as $column ) {
+			$field = array_get( $column, 'Field', '' );
+			$type  = strtolower( (string) array_get( $column, 'Type', '' ) );
+
+			if ( 'guid' === $field ) {
+				continue;
+			}
+
+			if ( preg_match( '/char|text|json|enum|set/', $type ) ) {
+				$textual[] = $field;
+			}
+		}
+
+		return $textual;
+	}
+
+	private function get_primary_keys( $table ) {
+		global $wpdb;
+
+		$keys = $wpdb->get_results( "SHOW KEYS FROM `{$table}` WHERE Key_name = 'PRIMARY'", ARRAY_A );
+		$keys = is_array( $keys ) ? $keys : array();
+		$list = array();
+
+		foreach ( $keys as $key ) {
+			$list[] = array_get( $key, 'Column_name', '' );
+		}
+
+		return array_filter( $list );
+	}
+
+	private function replace_in_database_string( $value, array $replacements, &$changed ) {
+		$changed = false;
+
+		if ( null === $value || ! is_string( $value ) ) {
+			return $value;
+		}
+
+		if ( is_serialized( $value ) ) {
+			$data          = maybe_unserialize( $value );
+			$inner_changed = false;
+
+			try {
+				$data = $this->replace_in_structure( $data, $replacements, $inner_changed );
+			} catch ( \Throwable $throwable ) {
+				$this->logger->warning(
+					'Skipping serialized value during URL replace after unserialize error.',
+					array(
+						'message' => $throwable->getMessage(),
+					)
+				);
+				return $value;
+			}
+
+			if ( $inner_changed ) {
+				$changed = true;
+				return maybe_serialize( $data );
+			}
+
+			return $value;
+		}
+
+		$new_value = strtr( $value, $replacements );
+
+		if ( $new_value !== $value ) {
+			$changed = true;
+		}
+
+		return $new_value;
+	}
+
+	private function replace_in_structure( $value, array $replacements, &$changed ) {
+		if ( is_array( $value ) ) {
+			foreach ( $value as $key => $item ) {
+				$value[ $key ] = $this->replace_in_structure( $item, $replacements, $changed );
+			}
+			return $value;
+		}
+
+		if ( is_object( $value ) ) {
+			if ( $this->is_incomplete_object( $value ) ) {
+				return $value;
+			}
+
+			foreach ( get_object_vars( $value ) as $property => $item ) {
+				$value->$property = $this->replace_in_structure( $item, $replacements, $changed );
+			}
+			return $value;
+		}
+
+		if ( is_string( $value ) ) {
+			$new_value = strtr( $value, $replacements );
+			if ( $new_value !== $value ) {
+				$changed = true;
+			}
+			return $new_value;
+		}
+
+		return $value;
+	}
+
+	private function is_incomplete_object( $value ) {
+		return is_object( $value ) && '__PHP_Incomplete_Class' === get_class( $value );
+	}
+
+	private function sanitize_active_plugins( $plugins ) {
+		$plugins = is_array( $plugins ) ? $plugins : array();
+		$plugins = array_map( 'strval', $plugins );
+		$plugins = array_filter(
+			$plugins,
+			static function ( $plugin ) {
+				return '' !== trim( $plugin );
+			}
+		);
+
+		return array_values( array_unique( $plugins ) );
+	}
+
+	private function normalize_active_plugins_for_target( $plugins ) {
+		$plugins         = $this->sanitize_active_plugins( $plugins );
+		$plugin_basename = $this->config->get_plugin_basename();
+
+		$plugins = array_values(
+			array_filter(
+				$plugins,
+				array( $this, 'is_not_bridge_plugin_basename' )
+			)
+		);
+
+		$plugins[] = $plugin_basename;
+
+		return array_values( array_unique( $plugins ) );
+	}
+
+	private function is_not_bridge_plugin_basename( $plugin ) {
+		return ! preg_match( '#(^|.*/)(ag-sync-bridge[^/]*)/ag-sync-bridge\.php$#i', (string) $plugin );
+	}
+
+	private function table_exists( $table ) {
+		global $wpdb;
+
+		$table = (string) $table;
+		if ( '' === $table ) {
+			return false;
+		}
+
+		$exists = $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $table ) );
+		return (string) $exists === $table;
+	}
+}
