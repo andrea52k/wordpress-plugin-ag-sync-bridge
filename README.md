@@ -15,7 +15,7 @@ La base scelta e `disinfestazione2`, integrata con patch generiche utili trovate
 
 ## Versione
 
-Versione plugin: `0.1.13`
+Versione plugin: `0.1.14`
 
 Slug tecnico WordPress: `ag-sync-bridge`
 

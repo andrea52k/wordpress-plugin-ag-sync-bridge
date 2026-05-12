@@ -9,7 +9,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 class Database_Service {
-	const IMPORT_MAX_ALLOWED_PACKET = 134217728;
+	const IMPORT_MAX_ALLOWED_PACKET = 268435456;
 	const IMPORT_NET_TIMEOUT        = 120;
 
 	/**
@@ -75,7 +75,7 @@ class Database_Service {
 		$import_path  = array_get( $prepared, 'path', $file_path );
 		$cleanup_path = array_get( $prepared, 'cleanup_path', '' );
 
-		if ( ! empty( $prepared['prefix_remapped'] ) || ! empty( $prepared['sandbox_lines_removed'] ) ) {
+		if ( ! empty( $prepared['prefix_remapped'] ) || ! empty( $prepared['sandbox_lines_removed'] ) || ! empty( $prepared['transient_rows_removed'] ) ) {
 			$this->logger->info(
 				'Prepared SQL import.',
 				array(
@@ -83,6 +83,7 @@ class Database_Service {
 					'target_prefix'         => $target_prefix,
 					'prefix_remapped'       => ! empty( $prepared['prefix_remapped'] ),
 					'sandbox_lines_removed' => (int) array_get( $prepared, 'sandbox_lines_removed', 0 ),
+					'transient_rows_removed'=> (int) array_get( $prepared, 'transient_rows_removed', 0 ),
 				)
 			);
 		}
@@ -101,7 +102,7 @@ class Database_Service {
 				$this->logger->warning( 'mysql import failed. Falling back to PHP importer.', array( 'error' => $result->get_error_message() ) );
 			}
 
-			$result = $this->import_via_php( $import_path );
+			$result = $this->import_via_php( $import_path, $target_prefix );
 			if ( ! is_wp_error( $result ) ) {
 				return array(
 					'method'        => 'php',
@@ -148,6 +149,14 @@ class Database_Service {
 	}
 
 	public function restore_environment_state( array $state, $active_plugins = null ) {
+		global $wpdb;
+
+		if ( method_exists( $wpdb, 'check_connection' ) ) {
+			$wpdb->check_connection( false );
+		}
+
+		$this->refresh_runtime_cache();
+
 		Plugin::suspend_settings_update_handlers();
 
 		try {
@@ -478,7 +487,7 @@ class Database_Service {
 			return new WP_Error( 'ag_sync_bridge_mysql_missing', __( 'mysql binary not found.', 'ag-sync-bridge' ) );
 		}
 
-		if ( defined( 'AG_SYNC_BRIDGE_ALLOW_GLOBAL_MYSQL_LIMITS' ) && AG_SYNC_BRIDGE_ALLOW_GLOBAL_MYSQL_LIMITS ) {
+		if ( ! defined( 'AG_SYNC_BRIDGE_ALLOW_GLOBAL_MYSQL_LIMITS' ) || AG_SYNC_BRIDGE_ALLOW_GLOBAL_MYSQL_LIMITS ) {
 			$this->prepare_mysql_import_limits();
 		}
 
@@ -605,10 +614,13 @@ class Database_Service {
 	}
 
 	private function export_table_rows_via_php( &$mysqli, $handle, $table ) {
+		global $wpdb;
+
 		$batch_size  = 100;
 		$offset      = 0;
 		$order_by    = $this->get_export_order_clause( $table );
 		$table_name  = $this->quote_identifier( $table );
+		$skip_option_transients = isset( $wpdb->options ) && strtolower( $table ) === strtolower( $wpdb->options );
 
 		while ( true ) {
 			$query  = "SELECT * FROM {$table_name}{$order_by} LIMIT {$batch_size} OFFSET {$offset}";
@@ -635,6 +647,11 @@ class Database_Service {
 
 			while ( $row = $result->fetch_assoc() ) {
 				$row_count++;
+
+				if ( $skip_option_transients && isset( $row['option_name'] ) && $this->is_skipped_option_name( $row['option_name'] ) ) {
+					continue;
+				}
+
 				$values = array();
 
 				foreach ( $fields as $field ) {
@@ -752,7 +769,7 @@ class Database_Service {
 		return ' ORDER BY ' . implode( ',', $quoted );
 	}
 
-	private function import_via_php( $file_path ) {
+	private function import_via_php( $file_path, $target_prefix = '' ) {
 		global $wpdb;
 
 		$charset = $this->get_mysql_charset();
@@ -812,6 +829,13 @@ class Database_Service {
 						continue;
 					}
 
+					$filtered = $this->filter_import_statement( $query, $target_prefix );
+					$query    = array_get( $filtered, 'statement', $query );
+
+					if ( '' === trim( $query ) ) {
+						continue;
+					}
+
 					$result = $wpdb->query( $query );
 					if ( false === $result ) {
 						fclose( $handle );
@@ -849,6 +873,10 @@ class Database_Service {
 		$should_remap = ( $source_prefix && $target_prefix && $source_prefix !== $target_prefix );
 		$pattern      = $should_remap ? '/`' . preg_quote( $source_prefix, '/' ) . '([A-Za-z0-9_]+)`/' : '';
 		$removed      = 0;
+		$transients   = 0;
+		$statement    = '';
+		$in_string    = false;
+		$quote        = '';
 
 		try {
 			while ( false !== ( $line = fgets( $source ) ) ) {
@@ -861,7 +889,57 @@ class Database_Service {
 					$line = preg_replace( $pattern, '`' . $target_prefix . '$1`', $line );
 				}
 
-				fwrite( $target, $line );
+				if ( '' === $statement && $this->is_passthrough_sql_line( $line ) ) {
+					fwrite( $target, $line );
+					continue;
+				}
+
+				$length = strlen( $line );
+				for ( $index = 0; $index < $length; $index++ ) {
+					$char       = $line[ $index ];
+					$statement .= $char;
+					$prev_char  = $index > 0 ? $line[ $index - 1 ] : '';
+					$next_char  = ( $index + 1 < $length ) ? $line[ $index + 1 ] : '';
+
+					if ( $in_string ) {
+						if ( $char === $quote && '\\' !== $prev_char && $quote !== $next_char ) {
+							$in_string = false;
+							$quote     = '';
+						}
+						continue;
+					}
+
+					if ( '\'' === $char || '"' === $char ) {
+						$in_string = true;
+						$quote     = $char;
+						continue;
+					}
+
+					if ( ';' === $char ) {
+						$filtered   = $this->filter_import_statement( $statement, $target_prefix );
+						$statement  = array_get( $filtered, 'statement', $statement );
+						$transients += (int) array_get( $filtered, 'transient_rows_removed', 0 );
+
+						if ( '' !== trim( $statement ) ) {
+							fwrite( $target, $statement );
+							if ( "\n" !== substr( $statement, -1 ) ) {
+								fwrite( $target, "\n" );
+							}
+						}
+
+						$statement = '';
+					}
+				}
+			}
+
+			if ( '' !== trim( $statement ) ) {
+				$filtered   = $this->filter_import_statement( $statement, $target_prefix );
+				$statement  = array_get( $filtered, 'statement', $statement );
+				$transients += (int) array_get( $filtered, 'transient_rows_removed', 0 );
+
+				if ( '' !== trim( $statement ) ) {
+					fwrite( $target, $statement );
+				}
 			}
 		} finally {
 			fclose( $source );
@@ -873,7 +951,306 @@ class Database_Service {
 			'cleanup_path'          => $destination,
 			'prefix_remapped'       => $should_remap,
 			'sandbox_lines_removed' => $removed,
+			'transient_rows_removed'=> $transients,
 		);
+	}
+
+	private function is_passthrough_sql_line( $line ) {
+		$trimmed = trim( (string) $line );
+
+		if ( '' === $trimmed ) {
+			return true;
+		}
+
+		if ( 0 === strpos( $trimmed, '--' ) || 0 === strpos( $trimmed, '#' ) ) {
+			return true;
+		}
+
+		return 0 === strpos( $trimmed, '/*' ) && 0 !== strpos( $trimmed, '/*!' );
+	}
+
+	private function filter_import_statement( $statement, $target_prefix ) {
+		$parsed = $this->parse_options_insert_statement( $statement, $target_prefix );
+
+		if ( empty( $parsed ) ) {
+			return array(
+				'statement'              => $statement,
+				'transient_rows_removed' => 0,
+			);
+		}
+
+		$rows = $this->split_sql_value_rows( $parsed['values_sql'] );
+		if ( empty( $rows ) ) {
+			return array(
+				'statement'              => $statement,
+				'transient_rows_removed' => 0,
+			);
+		}
+
+		$kept    = array();
+		$removed = 0;
+
+		foreach ( $rows as $row ) {
+			$values      = $this->split_sql_row_values( $row );
+			$option_name = array_key_exists( $parsed['option_name_index'], $values ) ? $this->parse_sql_string_literal( $values[ $parsed['option_name_index'] ] ) : '';
+
+			if ( $this->is_skipped_option_name( $option_name ) ) {
+				$removed++;
+				continue;
+			}
+
+			$kept[] = $row;
+		}
+
+		if ( 0 === $removed ) {
+			return array(
+				'statement'              => $statement,
+				'transient_rows_removed' => 0,
+			);
+		}
+
+		return array(
+			'statement'              => empty( $kept ) ? '' : rtrim( $parsed['head'] ) . "\n" . implode( ",\n", $kept ) . ";\n",
+			'transient_rows_removed' => $removed,
+		);
+	}
+
+	private function parse_options_insert_statement( $statement, $target_prefix ) {
+		global $wpdb;
+
+		if ( ! preg_match( '/^\s*(?:INSERT|REPLACE)\s+(?:IGNORE\s+)?INTO\s+`?([^`\s(]+)`?/i', $statement, $matches, PREG_OFFSET_CAPTURE ) ) {
+			return array();
+		}
+
+		$table_name     = $matches[1][0];
+		$options_table  = $target_prefix ? $target_prefix . 'options' : $wpdb->options;
+
+		if ( strtolower( $table_name ) !== strtolower( $options_table ) ) {
+			return array();
+		}
+
+		$values_pos = $this->find_sql_keyword_position( $statement, 'VALUES' );
+		if ( false === $values_pos ) {
+			return array();
+		}
+
+		$table_match_end   = $matches[0][1] + strlen( $matches[0][0] );
+		$between_table_and_values = substr( $statement, $table_match_end, $values_pos - $table_match_end );
+		$option_name_index = 1;
+
+		if ( preg_match( '/^\s*\((.*)\)\s*$/s', $between_table_and_values, $column_matches ) ) {
+			$columns = array_map( 'trim', explode( ',', $column_matches[1] ) );
+			foreach ( $columns as $index => $column ) {
+				$column = strtolower( trim( $column, "` \t\n\r\0\x0B" ) );
+				if ( 'option_name' === $column ) {
+					$option_name_index = $index;
+					break;
+				}
+			}
+		}
+
+		$values_sql = trim( substr( $statement, $values_pos + 6 ) );
+		$values_sql = preg_replace( '/;\s*$/', '', $values_sql );
+
+		return array(
+			'head'              => substr( $statement, 0, $values_pos + 6 ),
+			'values_sql'        => $values_sql,
+			'option_name_index' => $option_name_index,
+		);
+	}
+
+	private function find_sql_keyword_position( $sql, $keyword ) {
+		$length    = strlen( $sql );
+		$needle    = strtoupper( $keyword );
+		$in_string = false;
+		$quote     = '';
+
+		for ( $index = 0; $index < $length; $index++ ) {
+			$char      = $sql[ $index ];
+			$prev_char = $index > 0 ? $sql[ $index - 1 ] : '';
+			$next_char = ( $index + 1 < $length ) ? $sql[ $index + 1 ] : '';
+
+			if ( $in_string ) {
+				if ( $char === $quote && '\\' !== $prev_char && $quote !== $next_char ) {
+					$in_string = false;
+					$quote     = '';
+				}
+				continue;
+			}
+
+			if ( '\'' === $char || '"' === $char ) {
+				$in_string = true;
+				$quote     = $char;
+				continue;
+			}
+
+			if ( strtoupper( substr( $sql, $index, strlen( $needle ) ) ) === $needle ) {
+				$before = $index > 0 ? $sql[ $index - 1 ] : ' ';
+				$after  = ( $index + strlen( $needle ) < $length ) ? $sql[ $index + strlen( $needle ) ] : ' ';
+				if ( ! preg_match( '/[A-Za-z0-9_]/', $before ) && ! preg_match( '/[A-Za-z0-9_]/', $after ) ) {
+					return $index;
+				}
+			}
+		}
+
+		return false;
+	}
+
+	private function split_sql_value_rows( $values_sql ) {
+		$rows      = array();
+		$current   = '';
+		$started   = false;
+		$depth     = 0;
+		$in_string = false;
+		$quote     = '';
+		$length    = strlen( $values_sql );
+
+		for ( $index = 0; $index < $length; $index++ ) {
+			$char      = $values_sql[ $index ];
+			$prev_char = $index > 0 ? $values_sql[ $index - 1 ] : '';
+			$next_char = ( $index + 1 < $length ) ? $values_sql[ $index + 1 ] : '';
+
+			if ( ! $started ) {
+				if ( ctype_space( $char ) || ',' === $char ) {
+					continue;
+				}
+
+				if ( '(' !== $char ) {
+					return array();
+				}
+
+				$started = true;
+				$depth   = 1;
+				$current = '(';
+				continue;
+			}
+
+			$current .= $char;
+
+			if ( $in_string ) {
+				if ( $char === $quote && '\\' !== $prev_char && $quote !== $next_char ) {
+					$in_string = false;
+					$quote     = '';
+				}
+				continue;
+			}
+
+			if ( '\'' === $char || '"' === $char ) {
+				$in_string = true;
+				$quote     = $char;
+				continue;
+			}
+
+			if ( '(' === $char ) {
+				$depth++;
+			} elseif ( ')' === $char ) {
+				$depth--;
+				if ( 0 === $depth ) {
+					$rows[]  = trim( $current );
+					$current = '';
+					$started = false;
+				}
+			}
+		}
+
+		return $rows;
+	}
+
+	private function split_sql_row_values( $row ) {
+		$row = trim( $row );
+		if ( '(' === substr( $row, 0, 1 ) && ')' === substr( $row, -1 ) ) {
+			$row = substr( $row, 1, -1 );
+		}
+
+		$values    = array();
+		$current   = '';
+		$in_string = false;
+		$quote     = '';
+		$length    = strlen( $row );
+
+		for ( $index = 0; $index < $length; $index++ ) {
+			$char      = $row[ $index ];
+			$prev_char = $index > 0 ? $row[ $index - 1 ] : '';
+			$next_char = ( $index + 1 < $length ) ? $row[ $index + 1 ] : '';
+
+			if ( $in_string ) {
+				$current .= $char;
+				if ( $char === $quote && '\\' !== $prev_char && $quote !== $next_char ) {
+					$in_string = false;
+					$quote     = '';
+				}
+				continue;
+			}
+
+			if ( '\'' === $char || '"' === $char ) {
+				$in_string = true;
+				$quote     = $char;
+				$current  .= $char;
+				continue;
+			}
+
+			if ( ',' === $char ) {
+				$values[] = trim( $current );
+				$current  = '';
+				continue;
+			}
+
+			$current .= $char;
+		}
+
+		$values[] = trim( $current );
+		return $values;
+	}
+
+	private function parse_sql_string_literal( $value ) {
+		$value = trim( (string) $value );
+		if ( '' === $value ) {
+			return '';
+		}
+
+		$quote = substr( $value, 0, 1 );
+		if ( '\'' !== $quote && '"' !== $quote ) {
+			return trim( $value, "'\"" );
+		}
+
+		$result = '';
+		$length = strlen( $value );
+
+		for ( $index = 1; $index < $length; $index++ ) {
+			$char = $value[ $index ];
+
+			if ( '\\' === $char && $index + 1 < $length ) {
+				$result .= $value[ $index + 1 ];
+				$index++;
+				continue;
+			}
+
+			if ( $char === $quote ) {
+				if ( $index + 1 < $length && $value[ $index + 1 ] === $quote ) {
+					$result .= $quote;
+					$index++;
+					continue;
+				}
+
+				break;
+			}
+
+			$result .= $char;
+		}
+
+		return $result;
+	}
+
+	private function is_skipped_option_name( $option_name ) {
+		$option_name = (string) $option_name;
+
+		foreach ( array( '_transient_', '_transient_timeout_', '_site_transient_', '_site_transient_timeout_' ) as $prefix ) {
+			if ( 0 === strpos( $option_name, $prefix ) ) {
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	private function is_mariadb_sandbox_comment( $line ) {
