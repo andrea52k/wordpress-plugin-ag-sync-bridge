@@ -50,9 +50,7 @@ class Config {
 			$stored['shared_secret'] = wp_generate_password( 64, true, true );
 		}
 
-		if ( empty( $stored['storage_dir'] ) ) {
-			$stored['storage_dir'] = $this->get_default_storage_dir();
-		}
+		$stored['storage_dir'] = $this->normalize_storage_dir( array_get( $stored, 'storage_dir', '' ) );
 
 		update_option( self::OPTION_SETTINGS, wp_parse_args( $stored, $this->get_defaults() ), false );
 
@@ -165,9 +163,7 @@ class Config {
 			$settings['role'] = $this->detect_role();
 		}
 
-		if ( empty( $settings['storage_dir'] ) ) {
-			$settings['storage_dir'] = $this->get_default_storage_dir();
-		}
+		$settings['storage_dir'] = $this->normalize_storage_dir( array_get( $settings, 'storage_dir', '' ) );
 
 		return $settings;
 	}
@@ -233,8 +229,14 @@ class Config {
 			return $this->get_default_storage_dir();
 		}
 
+		$storage_dir = str_replace( '\\', '/', $storage_dir );
+
+		if ( $this->is_foreign_absolute_path( $storage_dir ) ) {
+			return $this->get_default_storage_dir();
+		}
+
 		if ( ! path_is_absolute( $storage_dir ) ) {
-			$storage_dir = WP_CONTENT_DIR . '/' . ltrim( str_replace( '\\', '/', $storage_dir ), '/' );
+			$storage_dir = WP_CONTENT_DIR . '/' . ltrim( $storage_dir, '/' );
 		}
 
 		return rtrim( normalize_path( $storage_dir ), '/' );
@@ -345,10 +347,28 @@ class Config {
 			return '';
 		}
 
+		if ( $this->is_foreign_absolute_path( $path ) ) {
+			return '';
+		}
+
 		if ( ! path_is_absolute( $path ) ) {
 			$path = ABSPATH . ltrim( str_replace( '\\', '/', $path ), '/' );
 		}
 
 		return rtrim( normalize_path( $path ), '/' );
+	}
+
+	private function is_foreign_absolute_path( $path ) {
+		$path = str_replace( '\\', '/', (string) $path );
+
+		if ( preg_match( '#^[A-Za-z]:/#', $path ) ) {
+			return 'Windows' !== PHP_OS_FAMILY;
+		}
+
+		if ( 0 === strpos( $path, '/' ) && 'Windows' === PHP_OS_FAMILY ) {
+			return true;
+		}
+
+		return false;
 	}
 }

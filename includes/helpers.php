@@ -15,8 +15,22 @@ function normalize_path( $path ) {
 }
 
 function path_is_absolute( $path ) {
-	$path = normalize_path( $path );
-	return (bool) preg_match( '#^[a-zA-Z]:/#', $path ) || 0 === strpos( $path, '/' );
+	$path       = (string) $path;
+	$normalized = normalize_path( $path );
+
+	if ( preg_match( '#^[a-zA-Z]:/#', $normalized ) ) {
+		return 'Windows' === PHP_OS_FAMILY;
+	}
+
+	if ( 0 === strpos( str_replace( '\\', '/', $path ), '//' ) ) {
+		return 'Windows' === PHP_OS_FAMILY;
+	}
+
+	if ( 0 === strpos( $normalized, '/' ) ) {
+		return 'Windows' !== PHP_OS_FAMILY;
+	}
+
+	return false;
 }
 
 function ensure_directory( $path ) {
