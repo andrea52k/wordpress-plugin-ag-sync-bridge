@@ -5,12 +5,6 @@ WordPress sites.
 
 ## Local Paths
 
-Repo:
-
-```text
-\\wsl.localhost\Ubuntu-24.04\home\abbev\projects\ag-sync-wordpress-plugin
-```
-
 ZIPs are usually exported to:
 
 ```text
@@ -18,13 +12,10 @@ C:\xampp\ag-sync-bridge.zip
 C:\xampp\ag-sync-bridge-X.Y.Z.zip
 ```
 
-Local sites:
+Local sites use this shape:
 
 ```text
-C:\xampp\htdocs\disinfestazione
-C:\xampp\htdocs\disinfestazione2
-C:\xampp\htdocs\bonasia
-C:\xampp\htdocs\meetmysicily
+C:\xampp\htdocs\<site>
 ```
 
 ## WP-CLI Commands
@@ -32,13 +23,13 @@ C:\xampp\htdocs\meetmysicily
 Use XAMPP PHP:
 
 ```powershell
-C:\xampp\php\php.exe C:\xampp\wp-cli.phar agsync status --path=C:\xampp\htdocs\bonasia
+C:\xampp\php\php.exe C:\xampp\wp-cli.phar agsync status --path=C:\xampp\htdocs\<site>
 ```
 
 Status all locals:
 
 ```powershell
-$sites=@('disinfestazione','disinfestazione2','bonasia','meetmysicily')
+$sites=@('<site-a>','<site-b>','<site-c>','<site-d>')
 foreach($site in $sites){
   C:\xampp\php\php.exe C:\xampp\wp-cli.phar agsync status --path="C:\xampp\htdocs\$site"
 }
@@ -47,25 +38,25 @@ foreach($site in $sites){
 Plugin version:
 
 ```powershell
-C:\xampp\php\php.exe C:\xampp\wp-cli.phar plugin get ag-sync-bridge --field=version --path=C:\xampp\htdocs\bonasia
+C:\xampp\php\php.exe C:\xampp\wp-cli.phar plugin get ag-sync-bridge --field=version --path=C:\xampp\htdocs\<site>
 ```
 
 Pull live to local:
 
 ```powershell
-C:\xampp\php\php.exe C:\xampp\wp-cli.phar agsync pull --path=C:\xampp\htdocs\bonasia
+C:\xampp\php\php.exe C:\xampp\wp-cli.phar agsync pull --path=C:\xampp\htdocs\<site>
 ```
 
 Show lock:
 
 ```powershell
-C:\xampp\php\php.exe C:\xampp\wp-cli.phar agsync lock --path=C:\xampp\htdocs\bonasia
+C:\xampp\php\php.exe C:\xampp\wp-cli.phar agsync lock --path=C:\xampp\htdocs\<site>
 ```
 
 Force unlock only after confirming no PHP/WP-CLI sync process is running:
 
 ```powershell
-C:\xampp\php\php.exe C:\xampp\wp-cli.phar agsync unlock --path=C:\xampp\htdocs\bonasia
+C:\xampp\php\php.exe C:\xampp\wp-cli.phar agsync unlock --path=C:\xampp\htdocs\<site>
 ```
 
 ## Manual Live Update
@@ -164,7 +155,7 @@ For long pulls, write WP-CLI output to site logs and monitor each process.
 Example:
 
 ```powershell
-$site='bonasia'
+$site='<site>'
 $path="C:\xampp\htdocs\$site"
 $logDir=Join-Path $path 'wp-content\ag-sync-bridge-data\logs'
 $out=Join-Path $logDir "wpcli-pull-$site.out.log"
@@ -228,7 +219,7 @@ public_html/wp-content/ag-sync-bridge-data
 
 Do not delete the correct `wp-content/ag-sync-bridge-data`.
 
-### Bonasia MySQL Packet Failure
+### MySQL Packet Failure From Huge Transients
 
 Symptom:
 
@@ -279,9 +270,9 @@ state prevented update.
 Fix:
 
 ```powershell
-C:\xampp\php\php.exe C:\xampp\wp-cli.phar option update siteurl 'http://localhost/bonasia' --path=C:\xampp\htdocs\bonasia
-C:\xampp\php\php.exe C:\xampp\wp-cli.phar option update home 'http://localhost/bonasia' --path=C:\xampp\htdocs\bonasia
-C:\xampp\php\php.exe C:\xampp\wp-cli.phar cache flush --path=C:\xampp\htdocs\bonasia
+C:\xampp\php\php.exe C:\xampp\wp-cli.phar option update siteurl 'http://localhost/<site>' --path=C:\xampp\htdocs\<site>
+C:\xampp\php\php.exe C:\xampp\wp-cli.phar option update home 'http://localhost/<site>' --path=C:\xampp\htdocs\<site>
+C:\xampp\php\php.exe C:\xampp\wp-cli.phar cache flush --path=C:\xampp\htdocs\<site>
 ```
 
 Then verify `agsync status`.

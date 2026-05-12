@@ -276,8 +276,6 @@ class Config {
 		return array(
 			'wp-content/ag-sync-bridge-data/*',
 			'wp-content/plugins/' . $plugin_dir . '/*',
-			'wp-content/plugins/meetmysicily-sync-*',
-			'wp-content/plugins/meetmysicily-sync-*/*',
 			'wp-content/cache/*',
 			'wp-content/upgrade/*',
 			'wp-content/ai1wm-backups/*',

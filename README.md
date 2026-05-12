@@ -4,14 +4,10 @@ Versione canonica del plugin WordPress `ag-sync-bridge`.
 
 Il plugin sincronizza un sito WordPress locale e un sito live tramite snapshot completi, con pull manuale o auto-pull settimanale sul locale, push manuale protetto verso il live, cron settimanale sul live, backup automatici e log leggibili.
 
-Questa repo nasce dal confronto delle quattro copie locali presenti in:
+Questa repo nasce dal confronto di quattro installazioni WordPress preesistenti.
+I percorsi locali e i domini reali non sono documentati nella repo pubblica.
 
-- `C:\xampp\htdocs\disinfestazione`
-- `C:\xampp\htdocs\disinfestazione2`
-- `C:\xampp\htdocs\bonasia`
-- `C:\xampp\htdocs\meetmysicily`
-
-La base scelta e `disinfestazione2`, integrata con patch generiche utili trovate in `bonasia`. I dettagli sono in `docs/source-analysis.md`.
+La base scelta e la variante funzionalmente piu completa, integrata con patch generiche utili trovate negli altri fork. I dettagli tecnici sono in `docs/source-analysis.md`.
 
 ## Documentazione per agenti
 
@@ -24,7 +20,7 @@ Se devi modificare o gestire il plugin da un agente automatico, leggi prima:
 
 ## Versione
 
-Versione plugin: `0.1.17`
+Versione plugin: `0.1.18`
 
 Slug tecnico WordPress: `ag-sync-bridge`
 
@@ -46,7 +42,6 @@ Lo slug resta invariato per permettere aggiornamenti sicuri delle installazioni 
 
 - `wp-content/ag-sync-bridge-data/*`
 - `wp-content/plugins/ag-sync-bridge/*`
-- `wp-content/plugins/meetmysicily-sync-*`
 - cache, backup vecchi, log e file temporanei configurati nei pattern di esclusione
 - cache generate in `wp-content/uploads/al_opt_content/*`, `wp-content/mpg-cache/*` e `wp-content/uploads/cache/*`
 

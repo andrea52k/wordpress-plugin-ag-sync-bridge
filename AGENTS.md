@@ -23,24 +23,18 @@ that basename for activation and updates.
 
 ## Installed Sites Used During Development
 
-Local XAMPP sites:
+This plugin is used on multiple local/live WordPress pairs. Real local folder
+names and live domains are intentionally not documented in this public repo.
 
-- `C:\xampp\htdocs\disinfestazione`
-- `C:\xampp\htdocs\disinfestazione2`
-- `C:\xampp\htdocs\bonasia`
-- `C:\xampp\htdocs\meetmysicily`
+Use the placeholders below in examples:
 
-Their live remotes:
-
-- `https://disinfestazioneitalia.com`
-- `https://disinfestazionepro.it`
-- `https://bonasiaproductions.com`
-- `https://meetmysicily.com`
+- local path: `C:\xampp\htdocs\<site>`
+- live URL: `https://example-live.tld`
 
 Use WP-CLI through:
 
 ```powershell
-C:\xampp\php\php.exe C:\xampp\wp-cli.phar agsync status --path=C:\xampp\htdocs\bonasia
+C:\xampp\php\php.exe C:\xampp\wp-cli.phar agsync status --path=C:\xampp\htdocs\<site>
 ```
 
 ## Non-Negotiable Rules
@@ -191,7 +185,7 @@ Local to live push:
 - Bad release ZIPs made on Windows caused live WordPress updates to deactivate
   the plugin with `Il file del plugin non esiste`. Fix: package with
   `git archive`.
-- Bonasia had a huge `_transient_*` row in `wp_options`; MySQL failed with
+- One production site had a huge `_transient_*` row in `wp_options`; MySQL failed with
   `max_allowed_packet` / `MySQL server has gone away`. Fix: filter transient
   option rows during SQL import/export.
 - Some live sites created `public_html/C/.../xampp/...` because an old local

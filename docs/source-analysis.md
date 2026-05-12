@@ -8,16 +8,16 @@ Data analisi: 2026-05-12
 
 | Sito locale | Versione header | File sorgente escluso ZIP | Byte sorgente escluso ZIP | Valutazione |
 | --- | ---: | ---: | ---: | --- |
-| `disinfestazione` | `0.1.6` | 22 | 224257 | Base generica precedente |
-| `disinfestazione2` | `0.1.7` | 22 | 240635 | Base piu completa |
-| `bonasia` | `0.1.11` | 22 | 202846 | Fork site-specific con alcune patch DB utili |
-| `meetmysicily` | `0.1.6` | 22 | 225548 | Variante branded della base precedente |
+| `site-a` | `0.1.6` | 22 | 224257 | Base generica precedente |
+| `site-b` | `0.1.7` | 22 | 240635 | Base piu completa |
+| `site-c` | `0.1.11` | 22 | 202846 | Fork site-specific con alcune patch DB utili |
+| `site-d` | `0.1.6` | 22 | 225548 | Variante branded della base precedente |
 
-`disinfestazione` e `meetmysicily` condividono quasi tutto il codice applicativo; cambiano soprattutto metadata plugin e README. `bonasia` ha versione header piu alta, ma molte classi sono piu semplici o piu vecchie rispetto a `disinfestazione2`.
+`site-a` e `site-d` condividono quasi tutto il codice applicativo; cambiano soprattutto metadata plugin e README. `site-c` ha versione header piu alta, ma molte classi sono piu semplici o piu vecchie rispetto a `site-b`.
 
 ## Differenze principali
 
-`disinfestazione2` differisce dalla base `disinfestazione` in questi file:
+`site-b` differisce dalla base `site-a` in questi file:
 
 - `ag-sync-bridge.php`
 - `includes/class-database-service.php`
@@ -42,7 +42,7 @@ Le differenze aggiungono funzionalita generiche, non solo branding:
 - export PHP database a batch con reconnect mysqli
 - remap prefisso tabelle durante import
 
-`bonasia` contiene alcune patch utili, ma perde diverse capacita presenti in `disinfestazione2`:
+`site-c` contiene alcune patch utili, ma perde diverse capacita presenti in `site-b`:
 
 - non ha raw chunk download completo
 - non ha async import remoto
@@ -55,11 +55,11 @@ Le differenze aggiungono funzionalita generiche, non solo branding:
 
 ## Decisione
 
-La versione canonica parte da `disinfestazione2`, perche e la base funzionalmente piu completa e meno site-specific.
+La versione canonica parte da `site-b`, perche e la base funzionalmente piu completa e meno site-specific.
 
-La prima versione canonica della repo e stata `0.1.12`, perche incorporava anche patch generiche ricavate da `bonasia`. La versione `0.1.13` aggiunge l'updater GitHub interno. Le versioni successive hanno corretto problemi trovati durante test reali su XAMPP/live: import di transient enormi, packaging ZIP Linux-safe, path `storage_dir` cross-platform e refresh forzato dell'updater GitHub.
+La prima versione canonica della repo e stata `0.1.12`, perche incorporava anche patch generiche ricavate da `site-c`. La versione `0.1.13` aggiunge l'updater GitHub interno. Le versioni successive hanno corretto problemi trovati durante test reali su XAMPP/live: import di transient enormi, packaging ZIP Linux-safe, path `storage_dir` cross-platform e refresh forzato dell'updater GitHub.
 
-## Patch integrate da Bonasia
+## Patch integrate da site-c
 
 - `includes/class-database-service.php`
   - replace URL anche per valori JSON escaped (`http:\/\/...`)
@@ -87,13 +87,13 @@ La prima versione canonica della repo e stata `0.1.12`, perche incorporava anche
 
 - `includes/class-config.php`
   - exclude cache `wp-content/uploads/al_opt_content/*`
-  - exclude cartelle temporanee legacy `wp-content/plugins/meetmysicily-sync-*`
 
 ## Patch non integrate
 
-- Branding Bonasia/Meet My Sicily, perche site-specific.
-- Versione header Bonasia `0.1.11` come base, perche il numero e piu alto ma il codice e meno completo.
-- Sostituzione delle classi `class-http-client.php`, `class-rest-controller.php`, `class-lock-manager.php`, `class-file-system-service.php` con quelle Bonasia, perche rimuoverebbe funzionalita gia migliori in `disinfestazione2`.
+- Branding dei fork, perche site-specific.
+- Exclude di cartelle temporanee legacy con nome derivato da un sito, perche site-specific.
+- Versione header `site-c` `0.1.11` come base, perche il numero e piu alto ma il codice e meno completo.
+- Sostituzione delle classi `class-http-client.php`, `class-rest-controller.php`, `class-lock-manager.php`, `class-file-system-service.php` con quelle di `site-c`, perche rimuoverebbe funzionalita gia migliori in `site-b`.
 - Disabilitazione totale del fallback PHP dopo errore `mysql` CLI. La repo mantiene il fallback per compatibilita e recupero, mentre riduce le cause note di errore CLI con sandbox cleanup e packet limit.
 - `SET GLOBAL` MySQL sempre attivo. Rimane disponibile solo via costante opt-in, perche su hosting condivisi puo fallire o modificare variabili globali del server.
 
