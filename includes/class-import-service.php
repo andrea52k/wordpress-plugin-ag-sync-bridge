@@ -33,6 +33,21 @@ class Import_Service {
 	 */
 	private $archive;
 
+	/**
+	 * @var bool
+	 */
+	private $maintenance_mode_enabled = false;
+
+	/**
+	 * @var bool
+	 */
+	private $maintenance_file_existed = false;
+
+	/**
+	 * @var string
+	 */
+	private $maintenance_previous_content = '';
+
 	public function __construct( Config $config, Logger $logger, File_System_Service $file_system, Database_Service $database, Archive_Service $archive ) {
 		$this->config      = $config;
 		$this->logger      = $logger;
@@ -79,6 +94,8 @@ class Import_Service {
 		$sync_active_plugins   = false;
 
 		try {
+			$this->enable_maintenance_mode();
+
 			$import_result = $this->database->import_from_file(
 				$prepared['database_sql'],
 				array(
@@ -116,6 +133,7 @@ class Import_Service {
 			}
 
 			$files_root = normalize_path( $prepared['temp_dir'] . '/files' );
+			$this->refresh_maintenance_mode();
 			$result     = $this->import_files( $files_root, $replacements );
 
 			if ( is_wp_error( $result ) ) {
@@ -179,12 +197,58 @@ class Import_Service {
 						)
 					);
 					$this->file_system->cleanup_path( $prepared['temp_dir'] );
+					$this->disable_maintenance_mode();
 					return $plugin_sync;
 				}
 			}
 
+			$this->disable_maintenance_mode();
 			$this->file_system->cleanup_path( $prepared['temp_dir'] );
 		}
+	}
+
+	private function enable_maintenance_mode() {
+		$path = $this->get_maintenance_file_path();
+
+		if ( ! $this->maintenance_mode_enabled ) {
+			$this->maintenance_file_existed      = file_exists( $path );
+			$this->maintenance_previous_content = $this->maintenance_file_existed ? (string) file_get_contents( $path ) : '';
+		}
+
+		$content = "<?php\n" . '$upgrading = ' . time() . ";\n";
+		if ( false === file_put_contents( $path, $content, LOCK_EX ) ) {
+			$this->logger->warning( 'Unable to enable WordPress maintenance mode during import.', array( 'path' => $path ) );
+			return;
+		}
+
+		$this->maintenance_mode_enabled = true;
+	}
+
+	private function refresh_maintenance_mode() {
+		if ( $this->maintenance_mode_enabled ) {
+			$this->enable_maintenance_mode();
+		}
+	}
+
+	private function disable_maintenance_mode() {
+		if ( ! $this->maintenance_mode_enabled ) {
+			return;
+		}
+
+		$path = $this->get_maintenance_file_path();
+		if ( $this->maintenance_file_existed ) {
+			file_put_contents( $path, $this->maintenance_previous_content, LOCK_EX );
+		} elseif ( file_exists( $path ) ) {
+			@unlink( $path );
+		}
+
+		$this->maintenance_mode_enabled     = false;
+		$this->maintenance_file_existed     = false;
+		$this->maintenance_previous_content = '';
+	}
+
+	private function get_maintenance_file_path() {
+		return normalize_path( ABSPATH . '.maintenance' );
 	}
 
 	private function prepare_package( $package_path, $expected_sha256 = '' ) {
