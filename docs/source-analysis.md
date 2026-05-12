@@ -57,7 +57,7 @@ Le differenze aggiungono funzionalita generiche, non solo branding:
 
 La versione canonica parte da `disinfestazione2`, perche e la base funzionalmente piu completa e meno site-specific.
 
-La prima versione canonica della repo e stata `0.1.12`, perche incorporava anche patch generiche ricavate da `bonasia`. La versione `0.1.13` aggiunge l'updater GitHub interno.
+La prima versione canonica della repo e stata `0.1.12`, perche incorporava anche patch generiche ricavate da `bonasia`. La versione `0.1.13` aggiunge l'updater GitHub interno. Le versioni successive hanno corretto problemi trovati durante test reali su XAMPP/live: import di transient enormi, packaging ZIP Linux-safe, path `storage_dir` cross-platform e refresh forzato dell'updater GitHub.
 
 ## Patch integrate da Bonasia
 
@@ -67,7 +67,8 @@ La prima versione canonica della repo e stata `0.1.12`, perche incorporava anche
   - rimozione commenti MariaDB sandbox anche quando il prefisso tabelle non cambia
   - `--skip-extended-insert` su `mysqldump`
   - `--max-allowed-packet=134217728` su `mysqldump` e `mysql`
-  - possibilita opt-in di alzare limiti globali MySQL con `AG_SYNC_BRIDGE_ALLOW_GLOBAL_MYSQL_LIMITS`
+  - tentativo automatico di alzare limiti globali MySQL durante import, disattivabile con `AG_SYNC_BRIDGE_ALLOW_GLOBAL_MYSQL_LIMITS` impostata a false
+  - filtro transient/site transient da `wp_options` durante import SQL per evitare righe cache enormi
 
 - `includes/class-rest-controller.php`
   - pulizia output buffer prima degli stream binari

@@ -13,6 +13,15 @@ Questa repo nasce dal confronto delle quattro copie locali presenti in:
 
 La base scelta e `disinfestazione2`, integrata con patch generiche utili trovate in `bonasia`. I dettagli sono in `docs/source-analysis.md`.
 
+## Documentazione per agenti
+
+Se devi modificare o gestire il plugin da un agente automatico, leggi prima:
+
+- `AGENTS.md` per contesto operativo, regole e rischi noti.
+- `docs/architecture.md` per classi, opzioni, flussi pull/push e updater.
+- `docs/operations-runbook.md` per comandi WP-CLI, release, update live e troubleshooting.
+- `docs/source-analysis.md` per la scelta iniziale della base canonica.
+
 ## Versione
 
 Versione plugin: `0.1.17`
@@ -193,7 +202,13 @@ Il plugin integra un updater per WordPress basato su GitHub Releases.
 Workflow release:
 
 1. Aggiorna `Version` e `AG_SYNC_BRIDGE_VERSION` in `ag-sync-bridge.php`.
-2. Crea uno ZIP con questa struttura:
+2. Crea lo ZIP con `git archive`, non con `Compress-Archive`:
+
+```powershell
+git archive --format=zip --prefix=ag-sync-bridge/ -o C:/xampp/ag-sync-bridge.zip HEAD
+```
+
+3. Verifica che lo ZIP abbia questa struttura:
 
 ```text
 ag-sync-bridge/
@@ -204,12 +219,14 @@ ag-sync-bridge/
   README.md
 ```
 
-3. Pubblica una GitHub Release con tag tipo `v0.1.14`.
-4. Carica nella release l'asset chiamato esattamente `ag-sync-bridge.zip`.
+4. Pubblica una GitHub Release con tag tipo `v0.1.17`.
+5. Carica nella release l'asset chiamato esattamente `ag-sync-bridge.zip`.
 
 WordPress controllera l'ultima release e proporra l'aggiornamento nella schermata Plugin.
 
-La repo GitHub attuale e privata. Per aggiornare da una repo privata, ogni sito deve avere un token GitHub con permesso di sola lettura sul repository:
+La repo GitHub attuale e pubblica, quindi non serve token.
+
+Se in futuro la repo torna privata, ogni sito dovra avere un token GitHub con permesso di sola lettura sul repository:
 
 ```php
 define( 'AG_SYNC_BRIDGE_GITHUB_TOKEN', 'github_pat_xxx' );
@@ -217,7 +234,7 @@ define( 'AG_SYNC_BRIDGE_GITHUB_TOKEN', 'github_pat_xxx' );
 
 Metti la costante in `wp-config.php`, sopra la riga `/* That's all, stop editing! */`.
 
-Se la repo viene resa pubblica, il token non serve.
+Da `0.1.17`, cliccare `Bacheca > Aggiornamenti > Verifica di nuovo` forza anche il refresh della cache GitHub del plugin. Le versioni precedenti possono mantenere in cache la release GitHub per alcune ore; in quel caso installa manualmente lo ZIP piu recente una volta.
 
 ## Limiti tecnici
 

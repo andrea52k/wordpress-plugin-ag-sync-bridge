@@ -1,0 +1,287 @@
+# Operations Runbook
+
+This runbook is for agents or developers operating AG Sync Bridge on the four
+WordPress sites.
+
+## Local Paths
+
+Repo:
+
+```text
+\\wsl.localhost\Ubuntu-24.04\home\abbev\projects\ag-sync-wordpress-plugin
+```
+
+ZIPs are usually exported to:
+
+```text
+C:\xampp\ag-sync-bridge.zip
+C:\xampp\ag-sync-bridge-X.Y.Z.zip
+```
+
+Local sites:
+
+```text
+C:\xampp\htdocs\disinfestazione
+C:\xampp\htdocs\disinfestazione2
+C:\xampp\htdocs\bonasia
+C:\xampp\htdocs\meetmysicily
+```
+
+## WP-CLI Commands
+
+Use XAMPP PHP:
+
+```powershell
+C:\xampp\php\php.exe C:\xampp\wp-cli.phar agsync status --path=C:\xampp\htdocs\bonasia
+```
+
+Status all locals:
+
+```powershell
+$sites=@('disinfestazione','disinfestazione2','bonasia','meetmysicily')
+foreach($site in $sites){
+  C:\xampp\php\php.exe C:\xampp\wp-cli.phar agsync status --path="C:\xampp\htdocs\$site"
+}
+```
+
+Plugin version:
+
+```powershell
+C:\xampp\php\php.exe C:\xampp\wp-cli.phar plugin get ag-sync-bridge --field=version --path=C:\xampp\htdocs\bonasia
+```
+
+Pull live to local:
+
+```powershell
+C:\xampp\php\php.exe C:\xampp\wp-cli.phar agsync pull --path=C:\xampp\htdocs\bonasia
+```
+
+Show lock:
+
+```powershell
+C:\xampp\php\php.exe C:\xampp\wp-cli.phar agsync lock --path=C:\xampp\htdocs\bonasia
+```
+
+Force unlock only after confirming no PHP/WP-CLI sync process is running:
+
+```powershell
+C:\xampp\php\php.exe C:\xampp\wp-cli.phar agsync unlock --path=C:\xampp\htdocs\bonasia
+```
+
+## Manual Live Update
+
+Use the latest versioned ZIP, for example:
+
+```text
+C:\xampp\ag-sync-bridge-0.1.17.zip
+```
+
+In WordPress admin:
+
+1. `Plugin > Aggiungi nuovo`
+2. `Carica plugin`
+3. upload ZIP
+4. confirm replacement
+5. activate if WordPress leaves it inactive
+
+Do not delete:
+
+```text
+wp-content/ag-sync-bridge-data
+```
+
+If WordPress refuses because the plugin folder exists, delete only:
+
+```text
+wp-content/plugins/ag-sync-bridge
+```
+
+Then upload the ZIP again.
+
+## GitHub Update Checks
+
+From version `0.1.17`, this works:
+
+1. `Bacheca > Aggiornamenti`
+2. click `Verifica di nuovo`
+3. return to `Plugin`
+
+Older versions can cache GitHub release metadata for up to 6 hours. If a live
+site is stuck on an older version and no update appears, install the ZIP
+manually once.
+
+## Release Procedure
+
+1. Update version in:
+   - `ag-sync-bridge.php` header
+   - `AG_SYNC_BRIDGE_VERSION`
+   - `README.md`
+2. Run PHP lint:
+
+```powershell
+Get-ChildItem -Recurse -Filter *.php | ForEach-Object { C:\xampp\php\php.exe -l $_.FullName }
+git diff --check
+```
+
+3. Commit.
+4. Build ZIP with `git archive`:
+
+```powershell
+git archive --format=zip --prefix=ag-sync-bridge/ -o C:/xampp/ag-sync-bridge.zip HEAD
+Copy-Item C:\xampp\ag-sync-bridge.zip C:\xampp\ag-sync-bridge-0.1.17.zip -Force
+```
+
+5. Validate package:
+
+```powershell
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$zip=[System.IO.Compression.ZipFile]::OpenRead('C:\xampp\ag-sync-bridge.zip')
+($zip.Entries | Where-Object { $_.FullName -eq 'ag-sync-bridge/ag-sync-bridge.php' }).Count
+($zip.Entries | Where-Object { $_.FullName -match '\\' }).Count
+$zip.Dispose()
+```
+
+Expected:
+
+```text
+1
+0
+```
+
+6. Push and release:
+
+```powershell
+git push origin main
+gh release create v0.1.17 C:\xampp\ag-sync-bridge.zip --repo andrea52k/wordpress-plugin-ag-sync-bridge --target main --title "AG Sync Bridge 0.1.17" --notes "Release notes here."
+```
+
+The uploaded asset must be called exactly `ag-sync-bridge.zip`.
+
+## Pull Monitoring
+
+For long pulls, write WP-CLI output to site logs and monitor each process.
+
+Example:
+
+```powershell
+$site='bonasia'
+$path="C:\xampp\htdocs\$site"
+$logDir=Join-Path $path 'wp-content\ag-sync-bridge-data\logs'
+$out=Join-Path $logDir "wpcli-pull-$site.out.log"
+$err=Join-Path $logDir "wpcli-pull-$site.err.log"
+Start-Process -FilePath 'C:\xampp\php\php.exe' -ArgumentList @('C:\xampp\wp-cli.phar','agsync','pull',"--path=$path") -RedirectStandardOutput $out -RedirectStandardError $err -PassThru -WindowStyle Hidden
+```
+
+Check running pull processes:
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name = 'php.exe'" |
+  Where-Object { $_.CommandLine -match 'wp-cli\.phar agsync pull' } |
+  Select-Object ProcessId,CommandLine
+```
+
+Log file:
+
+```text
+wp-content/ag-sync-bridge-data/logs/ag-sync-bridge-YYYY-MM-DD.log
+```
+
+## Known Troubleshooting
+
+### Plugin Deactivated: File Does Not Exist
+
+Symptom:
+
+```text
+Il plugin ag-sync-bridge/ag-sync-bridge.php e stato disattivato:
+Il file del plugin non esiste.
+```
+
+Cause: release ZIP was built with Windows path separators.
+
+Fix:
+
+- rebuild with `git archive --prefix=ag-sync-bridge/`
+- upload corrected ZIP manually
+- activate plugin
+
+### Live Has `public_html/C/...`
+
+Symptom: live hosting contains a folder like:
+
+```text
+public_html/C/xampp/htdocs/site/wp-content/ag-sync-bridge-data/logs
+```
+
+Cause: old code used a local Windows `storage_dir` on Linux live.
+
+Fix:
+
+1. update live to `0.1.16` or newer
+2. confirm correct storage path is:
+
+```text
+public_html/wp-content/ag-sync-bridge-data
+```
+
+3. delete only the bogus `public_html/C` or `public_html/C:` folder
+
+Do not delete the correct `wp-content/ag-sync-bridge-data`.
+
+### Bonasia MySQL Packet Failure
+
+Symptom:
+
+```text
+ERROR 1153 Got a packet bigger than 'max_allowed_packet' bytes
+MySQL server has gone away
+```
+
+Cause: very large transient rows in `wp_options`.
+
+Fix is in `0.1.14+`:
+
+- transient option rows are removed from SQL import
+- MySQL import packet limit is larger
+- runtime cache is refreshed before restoring local state
+
+### Bad Signature
+
+Symptom:
+
+```text
+ag_sync_bridge_bad_signature
+Invalid AG Sync Bridge signature.
+```
+
+Check:
+
+- local and live shared secret match
+- `role` is correct (`local` locally, `remote` live)
+- local remote URL is correct
+- failed partial import did not overwrite `ag_sync_bridge_settings`
+
+If needed, recover settings from a pre-pull backup SQL row for
+`ag_sync_bridge_settings`.
+
+### Local Site URL Became Live URL
+
+Symptom:
+
+```text
+siteurl = https://...
+home = https://...
+```
+
+Cause: import failed before local environment restore completed or old cache
+state prevented update.
+
+Fix:
+
+```powershell
+C:\xampp\php\php.exe C:\xampp\wp-cli.phar option update siteurl 'http://localhost/bonasia' --path=C:\xampp\htdocs\bonasia
+C:\xampp\php\php.exe C:\xampp\wp-cli.phar option update home 'http://localhost/bonasia' --path=C:\xampp\htdocs\bonasia
+C:\xampp\php\php.exe C:\xampp\wp-cli.phar cache flush --path=C:\xampp\htdocs\bonasia
+```
+
+Then verify `agsync status`.
