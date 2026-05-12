@@ -510,12 +510,14 @@ class Http_Client {
 
 			$status = $this->request_json( 'GET', '/ag-sync-bridge/v1/operation/status' );
 			if ( is_wp_error( $status ) ) {
-				if ( $this->is_transient_transport_error( $status ) && $transient_errors < 3 ) {
+				if ( $this->is_retryable_remote_import_poll_error( $status ) ) {
 					$transient_errors++;
 					$this->logger->warning(
-						'Remote import status polling hit a transient transport error.',
+						'Remote import status polling hit a transient error. Retrying.',
 						array(
 							'operation_id' => $operation_id,
+							'attempt'      => $transient_errors,
+							'status'       => $this->get_remote_http_error_status( $status ),
 							'error'        => $status->get_error_message(),
 						)
 					);
@@ -643,6 +645,36 @@ class Http_Client {
 		return false;
 	}
 
+	private function is_retryable_remote_import_poll_error( WP_Error $result ) {
+		if ( $this->is_transient_transport_error( $result ) ) {
+			return true;
+		}
+
+		$status = $this->get_remote_http_error_status( $result );
+		if ( ! $status ) {
+			return false;
+		}
+
+		return in_array( $status, array( 408, 409, 425, 429, 500, 502, 503, 504 ), true );
+	}
+
+	private function get_remote_http_error_status( WP_Error $result ) {
+		if ( 'ag_sync_bridge_remote_http' !== $result->get_error_code() ) {
+			return 0;
+		}
+
+		$data = $result->get_error_data();
+		if ( is_array( $data ) && ! empty( $data['status'] ) ) {
+			return absint( $data['status'] );
+		}
+
+		if ( preg_match( '/status\s+(\d+)/i', $result->get_error_message(), $matches ) ) {
+			return absint( $matches[1] );
+		}
+
+		return 0;
+	}
+
 	private function decode_json_response( $response ) {
 		if ( is_wp_error( $response ) ) {
 			return $response;
@@ -652,7 +684,7 @@ class Http_Client {
 		$body = wp_remote_retrieve_body( $response );
 
 		if ( $code < 200 || $code >= 300 ) {
-			return new WP_Error( 'ag_sync_bridge_remote_http', sprintf( 'Remote request failed with status %d.', $code ), array( 'body' => $body ) );
+			return new WP_Error( 'ag_sync_bridge_remote_http', sprintf( 'Remote request failed with status %d.', $code ), array( 'status' => $code, 'body' => $body ) );
 		}
 
 		$data = json_decode( (string) $body, true );
