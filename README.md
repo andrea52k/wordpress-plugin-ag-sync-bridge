@@ -214,7 +214,7 @@ ag-sync-bridge/
   README.md
 ```
 
-4. Pubblica una GitHub Release con tag tipo `v0.1.17`.
+4. Pubblica una GitHub Release con tag tipo `vX.Y.Z`.
 5. Carica nella release l'asset chiamato esattamente `ag-sync-bridge.zip`.
 
 WordPress controllera l'ultima release e proporra l'aggiornamento nella schermata Plugin.

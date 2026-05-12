@@ -60,7 +60,7 @@ Correct package command from the repo root:
 
 ```powershell
 git archive --format=zip --prefix=ag-sync-bridge/ -o C:/xampp/ag-sync-bridge.zip HEAD
-Copy-Item C:\xampp\ag-sync-bridge.zip C:\xampp\ag-sync-bridge-0.1.17.zip -Force
+Copy-Item C:\xampp\ag-sync-bridge.zip C:\xampp\ag-sync-bridge-X.Y.Z.zip -Force
 ```
 
 Then publish a GitHub release with tag `vX.Y.Z` and upload the asset as:
@@ -107,7 +107,7 @@ https://api.github.com/repos/andrea52k/wordpress-plugin-ag-sync-bridge/releases/
 
 Rules:
 
-- The latest tag must be version-like, for example `v0.1.17`.
+- The latest tag must be version-like, for example `vX.Y.Z`.
 - The release asset must be named `ag-sync-bridge.zip`.
 - Public repo updates do not need a token.
 - Private repo updates can use `AG_SYNC_BRIDGE_GITHUB_TOKEN`, but the current

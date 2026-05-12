@@ -64,7 +64,7 @@ C:\xampp\php\php.exe C:\xampp\wp-cli.phar agsync unlock --path=C:\xampp\htdocs\<
 Use the latest versioned ZIP, for example:
 
 ```text
-C:\xampp\ag-sync-bridge-0.1.17.zip
+C:\xampp\ag-sync-bridge-X.Y.Z.zip
 ```
 
 In WordPress admin:
@@ -119,7 +119,7 @@ git diff --check
 
 ```powershell
 git archive --format=zip --prefix=ag-sync-bridge/ -o C:/xampp/ag-sync-bridge.zip HEAD
-Copy-Item C:\xampp\ag-sync-bridge.zip C:\xampp\ag-sync-bridge-0.1.17.zip -Force
+Copy-Item C:\xampp\ag-sync-bridge.zip C:\xampp\ag-sync-bridge-X.Y.Z.zip -Force
 ```
 
 5. Validate package:
@@ -143,7 +143,7 @@ Expected:
 
 ```powershell
 git push origin main
-gh release create v0.1.17 C:\xampp\ag-sync-bridge.zip --repo andrea52k/wordpress-plugin-ag-sync-bridge --target main --title "AG Sync Bridge 0.1.17" --notes "Release notes here."
+gh release create vX.Y.Z C:\xampp\ag-sync-bridge.zip --repo andrea52k/wordpress-plugin-ag-sync-bridge --target main --title "AG Sync Bridge X.Y.Z" --notes "Release notes here."
 ```
 
 The uploaded asset must be called exactly `ag-sync-bridge.zip`.
