@@ -27,6 +27,7 @@ class GitHub_Updater {
 
 	public function register() {
 		add_filter( 'pre_set_site_transient_update_plugins', array( $this, 'check_for_update' ) );
+		add_filter( 'site_transient_update_plugins', array( $this, 'check_for_update' ) );
 		add_filter( 'plugins_api', array( $this, 'plugin_information' ), 10, 3 );
 		add_filter( 'upgrader_pre_download', array( $this, 'download_private_asset' ), 10, 4 );
 	}
@@ -36,12 +37,25 @@ class GitHub_Updater {
 			$transient = new \stdClass();
 		}
 
-		if ( empty( $transient->checked ) || empty( $transient->checked[ $this->plugin_basename ] ) ) {
-			return $transient;
+		if ( empty( $transient->checked ) || ! is_array( $transient->checked ) ) {
+			$transient->checked = array();
+		}
+
+		if ( empty( $transient->checked[ $this->plugin_basename ] ) ) {
+			$transient->checked[ $this->plugin_basename ] = AG_SYNC_BRIDGE_VERSION;
+		}
+
+		if ( empty( $transient->response ) || ! is_array( $transient->response ) ) {
+			$transient->response = array();
+		}
+
+		if ( empty( $transient->no_update ) || ! is_array( $transient->no_update ) ) {
+			$transient->no_update = array();
 		}
 
 		$release = $this->get_latest_release( $this->is_forced_update_check() );
 		if ( is_wp_error( $release ) || empty( $release ) ) {
+			$transient->no_update[ $this->plugin_basename ] = $this->build_update_object( array(), AG_SYNC_BRIDGE_VERSION, array(), false );
 			return $transient;
 		}
 
@@ -49,10 +63,13 @@ class GitHub_Updater {
 		$asset   = $this->find_release_asset( $release );
 
 		if ( ! $version || ! $asset || ! version_compare( $version, AG_SYNC_BRIDGE_VERSION, '>' ) ) {
-			$transient->no_update[ $this->plugin_basename ] = $this->build_update_object( $release, $version, $asset, false );
+			$no_update_version = $version && version_compare( $version, AG_SYNC_BRIDGE_VERSION, '>=' ) ? $version : AG_SYNC_BRIDGE_VERSION;
+			unset( $transient->response[ $this->plugin_basename ] );
+			$transient->no_update[ $this->plugin_basename ] = $this->build_update_object( $release, $no_update_version, $asset, false );
 			return $transient;
 		}
 
+		unset( $transient->no_update[ $this->plugin_basename ] );
 		$transient->response[ $this->plugin_basename ] = $this->build_update_object( $release, $version, $asset, true );
 		return $transient;
 	}
