@@ -312,7 +312,18 @@ class Rest_Controller {
 			return new WP_Error( 'ag_sync_bridge_chunk_headers_missing', __( 'Chunk upload headers are incomplete.', 'ag-sync-bridge' ), array( 'status' => 400 ) );
 		}
 
-		$body = $request->get_body();
+		$body      = '';
+		$chunk_b64 = (string) $request->get_param( 'chunk_b64' );
+		if ( '' !== $chunk_b64 ) {
+			$decoded = base64_decode( $chunk_b64, true );
+			if ( false === $decoded ) {
+				return new WP_Error( 'ag_sync_bridge_chunk_decode_failed', __( 'Chunk body is not valid base64.', 'ag-sync-bridge' ), array( 'status' => 400 ) );
+			}
+			$body = $decoded;
+		} else {
+			$body = $request->get_body();
+		}
+
 		if ( '' === $body ) {
 			return new WP_Error( 'ag_sync_bridge_chunk_body_missing', __( 'Chunk body is empty.', 'ag-sync-bridge' ), array( 'status' => 400 ) );
 		}
@@ -739,6 +750,6 @@ class Rest_Controller {
 	}
 
 	private function get_chunk_upload_dir( $upload_id ) {
-		return normalize_path( $this->file_system->get_incoming_dir() . '/chunks/' . sanitize_key( $upload_id ) );
+		return normalize_path( $this->file_system->get_temp_dir() . '/upload-chunks/' . sanitize_key( $upload_id ) );
 	}
 }

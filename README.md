@@ -20,7 +20,7 @@ Se devi modificare o gestire il plugin da un agente automatico, leggi prima:
 
 ## Versione
 
-Versione plugin: `0.1.21`
+Versione plugin: `0.1.22`
 
 Slug tecnico WordPress: `ag-sync-bridge`
 
@@ -52,7 +52,7 @@ Il plugin esclude la propria cartella dal full overwrite per non interrompere op
 - Endpoint REST protetti con HMAC SHA-256, timestamp e anti-replay transient
 - Aggiornamenti plugin da GitHub Releases
 - Download snapshot streaming, chunked JSON e raw chunked
-- Upload snapshot diretto o a chunk
+- Upload snapshot diretto o a chunk form-encoded, compatibile con hosting che svuotano il raw body REST
 - Import remoto asincrono con polling dello stato remoto
 - Backup automatico prima di pull e push
 - Restore locale da backup

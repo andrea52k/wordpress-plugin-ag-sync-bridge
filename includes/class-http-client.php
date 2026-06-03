@@ -805,7 +805,7 @@ class Http_Client {
 				$headers = array_merge(
 					$this->build_headers( 'POST', $route_chunk ),
 					array(
-						'Content-Type'       => 'application/octet-stream',
+						'Content-Type'       => 'application/x-www-form-urlencoded; charset=UTF-8',
 						'X-AGSB-Upload-Id'   => $upload_id,
 						'X-AGSB-Filename'    => $filename,
 						'X-AGSB-Chunk-Index' => (string) $index,
@@ -870,7 +870,9 @@ class Http_Client {
 				$url,
 				array(
 					'headers' => $headers,
-					'body'    => $chunk,
+					'body'    => array(
+						'chunk_b64' => base64_encode( $chunk ),
+					),
 					'timeout' => $this->config->get_request_timeout(),
 				)
 			);
