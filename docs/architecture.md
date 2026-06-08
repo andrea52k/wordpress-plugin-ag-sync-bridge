@@ -209,13 +209,14 @@ Old binary formats such as `.xls` are not guaranteed.
 `Sync_Service::push_to_remote()`:
 
 1. acquire lock
-2. request live pre-push backup
-3. create local snapshot
-4. upload snapshot
-5. trigger remote async import
-6. poll remote import state
-7. save `last_push`
-8. release lock
+2. run remote storage doctor/preflight
+3. request live pre-push backup
+4. create local snapshot
+5. upload snapshot
+6. trigger remote async import
+7. poll remote import state
+8. save `last_push`
+9. release lock
 
 Remote import is asynchronous through `ag_sync_bridge_async_import_snapshot`.
 This avoids treating SSL/proxy disconnects during long imports as immediate

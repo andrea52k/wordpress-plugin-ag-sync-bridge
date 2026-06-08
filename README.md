@@ -20,7 +20,7 @@ Se devi modificare o gestire il plugin da un agente automatico, leggi prima:
 
 ## Versione
 
-Versione plugin: `0.1.22`
+Versione plugin: `0.1.23`
 
 Slug tecnico WordPress: `ag-sync-bridge`
 
@@ -54,6 +54,7 @@ Il plugin esclude la propria cartella dal full overwrite per non interrompere op
 - Download snapshot streaming, chunked JSON e raw chunked
 - Upload snapshot diretto o a chunk form-encoded, compatibile con hosting che svuotano il raw body REST
 - Import remoto asincrono con polling dello stato remoto
+- Preflight `doctor` locale/remoto per spazio, permessi e test scrittura prima dei push
 - Backup automatico prima di pull e push
 - Restore locale da backup
 - Cleanup storage locale e remoto
@@ -129,13 +130,14 @@ Il live crea automaticamente lo snapshot settimanale, ma il locale non lo scaric
 Quando premi `Invia il locale al live`:
 
 1. Devi digitare `INVIA LIVE`.
-2. Il live crea un backup automatico.
-3. Il locale crea uno snapshot completo.
-4. Lo snapshot viene caricato sul live.
-5. Il live importa database e file.
-6. Il live esegue replace URL locale -> live.
-7. Il live riscrive URL locale -> live nei dataset V4MPG supportati.
-8. Il plugin scrive log e aggiorna lo stato.
+2. Il locale esegue un preflight remoto su storage, permessi e test scrittura.
+3. Il live crea un backup automatico.
+4. Il locale crea uno snapshot completo.
+5. Lo snapshot viene caricato sul live.
+6. Il live importa database e file.
+7. Il live esegue replace URL locale -> live.
+8. Il live riscrive URL locale -> live nei dataset V4MPG supportati.
+9. Il plugin scrive log e aggiorna lo stato.
 
 L'import sul live viene accettato in modalita asincrona, pianificato come evento WordPress cron singolo e monitorato dal locale con polling dello stato remoto. Questo evita che una chiusura SSL/proxy durante un import lungo venga interpretata come fallimento immediato del deploy.
 
@@ -164,11 +166,12 @@ L'import sul live viene accettato in modalita asincrona, pianificato come evento
 
 ```bash
 wp agsync status
+wp agsync doctor
 wp agsync snapshot --type=manual
 wp agsync pull
 wp agsync push
 wp agsync cleanup
-wp agsync remote-cleanup
+wp agsync remote_cleanup
 wp agsync lock
 wp agsync unlock
 ```

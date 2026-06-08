@@ -3,7 +3,7 @@
  * Plugin Name: AG Sync Bridge
  * Plugin URI: https://github.com/andrea52k/wordpress-plugin-ag-sync-bridge
  * Description: Full snapshot bridge to sync a local WordPress installation with a live WordPress site.
- * Version: 0.1.22
+ * Version: 0.1.23
  * Author: Codex
  * License: GPL-2.0-or-later
  * Text Domain: ag-sync-bridge
@@ -14,7 +14,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'AG_SYNC_BRIDGE_VERSION', '0.1.22' );
+define( 'AG_SYNC_BRIDGE_VERSION', '0.1.23' );
 define( 'AG_SYNC_BRIDGE_PLUGIN_FILE', __FILE__ );
 define( 'AG_SYNC_BRIDGE_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'AG_SYNC_BRIDGE_PLUGIN_URL', plugin_dir_url( __FILE__ ) );

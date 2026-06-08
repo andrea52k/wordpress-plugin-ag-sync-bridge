@@ -41,6 +41,18 @@ Plugin version:
 C:\xampp\php\php.exe C:\xampp\wp-cli.phar plugin get ag-sync-bridge --field=version --path=C:\xampp\htdocs\<site>
 ```
 
+Doctor / preflight before large syncs:
+
+```powershell
+C:\xampp\php\php.exe C:\xampp\wp-cli.phar agsync doctor --path=C:\xampp\htdocs\<site>
+```
+
+Local-only doctor:
+
+```powershell
+C:\xampp\php\php.exe C:\xampp\wp-cli.phar agsync doctor --skip-remote --path=C:\xampp\htdocs\<site>
+```
+
 Pull live to local:
 
 ```powershell
@@ -178,6 +190,35 @@ wp-content/ag-sync-bridge-data/logs/ag-sync-bridge-YYYY-MM-DD.log
 ```
 
 ## Known Troubleshooting
+
+### Doctor Fails On Live Storage
+
+Symptoms:
+
+```text
+ag_sync_bridge_temp_dir_failed
+ag_sync_bridge_chunk_write_failed
+Unable to extract snapshot archive
+```
+
+Common causes:
+
+- low disk space or hosting quota
+- unwritable `wp-content/ag-sync-bridge-data`
+- unwritable `temp`, `temp/upload-chunks`, `incoming`, `backups`, or `snapshots`
+- stale partial upload directories left after a failed push
+
+Run:
+
+```powershell
+C:\xampp\php\php.exe C:\xampp\wp-cli.phar agsync doctor --path=C:\xampp\htdocs\<site>
+```
+
+If the remote doctor route is missing, update AG Sync Bridge on the live site
+before retrying push. If doctor reports free space below required or failed
+write tests, fix server quota/permissions first. Do not use
+`--skip-remote-backup` as a workaround unless a fresh live backup already
+completed and the server storage issue is understood.
 
 ### Plugin Deactivated: File Does Not Exist
 

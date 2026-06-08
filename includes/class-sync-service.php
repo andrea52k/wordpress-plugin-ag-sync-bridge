@@ -220,6 +220,21 @@ class Sync_Service {
 			$this->logger->info( 'Push started.', array( 'remote_url' => $this->config->get_remote_url(), 'use_existing_snapshot' => $use_existing_snapshot, 'skip_remote_backup' => $skip_remote_backup ) );
 			$remote_backup = array( 'skipped' => true );
 
+			$this->update_operation( 'push', 3, 'remote-preflight', __( 'Controllo prerequisiti storage sul live...', 'ag-sync-bridge' ) );
+			$remote_preflight = $this->run_remote_preflight( $use_existing_snapshot );
+			if ( is_wp_error( $remote_preflight ) ) {
+				$this->fail_operation( 'push', $remote_preflight );
+				return $remote_preflight;
+			}
+
+			$this->logger->info(
+				'Remote preflight completed.',
+				array(
+					'ok'                  => ! empty( $remote_preflight['ok'] ),
+					'required_free_bytes' => array_get( $remote_preflight, 'required_free_bytes', 0 ),
+				)
+			);
+
 			if ( ! $skip_remote_backup ) {
 				$this->update_operation( 'push', 5, 'remote-backup', __( 'Creazione backup di sicurezza sul live...', 'ag-sync-bridge' ) );
 				$remote_backup = $this->http_client->create_remote_backup();
@@ -300,6 +315,63 @@ class Sync_Service {
 	private function get_latest_local_snapshot() {
 		$list = $this->file_system->list_packages( 'snapshots', 1, true );
 		return empty( $list ) ? array() : $list[0];
+	}
+
+	private function run_remote_preflight( $use_existing_snapshot = false ) {
+		$required_bytes = $this->estimate_remote_required_bytes( $use_existing_snapshot );
+		$result         = $this->http_client->remote_doctor( $required_bytes );
+
+		if ( is_wp_error( $result ) ) {
+			$data = $result->get_error_data();
+			$body = is_array( $data ) ? (string) array_get( $data, 'body', '' ) : '';
+
+			if ( false !== stripos( $result->get_error_message(), 'status 404' ) || false !== stripos( $body, 'rest_no_route' ) ) {
+				return new WP_Error(
+					'ag_sync_bridge_remote_preflight_missing',
+					__( 'Il live non espone il preflight storage di AG Sync Bridge. Aggiorna AG Sync Bridge anche sul sito live prima di fare push.', 'ag-sync-bridge' ),
+					$data
+				);
+			}
+
+			return new WP_Error(
+				'ag_sync_bridge_remote_preflight_failed',
+				sprintf(
+					/* translators: %s: remote error message */
+					__( 'Preflight remoto non riuscito: %s', 'ag-sync-bridge' ),
+					$result->get_error_message()
+				),
+				$data
+			);
+		}
+
+		if ( empty( $result['ok'] ) ) {
+			return new WP_Error(
+				'ag_sync_bridge_remote_storage_not_ready',
+				__( 'Il live non ha superato il preflight storage. Controlla spazio, quota e permessi nelle directory AG Sync Bridge prima di fare push.', 'ag-sync-bridge' ),
+				$result
+			);
+		}
+
+		return $result;
+	}
+
+	private function estimate_remote_required_bytes( $use_existing_snapshot = false ) {
+		unset( $use_existing_snapshot );
+
+		$list   = $this->file_system->list_packages( 'snapshots', 1, false );
+		$latest = empty( $list ) ? array() : $list[0];
+		$size   = (int) array_get( $latest, 'size_bytes', 0 );
+		$path   = (string) array_get( $latest, 'path', '' );
+
+		if ( $size <= 0 && $path && file_exists( $path ) ) {
+			$size = (int) filesize( $path );
+		}
+
+		if ( $size > 0 ) {
+			return $size * 2;
+		}
+
+		return 268435456;
 	}
 
 	public function restore_local_backup( $reference, $custom_path = '' ) {

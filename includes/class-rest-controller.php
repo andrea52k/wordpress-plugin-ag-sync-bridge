@@ -68,6 +68,16 @@ class Rest_Controller {
 
 		register_rest_route(
 			'ag-sync-bridge/v1',
+			'/doctor',
+			array(
+				'methods'             => array( 'GET', 'POST' ),
+				'callback'            => array( $this, 'doctor' ),
+				'permission_callback' => array( $this, 'check_permission' ),
+			)
+		);
+
+		register_rest_route(
+			'ag-sync-bridge/v1',
 			'/snapshot/latest',
 			array(
 				'methods'             => 'GET',
@@ -122,6 +132,16 @@ class Rest_Controller {
 			array(
 				'methods'             => 'POST',
 				'callback'            => array( $this, 'finish_chunked_upload' ),
+				'permission_callback' => array( $this, 'check_permission' ),
+			)
+		);
+
+		register_rest_route(
+			'ag-sync-bridge/v1',
+			'/snapshot/upload-abort',
+			array(
+				'methods'             => 'POST',
+				'callback'            => array( $this, 'abort_chunked_upload' ),
 				'permission_callback' => array( $this, 'check_permission' ),
 			)
 		);
@@ -185,6 +205,18 @@ class Rest_Controller {
 				'permission_callback' => array( $this, 'check_permission' ),
 			)
 		);
+	}
+
+	public function doctor( WP_REST_Request $request ) {
+		$required_bytes = max( 0, (int) $request->get_param( 'required_bytes' ) );
+		$diagnostics    = $this->file_system->diagnose_runtime_storage( $required_bytes );
+		$diagnostics['site_url']  = site_url();
+		$diagnostics['home_url']  = home_url();
+		$diagnostics['role']      = $this->config->get_role();
+		$diagnostics['plugin']    = AG_SYNC_BRIDGE_VERSION;
+		$diagnostics['wordpress'] = get_bloginfo( 'version' );
+
+		return new WP_REST_Response( $diagnostics );
 	}
 
 	public function check_permission( WP_REST_Request $request ) {
@@ -335,7 +367,15 @@ class Rest_Controller {
 
 		$chunk_dir = $this->get_chunk_upload_dir( $upload_id );
 		if ( ! ensure_directory( $chunk_dir ) ) {
-			return new WP_Error( 'ag_sync_bridge_chunk_dir_failed', __( 'Unable to prepare chunk upload directory.', 'ag-sync-bridge' ), array( 'status' => 500 ) );
+			return new WP_Error(
+				'ag_sync_bridge_chunk_dir_failed',
+				__( 'Unable to prepare chunk upload directory.', 'ag-sync-bridge' ),
+				array(
+					'status'      => 500,
+					'chunk_dir'   => $chunk_dir,
+					'diagnostics' => $this->file_system->diagnose_runtime_storage( strlen( $body ) ),
+				)
+			);
 		}
 
 		$chunk_path = normalize_path( $chunk_dir . '/' . sprintf( 'chunk-%05d.part', $chunk_index ) );
@@ -343,7 +383,37 @@ class Rest_Controller {
 		$written    = file_put_contents( $chunk_path, $body, LOCK_EX );
 
 		if ( false === $written ) {
-			return new WP_Error( 'ag_sync_bridge_chunk_write_failed', __( 'Unable to store uploaded chunk.', 'ag-sync-bridge' ), array( 'status' => 500 ) );
+			return new WP_Error(
+				'ag_sync_bridge_chunk_write_failed',
+				__( 'Unable to store uploaded chunk.', 'ag-sync-bridge' ),
+				array(
+					'status'       => 500,
+					'chunk_path'   => $chunk_path,
+					'chunk_dir'    => $chunk_dir,
+					'chunk_index'  => $chunk_index,
+					'total_chunks' => $total_chunks,
+					'chunk_bytes'  => strlen( $body ),
+					'php_error'    => error_get_last(),
+					'diagnostics'  => $this->file_system->diagnose_runtime_storage( strlen( $body ) ),
+				)
+			);
+		}
+
+		if ( strlen( $body ) !== (int) $written || ! file_exists( $chunk_path ) ) {
+			return new WP_Error(
+				'ag_sync_bridge_chunk_write_incomplete',
+				__( 'Uploaded chunk was not fully written.', 'ag-sync-bridge' ),
+				array(
+					'status'        => 500,
+					'chunk_path'    => $chunk_path,
+					'chunk_dir'     => $chunk_dir,
+					'chunk_index'   => $chunk_index,
+					'total_chunks'  => $total_chunks,
+					'chunk_bytes'   => strlen( $body ),
+					'written_bytes' => (int) $written,
+					'diagnostics'   => $this->file_system->diagnose_runtime_storage( strlen( $body ) ),
+				)
+			);
 		}
 
 		$this->file_system->write_json_file(
@@ -363,6 +433,27 @@ class Rest_Controller {
 				'total_chunks'  => $total_chunks,
 				'size_bytes'    => $written,
 				'stored_at'     => gmdate( 'c' ),
+			)
+		);
+	}
+
+	public function abort_chunked_upload( WP_REST_Request $request ) {
+		$upload_id = sanitize_key( (string) $request->get_param( 'upload_id' ) );
+
+		if ( '' === $upload_id ) {
+			return new WP_Error( 'ag_sync_bridge_chunk_abort_missing', __( 'Chunked upload cannot be aborted without an upload id.', 'ag-sync-bridge' ), array( 'status' => 400 ) );
+		}
+
+		$chunk_dir = $this->get_chunk_upload_dir( $upload_id );
+		$existed   = file_exists( $chunk_dir );
+		$deleted   = $this->file_system->cleanup_path( $chunk_dir );
+
+		return new WP_REST_Response(
+			array(
+				'upload_id' => $upload_id,
+				'path'      => $chunk_dir,
+				'existed'   => $existed,
+				'deleted'   => (bool) $deleted,
 			)
 		);
 	}
@@ -750,6 +841,6 @@ class Rest_Controller {
 	}
 
 	private function get_chunk_upload_dir( $upload_id ) {
-		return normalize_path( $this->file_system->get_temp_dir() . '/upload-chunks/' . sanitize_key( $upload_id ) );
+		return normalize_path( $this->file_system->get_upload_chunks_dir() . '/' . sanitize_key( $upload_id ) );
 	}
 }

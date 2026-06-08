@@ -32,6 +32,7 @@ class File_System_Service {
 			$this->get_snapshot_dir(),
 			$this->get_backup_dir(),
 			$this->get_temp_dir(),
+			$this->get_upload_chunks_dir(),
 			$this->get_incoming_dir(),
 			$this->config->get_data_dir( 'logs' ),
 		);
@@ -58,6 +59,10 @@ class File_System_Service {
 		return $this->config->get_data_dir( 'incoming' );
 	}
 
+	public function get_upload_chunks_dir() {
+		return normalize_path( $this->get_temp_dir() . '/upload-chunks' );
+	}
+
 	public function create_temp_dir( $prefix = 'job' ) {
 		$this->prepare_runtime_dirs();
 
@@ -69,6 +74,51 @@ class File_System_Service {
 		}
 
 		return normalize_path( $dir );
+	}
+
+	public function diagnose_runtime_storage( $required_bytes = 0 ) {
+		$required_bytes = max( 0, (int) $required_bytes );
+		$directories    = array(
+			'storage'       => $this->config->get_storage_dir(),
+			'snapshots'     => $this->get_snapshot_dir(),
+			'backups'       => $this->get_backup_dir(),
+			'temp'          => $this->get_temp_dir(),
+			'upload_chunks' => $this->get_upload_chunks_dir(),
+			'incoming'      => $this->get_incoming_dir(),
+			'logs'          => $this->config->get_data_dir( 'logs' ),
+		);
+		$results        = array();
+		$ok             = true;
+
+		foreach ( $directories as $scope => $path ) {
+			$results[ $scope ] = $this->diagnose_directory( $scope, $path, $required_bytes );
+			if ( empty( $results[ $scope ]['ok'] ) ) {
+				$ok = false;
+			}
+		}
+
+		$state            = $this->config->get_state();
+		$current_operation = array_get( $state, 'current_operation', array() );
+		$remote_import     = array_get( $state, 'remote_import_operation', array() );
+
+		return array(
+			'checked_at'          => gmdate( 'c' ),
+			'ok'                  => $ok,
+			'required_free_bytes' => $required_bytes,
+			'required_free_human' => format_bytes( $required_bytes ),
+			'storage_dir'         => $this->config->get_storage_dir(),
+			'directories'         => $results,
+			'operation'           => array(
+				'current'       => is_array( $current_operation ) ? $current_operation : array(),
+				'remote_import' => is_array( $remote_import ) ? $remote_import : array(),
+			),
+			'php'                 => array(
+				'upload_tmp_dir'     => (string) ini_get( 'upload_tmp_dir' ),
+				'open_basedir'       => (string) ini_get( 'open_basedir' ),
+				'memory_limit'       => (string) ini_get( 'memory_limit' ),
+				'max_execution_time' => (string) ini_get( 'max_execution_time' ),
+			),
+		);
 	}
 
 	public function get_new_package_path( $type = 'snapshot' ) {
@@ -257,20 +307,20 @@ class File_System_Service {
 			'temp'            => $operation_open ? $this->skipped_cleanup_summary( 'temp', 'operation_running' ) : $this->cleanup_directory_children(
 				$this->get_temp_dir(),
 				$min_age_seconds,
-				array( 'index.php', '.htaccess', 'operation.lock' ),
+				array( 'index.php', '.htaccess', 'operation.lock', 'upload-chunks' ),
 				'temp'
 			),
 			'incoming'        => $operation_open ? $this->skipped_cleanup_summary( 'incoming', 'operation_running' ) : $this->cleanup_directory_children(
 				$this->get_incoming_dir(),
 				$min_age_seconds,
-				array( 'index.php', '.htaccess', 'chunks' ),
+				array( 'index.php', '.htaccess' ),
 				'incoming'
 			),
-			'incoming_chunks' => $operation_open ? $this->skipped_cleanup_summary( 'incoming_chunks', 'operation_running' ) : $this->cleanup_directory_children(
-				normalize_path( $this->get_incoming_dir() . '/chunks' ),
+			'upload_chunks'   => $operation_open ? $this->skipped_cleanup_summary( 'upload_chunks', 'operation_running' ) : $this->cleanup_directory_children(
+				$this->get_upload_chunks_dir(),
 				$min_age_seconds,
 				array( 'index.php', '.htaccess' ),
-				'incoming_chunks'
+				'upload_chunks'
 			),
 		);
 
@@ -365,6 +415,82 @@ class File_System_Service {
 		}
 
 		return $summary;
+	}
+
+	private function diagnose_directory( $scope, $path, $required_bytes = 0 ) {
+		$path           = normalize_path( $path );
+		$errors         = array();
+		$created        = ensure_directory( $path );
+		$exists         = file_exists( $path );
+		$is_dir         = is_dir( $path );
+		$writable       = $is_dir && is_writable( $path );
+		$write_test     = false;
+		$free_bytes     = $this->safe_disk_free_space( $path );
+		$total_bytes    = $this->safe_disk_total_space( $path );
+		$required_bytes = max( 0, (int) $required_bytes );
+
+		if ( ! $created ) {
+			$errors[] = 'directory_create_failed';
+		}
+
+		if ( ! $exists ) {
+			$errors[] = 'directory_missing';
+		} elseif ( ! $is_dir ) {
+			$errors[] = 'path_is_not_directory';
+		}
+
+		if ( $is_dir && ! $writable ) {
+			$errors[] = 'directory_not_writable';
+		}
+
+		if ( $is_dir && $writable ) {
+			$test_path = normalize_path( $path . '/agsb-write-test-' . wp_generate_password( 8, false, false ) . '.tmp' );
+			$written   = @file_put_contents( $test_path, 'ok', LOCK_EX );
+			$write_test = false !== $written && file_exists( $test_path );
+
+			if ( file_exists( $test_path ) ) {
+				@unlink( $test_path );
+			}
+
+			if ( ! $write_test ) {
+				$errors[] = 'write_test_failed';
+			}
+		}
+
+		if ( null !== $free_bytes && $required_bytes > 0 && $free_bytes < $required_bytes ) {
+			$errors[] = 'free_space_below_required';
+		}
+
+		return array(
+			'scope'               => $scope,
+			'path'                => $path,
+			'ok'                  => empty( $errors ),
+			'exists'              => $exists,
+			'is_dir'              => $is_dir,
+			'writable'            => $writable,
+			'write_test'          => $write_test,
+			'free_bytes'          => $free_bytes,
+			'free_human'          => null === $free_bytes ? '' : format_bytes( $free_bytes ),
+			'total_bytes'         => $total_bytes,
+			'total_human'         => null === $total_bytes ? '' : format_bytes( $total_bytes ),
+			'required_free_bytes' => $required_bytes,
+			'required_free_human' => format_bytes( $required_bytes ),
+			'errors'              => $errors,
+		);
+	}
+
+	private function safe_disk_free_space( $path ) {
+		$target = is_dir( $path ) ? $path : dirname( $path );
+		$value  = @disk_free_space( $target );
+
+		return false === $value ? null : (int) $value;
+	}
+
+	private function safe_disk_total_space( $path ) {
+		$target = is_dir( $path ) ? $path : dirname( $path );
+		$value  = @disk_total_space( $target );
+
+		return false === $value ? null : (int) $value;
 	}
 
 	private function is_path_old_enough( $path, $min_age_seconds ) {

@@ -42,6 +42,16 @@ class Http_Client {
 		return $this->request_json( 'GET', '/ag-sync-bridge/v1/status' );
 	}
 
+	public function remote_doctor( $required_bytes = 0 ) {
+		return $this->request_json(
+			'POST',
+			'/ag-sync-bridge/v1/doctor',
+			array(
+				'required_bytes' => max( 0, (int) $required_bytes ),
+			)
+		);
+	}
+
 	public function create_remote_snapshot( $type = 'manual-remote-snapshot' ) {
 		return $this->request_json(
 			'POST',
@@ -817,6 +827,7 @@ class Http_Client {
 				$result = $this->upload_chunk_with_retry( $url_chunk, $headers, $chunk, $index, $total_chunks );
 
 				if ( is_wp_error( $result ) ) {
+					$this->abort_chunked_upload( $upload_id );
 					return new WP_Error( 'ag_sync_bridge_chunk_upload_failed', $this->normalize_chunk_error( $result ), $result->get_error_data() );
 				}
 
@@ -851,6 +862,7 @@ class Http_Client {
 		);
 
 		if ( is_wp_error( $finish ) ) {
+			$this->abort_chunked_upload( $upload_id );
 			return new WP_Error( 'ag_sync_bridge_chunk_finish_failed', $this->normalize_chunk_error( $finish ), $finish->get_error_data() );
 		}
 
@@ -859,6 +871,30 @@ class Http_Client {
 		}
 
 		return $finish;
+	}
+
+	private function abort_chunked_upload( $upload_id ) {
+		if ( '' === (string) $upload_id ) {
+			return;
+		}
+
+		$result = $this->request_json(
+			'POST',
+			'/ag-sync-bridge/v1/snapshot/upload-abort',
+			array(
+				'upload_id' => sanitize_key( (string) $upload_id ),
+			)
+		);
+
+		if ( is_wp_error( $result ) ) {
+			$this->logger->warning(
+				'Unable to abort remote chunked upload after failure.',
+				array(
+					'upload_id' => $upload_id,
+					'error'     => $result->get_error_message(),
+				)
+			);
+		}
 	}
 
 	private function upload_chunk_with_retry( $url, array $headers, $chunk, $index, $total_chunks ) {
@@ -882,7 +918,7 @@ class Http_Client {
 				return $result;
 			}
 
-			if ( ! $this->is_transient_transport_error( $result ) || $attempt >= $attempts ) {
+			if ( ! $this->is_retryable_chunk_upload_error( $result ) || $attempt >= $attempts ) {
 				return $result;
 			}
 
@@ -901,6 +937,24 @@ class Http_Client {
 		return $result;
 	}
 
+	private function is_retryable_chunk_upload_error( WP_Error $result ) {
+		if ( $this->is_transient_transport_error( $result ) ) {
+			return true;
+		}
+
+		$data = $result->get_error_data();
+		$body = is_array( $data ) ? (string) array_get( $data, 'body', '' ) : '';
+		$decoded = json_decode( $body, true );
+		$code    = is_array( $decoded ) ? (string) array_get( $decoded, 'code', '' ) : '';
+
+		if ( in_array( $code, array( 'ag_sync_bridge_chunk_write_failed', 'ag_sync_bridge_chunk_write_incomplete', 'ag_sync_bridge_chunk_dir_failed' ), true ) ) {
+			return false;
+		}
+
+		$status = $this->get_remote_http_error_status( $result );
+		return in_array( $status, array( 408, 425, 429, 500, 502, 503, 504 ), true );
+	}
+
 	private function normalize_upload_error( $message ) {
 		$message = trim( (string) $message );
 
@@ -915,9 +969,27 @@ class Http_Client {
 		$message = $error->get_error_message();
 		$data    = $error->get_error_data();
 		$body    = is_array( $data ) ? (string) array_get( $data, 'body', '' ) : '';
+		$decoded = json_decode( $body, true );
+		$code    = is_array( $decoded ) ? (string) array_get( $decoded, 'code', '' ) : '';
+		$remote_message = is_array( $decoded ) ? (string) array_get( $decoded, 'message', '' ) : '';
 
 		if ( false !== stripos( $message, 'status 404' ) || false !== stripos( $body, 'rest_no_route' ) ) {
 			return __( 'Il sito live non espone ancora gli endpoint di upload chunked. Aggiorna AG Sync Bridge anche sul live e riprova il push.', 'ag-sync-bridge' );
+		}
+
+		if ( in_array( $code, array( 'ag_sync_bridge_chunk_write_failed', 'ag_sync_bridge_chunk_write_incomplete', 'ag_sync_bridge_chunk_dir_failed' ), true ) ) {
+			return trim(
+				sprintf(
+					/* translators: 1: remote error code, 2: remote error message */
+					__( 'Il live non riesce a salvare i chunk dello snapshot (%1$s: %2$s). Controlla spazio disco, quota hosting e permessi di wp-content/ag-sync-bridge-data/temp/upload-chunks sul server live.', 'ag-sync-bridge' ),
+					$code,
+					$remote_message ? $remote_message : $message
+				)
+			);
+		}
+
+		if ( '' !== $code && '' !== $remote_message ) {
+			return sprintf( '%s: %s', $code, $remote_message );
 		}
 
 		return $this->normalize_upload_error( $message );

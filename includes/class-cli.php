@@ -56,6 +56,47 @@ if ( defined( 'WP_CLI' ) && WP_CLI ) {
 		}
 
 		/**
+		 * Checks local and remote AG Sync storage prerequisites.
+		 *
+		 * ## OPTIONS
+		 *
+		 * [--required-bytes=<bytes>]
+		 * : Minimum free bytes required on each runtime filesystem.
+		 *
+		 * [--skip-remote]
+		 * : Only check the current site.
+		 */
+		public function doctor( $args, $assoc_args ) {
+			unset( $args );
+
+			$required_bytes = isset( $assoc_args['required-bytes'] ) ? max( 0, (int) $assoc_args['required-bytes'] ) : self::estimate_required_bytes_for_doctor();
+			$local          = self::$file_system->diagnose_runtime_storage( $required_bytes );
+			$ok             = self::log_doctor_result( 'Local', $local );
+
+			if ( empty( $assoc_args['skip-remote'] ) && self::$config->get_remote_url() && self::$config->get_secret() ) {
+				$client = new Http_Client( self::$config, self::$logger );
+				$remote = $client->remote_doctor( $required_bytes );
+
+				if ( is_wp_error( $remote ) ) {
+					$ok = false;
+					\WP_CLI::warning( 'Remote doctor failed: ' . $remote->get_error_message() );
+					$data = $remote->get_error_data();
+					if ( is_array( $data ) && ! empty( $data['body'] ) ) {
+						\WP_CLI::log( 'Remote body: ' . (string) $data['body'] );
+					}
+				} else {
+					$ok = self::log_doctor_result( 'Remote', $remote ) && $ok;
+				}
+			}
+
+			if ( ! $ok ) {
+				\WP_CLI::error( 'AG Sync doctor found blocking issues.' );
+			}
+
+			\WP_CLI::success( 'AG Sync doctor passed.' );
+		}
+
+		/**
 		 * Shows the current AG Sync lock.
 		 */
 		public function lock() {
@@ -237,6 +278,52 @@ if ( defined( 'WP_CLI' ) && WP_CLI ) {
 			\WP_CLI::log( 'Deleted files: ' . (int) array_get( $total, 'deleted_files', 0 ) );
 			\WP_CLI::log( 'Deleted directories: ' . (int) array_get( $total, 'deleted_dirs', 0 ) );
 			\WP_CLI::log( 'Freed bytes: ' . (int) array_get( $total, 'deleted_bytes', 0 ) );
+		}
+
+		private static function estimate_required_bytes_for_doctor() {
+			$list   = self::$file_system->list_packages( 'snapshots', 1, false );
+			$latest = empty( $list ) ? array() : $list[0];
+			$size   = (int) array_get( $latest, 'size_bytes', 0 );
+			$path   = (string) array_get( $latest, 'path', '' );
+
+			if ( $size <= 0 && $path && file_exists( $path ) ) {
+				$size = (int) filesize( $path );
+			}
+
+			return $size > 0 ? $size * 2 : 268435456;
+		}
+
+		private static function log_doctor_result( $label, array $result ) {
+			$ok = ! empty( $result['ok'] );
+			\WP_CLI::log( $label . ' doctor: ' . ( $ok ? 'ok' : 'failed' ) );
+			\WP_CLI::log( 'Required free space: ' . array_get( $result, 'required_free_human', format_bytes( (int) array_get( $result, 'required_free_bytes', 0 ) ) ) );
+
+			$directories = array_get( $result, 'directories', array() );
+			if ( ! is_array( $directories ) ) {
+				return $ok;
+			}
+
+			foreach ( $directories as $scope => $directory ) {
+				$dir_ok = ! empty( $directory['ok'] );
+				\WP_CLI::log(
+					sprintf(
+						'  - %s: %s, writable=%s, write_test=%s, free=%s, path=%s',
+						$scope,
+						$dir_ok ? 'ok' : 'failed',
+						! empty( $directory['writable'] ) ? 'yes' : 'no',
+						! empty( $directory['write_test'] ) ? 'yes' : 'no',
+						(string) array_get( $directory, 'free_human', '' ),
+						(string) array_get( $directory, 'path', '' )
+					)
+				);
+
+				$errors = array_get( $directory, 'errors', array() );
+				if ( is_array( $errors ) && ! empty( $errors ) ) {
+					\WP_CLI::log( '    errors: ' . implode( ', ', $errors ) );
+				}
+			}
+
+			return $ok;
 		}
 	}
 } else {
