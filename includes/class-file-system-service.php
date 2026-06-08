@@ -299,7 +299,8 @@ class File_System_Service {
 		$state           = $this->config->get_state();
 		$operation       = array_get( $state, 'current_operation', array() );
 		$remote_import   = array_get( $state, 'remote_import_operation', array() );
-		$operation_open  = is_array( $operation ) && ! empty( $operation ) && empty( array_get( $operation, 'finished_at', '' ) );
+		$operation_status = is_array( $operation ) ? (string) array_get( $operation, 'status', '' ) : '';
+		$operation_open  = is_array( $operation ) && ! empty( $operation ) && in_array( $operation_status, array( 'queued', 'running' ), true );
 		$operation_open  = $operation_open || ( is_array( $remote_import ) && in_array( array_get( $remote_import, 'status', '' ), array( 'queued', 'running' ), true ) );
 		$results         = array(
 			'snapshots'       => $this->cleanup_old_packages( 'snapshots', $snapshot_retention ),

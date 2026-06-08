@@ -646,9 +646,12 @@ class Rest_Controller {
 		if ( is_wp_error( $result ) ) {
 			$operation['status']     = 'error';
 			$operation['updated_at'] = gmdate( 'c' );
+			$operation['finished_at'] = gmdate( 'c' );
 			$operation['message']    = $result->get_error_message();
 			$operation['data']       = $result->get_error_data();
 			$this->config->set_state_value( 'remote_import_operation', $operation );
+			$this->file_system->cleanup_path( $path );
+			$this->file_system->cleanup_runtime_storage( null, null, 0 );
 			$this->logger->error( 'Remote async import failed.', $operation );
 			return;
 		}
@@ -657,8 +660,10 @@ class Rest_Controller {
 
 		$operation['status']     = 'complete';
 		$operation['updated_at'] = gmdate( 'c' );
+		$operation['finished_at'] = gmdate( 'c' );
 		$operation['result']     = $result;
 		$this->config->set_state_value( 'remote_import_operation', $operation );
+		$this->file_system->cleanup_runtime_storage( null, null, 0 );
 		$this->logger->info( 'Remote async import completed.', $operation );
 	}
 

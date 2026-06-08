@@ -18,7 +18,7 @@ class Config {
 			'storage_dir'          => '',
 			'auto_pull_enabled'    => false,
 			'include_htaccess'     => false,
-			'retention_count'      => 3,
+			'retention_count'      => 1,
 			'request_timeout'      => 900,
 			'exclude_patterns'     => implode( "\n", $this->get_default_exclude_patterns() ),
 			'external_backup_dirs' => '',
@@ -35,6 +35,7 @@ class Config {
 			'last_authenticated_request' => array(),
 			'current_operation'  => array(),
 			'last_operation_log' => '',
+			'storage_policy_version' => AG_SYNC_BRIDGE_VERSION,
 		);
 	}
 
@@ -50,12 +51,25 @@ class Config {
 			$stored['shared_secret'] = wp_generate_password( 64, true, true );
 		}
 
+		$state = get_option( self::OPTION_STATE, false );
+		$state = is_array( $state ) ? $state : array();
+
+		$storage_policy_version = (string) array_get( $state, 'storage_policy_version', '0' );
+		$needs_storage_policy_migration = version_compare( $storage_policy_version, '0.1.24', '<' );
+
+		if ( $needs_storage_policy_migration && ! defined( 'AG_SYNC_BRIDGE_RETENTION_COUNT' ) && isset( $stored['retention_count'] ) && 3 === absint( $stored['retention_count'] ) ) {
+			$stored['retention_count'] = 1;
+		}
+
 		$stored['storage_dir'] = $this->normalize_storage_dir( array_get( $stored, 'storage_dir', '' ) );
 
 		update_option( self::OPTION_SETTINGS, wp_parse_args( $stored, $this->get_defaults() ), false );
 
 		if ( false === get_option( self::OPTION_STATE, false ) ) {
 			add_option( self::OPTION_STATE, $this->get_default_state(), '', false );
+		} elseif ( $needs_storage_policy_migration ) {
+			$state['storage_policy_version'] = AG_SYNC_BRIDGE_VERSION;
+			update_option( self::OPTION_STATE, wp_parse_args( $state, $this->get_default_state() ), false );
 		}
 
 		if ( false === get_option( self::OPTION_RECENT_LOGS, false ) ) {
@@ -84,7 +98,7 @@ class Config {
 		$storage_dir = isset( $input['storage_dir'] ) ? trim( wp_unslash( (string) $input['storage_dir'] ) ) : '';
 		$storage_dir = $this->normalize_storage_dir( $storage_dir );
 
-		$retention_count = isset( $input['retention_count'] ) ? absint( $input['retention_count'] ) : 3;
+		$retention_count = isset( $input['retention_count'] ) ? absint( $input['retention_count'] ) : 1;
 		$retention_count = max( 1, min( 10, $retention_count ) );
 
 		$request_timeout = isset( $input['request_timeout'] ) ? absint( $input['request_timeout'] ) : 300;

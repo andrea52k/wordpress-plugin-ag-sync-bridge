@@ -95,11 +95,23 @@ class Sync_Service {
 	}
 
 	public function create_snapshot( $type = 'manual-snapshot', array $context = array() ) {
-		return $this->exporter->create_snapshot( $type, $context );
+		$result = $this->exporter->create_snapshot( $type, $context );
+
+		if ( ! is_wp_error( $result ) ) {
+			$this->cleanup_local_runtime_storage( 'snapshot' );
+		}
+
+		return $result;
 	}
 
 	public function create_backup( $type = 'manual-backup', array $context = array() ) {
-		return $this->exporter->create_snapshot( $type, $context );
+		$result = $this->exporter->create_snapshot( $type, $context );
+
+		if ( ! is_wp_error( $result ) ) {
+			$this->cleanup_local_runtime_storage( 'backup' );
+		}
+
+		return $result;
 	}
 
 	public function pull_from_remote( array $args = array() ) {
@@ -196,6 +208,10 @@ class Sync_Service {
 					)
 				);
 			}
+
+			$this->complete_operation( 'pull', __( 'Pull completed.', 'ag-sync-bridge' ) );
+			$this->cleanup_local_runtime_storage( 'pull' );
+			$this->cleanup_remote_runtime_storage( 'pull' );
 
 			return array(
 				'backup' => $local_backup,
@@ -300,6 +316,10 @@ class Sync_Service {
 					'remote_import' => $remote_import,
 				)
 			);
+
+			$this->complete_operation( 'push', __( 'Push completed.', 'ag-sync-bridge' ) );
+			$this->cleanup_local_runtime_storage( 'push' );
+			$this->cleanup_remote_runtime_storage( 'push' );
 
 			return array(
 				'remote_backup' => $remote_backup,
@@ -430,6 +450,9 @@ class Sync_Service {
 				)
 			);
 
+			$this->complete_operation( 'restore', __( 'Restore completed.', 'ag-sync-bridge' ) );
+			$this->cleanup_local_runtime_storage( 'restore' );
+
 			return $response;
 		} finally {
 			$this->lock_manager->release();
@@ -449,8 +472,16 @@ class Sync_Service {
 			'user_id'    => get_current_user_id(),
 		);
 
+		if ( in_array( $state['status'], array( 'complete', 'failed' ), true ) ) {
+			$state['finished_at'] = gmdate( 'c' );
+		}
+
 		$this->config->set_state_value( 'current_operation', $state );
 		$this->lock_manager->touch( $state );
+	}
+
+	private function complete_operation( $operation, $message ) {
+		$this->update_operation( $operation, 100, 'complete', $message, 'complete' );
 	}
 
 	private function fail_operation( $operation, WP_Error $error ) {
@@ -462,5 +493,62 @@ class Sync_Service {
 			)
 		);
 		$this->update_operation( $operation, (int) array_get( array_get( $this->config->get_state(), 'current_operation', array() ), 'progress', 0 ), 'error', $error->get_error_message(), 'failed' );
+		$this->cleanup_local_runtime_storage( 'failed-' . sanitize_key( $operation ) );
+
+		if ( 'push' === sanitize_key( $operation ) ) {
+			$this->cleanup_remote_runtime_storage( 'failed-push' );
+		}
+	}
+
+	private function cleanup_local_runtime_storage( $context ) {
+		$result = $this->file_system->cleanup_runtime_storage( null, null, 0 );
+		$total  = array_get( $result, 'total', array() );
+
+		$this->logger->info(
+			'Local runtime cleanup completed.',
+			array(
+				'context'          => $context,
+				'deleted_files'    => (int) array_get( $total, 'deleted_files', 0 ),
+				'deleted_dirs'     => (int) array_get( $total, 'deleted_dirs', 0 ),
+				'deleted_bytes'    => (int) array_get( $total, 'deleted_bytes', 0 ),
+				'temp_min_hours'   => 0,
+				'retention_count'  => (int) $this->config->get( 'retention_count', 1 ),
+			)
+		);
+	}
+
+	private function cleanup_remote_runtime_storage( $context ) {
+		if ( ! $this->config->get_remote_url() || ! $this->config->get_secret() ) {
+			return;
+		}
+
+		$result = $this->http_client->cleanup_remote_storage(
+			array(
+				'temp_hours' => 0,
+			)
+		);
+
+		if ( is_wp_error( $result ) ) {
+			$this->logger->warning(
+				'Remote runtime cleanup failed.',
+				array(
+					'context' => $context,
+					'error'   => $result->get_error_message(),
+					'data'    => $result->get_error_data(),
+				)
+			);
+			return;
+		}
+
+		$total = array_get( $result, 'total', array() );
+		$this->logger->info(
+			'Remote runtime cleanup completed.',
+			array(
+				'context'       => $context,
+				'deleted_files' => (int) array_get( $total, 'deleted_files', 0 ),
+				'deleted_dirs'  => (int) array_get( $total, 'deleted_dirs', 0 ),
+				'deleted_bytes' => (int) array_get( $total, 'deleted_bytes', 0 ),
+			)
+		);
 	}
 }

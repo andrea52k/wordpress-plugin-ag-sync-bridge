@@ -220,6 +220,11 @@ write tests, fix server quota/permissions first. Do not use
 `--skip-remote-backup` as a workaround unless a fresh live backup already
 completed and the server storage issue is understood.
 
+From `0.1.24`, completed and failed operations mark their operation state as
+finished and trigger runtime cleanup automatically. The default retention for
+snapshots/backups is `1`; existing sites still on the old default `3` are
+migrated down to `1` once, unless `AG_SYNC_BRIDGE_RETENTION_COUNT` is defined.
+
 ### Plugin Deactivated: File Does Not Exist
 
 Symptom:

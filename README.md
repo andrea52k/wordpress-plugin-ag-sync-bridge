@@ -20,7 +20,7 @@ Se devi modificare o gestire il plugin da un agente automatico, leggi prima:
 
 ## Versione
 
-Versione plugin: `0.1.23`
+Versione plugin: `0.1.24`
 
 Slug tecnico WordPress: `ag-sync-bridge`
 
@@ -55,6 +55,7 @@ Il plugin esclude la propria cartella dal full overwrite per non interrompere op
 - Upload snapshot diretto o a chunk form-encoded, compatibile con hosting che svuotano il raw body REST
 - Import remoto asincrono con polling dello stato remoto
 - Preflight `doctor` locale/remoto per spazio, permessi e test scrittura prima dei push
+- Pulizia automatica di snapshot, backup, incoming, temp e upload chunk dopo operazioni e fallimenti
 - Backup automatico prima di pull e push
 - Restore locale da backup
 - Cleanup storage locale e remoto
@@ -153,6 +154,7 @@ L'import sul live viene accettato in modalita asincrona, pianificato come evento
 - Backup: `wp-content/ag-sync-bridge-data/backups`
 - Snapshot: `wp-content/ag-sync-bridge-data/snapshots`
 - Log: `wp-content/ag-sync-bridge-data/logs`
+- Temp/incoming/chunk upload: puliti automaticamente dopo operazioni concluse o fallite
 - Restore locale disponibile dalla UI admin
 - Restore da ZIP/cartella esterna configurabile nelle impostazioni
 
