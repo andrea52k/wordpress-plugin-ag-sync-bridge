@@ -209,7 +209,8 @@ class Rest_Controller {
 
 	public function doctor( WP_REST_Request $request ) {
 		$required_bytes = max( 0, (int) $request->get_param( 'required_bytes' ) );
-		$diagnostics    = $this->file_system->diagnose_runtime_storage( $required_bytes );
+		$deep           = (bool) $request->get_param( 'deep' );
+		$diagnostics    = $this->file_system->diagnose_runtime_storage( $required_bytes, $deep );
 		$diagnostics['site_url']  = site_url();
 		$diagnostics['home_url']  = home_url();
 		$diagnostics['role']      = $this->config->get_role();
@@ -562,9 +563,31 @@ class Rest_Controller {
 		$sha256   = sanitize_text_field( (string) $request->get_param( 'expected_sha256' ) );
 		$path     = normalize_path( $this->file_system->get_incoming_dir() . '/' . $snapshot );
 		$async    = (bool) $request->get_param( 'async' );
+		$allow_partial_snapshot = (bool) $request->get_param( 'allow_partial_snapshot' );
 
 		if ( ! file_exists( $path ) ) {
 			return new WP_Error( 'ag_sync_bridge_remote_import_missing', __( 'Uploaded snapshot file is missing.', 'ag-sync-bridge' ), array( 'status' => 404 ) );
+		}
+
+		if ( ! $allow_partial_snapshot ) {
+			$validation = $this->file_system->validate_full_snapshot_package( $path );
+			if ( is_wp_error( $validation ) ) {
+				return new WP_Error(
+					$validation->get_error_code(),
+					$validation->get_error_message(),
+					array(
+						'status'     => 400,
+						'validation' => $validation->get_error_data(),
+					)
+				);
+			}
+		} else {
+			$this->logger->warning(
+				'Remote import accepted with partial snapshot override.',
+				array(
+					'snapshot' => $snapshot,
+				)
+			);
 		}
 
 		if ( $async ) {

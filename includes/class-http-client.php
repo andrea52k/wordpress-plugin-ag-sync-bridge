@@ -42,12 +42,13 @@ class Http_Client {
 		return $this->request_json( 'GET', '/ag-sync-bridge/v1/status' );
 	}
 
-	public function remote_doctor( $required_bytes = 0 ) {
+	public function remote_doctor( $required_bytes = 0, $deep = false ) {
 		return $this->request_json(
 			'POST',
 			'/ag-sync-bridge/v1/doctor',
 			array(
 				'required_bytes' => max( 0, (int) $required_bytes ),
+				'deep'           => $deep ? 1 : 0,
 			)
 		);
 	}
@@ -492,14 +493,15 @@ class Http_Client {
 		return $result;
 	}
 
-	public function trigger_remote_import( $snapshot_basename, $expected_sha256 ) {
+	public function trigger_remote_import( $snapshot_basename, $expected_sha256, $allow_partial_snapshot = false ) {
 		$result = $this->request_json(
 			'POST',
 			'/ag-sync-bridge/v1/snapshot/import',
 			array(
-				'snapshot'        => basename( $snapshot_basename ),
-				'expected_sha256' => $expected_sha256,
-				'async'           => true,
+				'snapshot'               => basename( $snapshot_basename ),
+				'expected_sha256'        => $expected_sha256,
+				'async'                  => true,
+				'allow_partial_snapshot' => $allow_partial_snapshot ? 1 : 0,
 			)
 		);
 

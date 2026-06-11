@@ -20,7 +20,7 @@ Se devi modificare o gestire il plugin da un agente automatico, leggi prima:
 
 ## Versione
 
-Versione plugin: `0.1.24`
+Versione plugin: `0.1.25`
 
 Slug tecnico WordPress: `ag-sync-bridge`
 
@@ -55,6 +55,9 @@ Il plugin esclude la propria cartella dal full overwrite per non interrompere op
 - Upload snapshot diretto o a chunk form-encoded, compatibile con hosting che svuotano il raw body REST
 - Import remoto asincrono con polling dello stato remoto
 - Preflight `doctor` locale/remoto per spazio, permessi e test scrittura prima dei push
+- Manifest snapshot con scope `full`/`partial` e blocco dei push che riusano snapshot non completi
+- Controllo root sitemap/XML per evitare DB o sitemap index che puntano a file non presenti
+- Estrazione ZIP entry-by-entry con diagnostica del file che fallisce
 - Pulizia automatica di snapshot, backup, incoming, temp e upload chunk dopo operazioni e fallimenti
 - Backup automatico prima di pull e push
 - Restore locale da backup
@@ -134,11 +137,13 @@ Quando premi `Invia il locale al live`:
 2. Il locale esegue un preflight remoto su storage, permessi e test scrittura.
 3. Il live crea un backup automatico.
 4. Il locale crea uno snapshot completo.
-5. Lo snapshot viene caricato sul live.
-6. Il live importa database e file.
-7. Il live esegue replace URL locale -> live.
-8. Il live riscrive URL locale -> live nei dataset V4MPG supportati.
-9. Il plugin scrive log e aggiorna lo stato.
+5. Lo snapshot viene validato localmente: ZIP estraibile, manifest `full`, database, componenti e sitemap root coerenti.
+6. Lo snapshot viene caricato sul live.
+7. Il live rifiuta snapshot non `full`, salvo override esplicito di recovery.
+8. Il live importa database e file.
+9. Il live esegue replace URL locale -> live.
+10. Il live riscrive URL locale -> live nei dataset V4MPG supportati.
+11. Il plugin scrive log e aggiorna lo stato.
 
 L'import sul live viene accettato in modalita asincrona, pianificato come evento WordPress cron singolo e monitorato dal locale con polling dello stato remoto. Questo evita che una chiusura SSL/proxy durante un import lungo venga interpretata come fallimento immediato del deploy.
 
@@ -169,6 +174,7 @@ L'import sul live viene accettato in modalita asincrona, pianificato come evento
 ```bash
 wp agsync status
 wp agsync doctor
+wp agsync doctor --deep
 wp agsync snapshot --type=manual
 wp agsync pull
 wp agsync push
@@ -240,6 +246,8 @@ Da `0.1.17`, cliccare `Bacheca > Aggiornamenti > Verifica di nuovo` forza anche 
 
 - Snapshot molto grandi possono richiedere tempi lunghi su hosting condiviso.
 - Se `ZipArchive` manca, il plugin non puo creare/importare snapshot ZIP.
+- `wp agsync push --use-existing-snapshot` riusa solo snapshot marcati `full`; vecchi pacchetti senza scope vengono bloccati.
+- `--allow-partial-snapshot` esiste solo per recovery deliberate e puo omettere file dal live.
 - Il fallback PHP per import/export DB e piu lento di `mysqldump/mysql`.
 - `.htaccess` viene sovrascritto solo se abilitato.
 - `wp-config.php` viene importato con merge dei valori ambiente-specifici del target.
@@ -255,6 +263,7 @@ Da `0.1.17`, cliccare `Bacheca > Aggiornamenti > Verifica di nuovo` forza anche 
 - Stato connessione e schedule visibili con indicatori colore
 - Test connessione riuscito
 - Snapshot manuale creato correttamente
+- Snapshot con scope `full` e sitemap root coerenti
 - Checksum SHA-256 verificato
 - Validazione import package riuscita
 - Pull locale da live eseguibile

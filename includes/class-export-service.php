@@ -58,10 +58,13 @@ class Export_Service {
 			return $result;
 		}
 
-		$entries = $this->file_system->get_export_entries();
-		$manifest = array(
+		$entries            = $this->file_system->get_export_entries();
+		$snapshot_integrity = $this->file_system->get_snapshot_integrity_for_export( $entries );
+		$manifest           = array(
 			'id'               => wp_generate_uuid4(),
 			'type'             => sanitize_key( $type ),
+			'snapshot_scope'   => 'full',
+			'is_full_snapshot' => true,
 			'created_at'       => gmdate( 'c' ),
 			'source_site_url'  => site_url(),
 			'source_home_url'  => home_url(),
@@ -69,6 +72,11 @@ class Export_Service {
 			'source_role'      => $this->config->get_role(),
 			'source_table_prefix' => $this->database->get_table_prefix(),
 			'entries_included' => wp_list_pluck( $entries, 'component' ),
+			'root_sync_files'  => array_get( $snapshot_integrity, 'root_sync_files', array() ),
+			'sitemap_integrity'=> array_get( $snapshot_integrity, 'sitemap_integrity', array() ),
+			'full_snapshot_requirements' => array(
+				'required_components' => wp_list_pluck( $entries, 'component' ),
+			),
 			'exclude_patterns' => $this->config->get_exclude_patterns(),
 			'context'          => $context,
 		);

@@ -84,19 +84,181 @@ class Archive_Service {
 			return new WP_Error( 'ag_sync_bridge_zip_missing', __( 'ZipArchive is not available on this server.', 'ag-sync-bridge' ) );
 		}
 
+		if ( ! ensure_directory( $target_dir ) ) {
+			return new WP_Error(
+				'ag_sync_bridge_zip_extract_target',
+				__( 'Unable to prepare snapshot extraction directory.', 'ag-sync-bridge' ),
+				array(
+					'package'    => normalize_path( $package_path ),
+					'target_dir' => normalize_path( $target_dir ),
+				)
+			);
+		}
+
 		$zip = new ZipArchive();
 
-		if ( true !== $zip->open( $package_path ) ) {
-			return new WP_Error( 'ag_sync_bridge_zip_open', __( 'Unable to open snapshot archive.', 'ag-sync-bridge' ) );
+		$open_result = $zip->open( $package_path );
+		if ( true !== $open_result ) {
+			return new WP_Error(
+				'ag_sync_bridge_zip_open',
+				__( 'Unable to open snapshot archive.', 'ag-sync-bridge' ),
+				array(
+					'package' => normalize_path( $package_path ),
+					'status'  => $open_result,
+				)
+			);
 		}
 
-		if ( ! $zip->extractTo( $target_dir ) ) {
-			$zip->close();
-			return new WP_Error( 'ag_sync_bridge_zip_extract', __( 'Unable to extract snapshot archive.', 'ag-sync-bridge' ) );
-		}
+		$result = $this->extract_entries( $zip, $package_path, $target_dir );
+		$status = $zip->status;
 
 		$zip->close();
+
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+
+		if ( 0 !== (int) $status ) {
+			return new WP_Error(
+				'ag_sync_bridge_zip_extract_status',
+				__( 'Snapshot archive extraction completed with a ZIP status error.', 'ag-sync-bridge' ),
+				array(
+					'package'    => normalize_path( $package_path ),
+					'target_dir' => normalize_path( $target_dir ),
+					'zip_status' => $status,
+				)
+			);
+		}
+
 		return true;
+	}
+
+	private function extract_entries( ZipArchive $zip, $package_path, $target_dir ) {
+		for ( $index = 0; $index < $zip->numFiles; $index++ ) {
+			$stat = $zip->statIndex( $index );
+
+			if ( ! is_array( $stat ) || empty( $stat['name'] ) ) {
+				return new WP_Error(
+					'ag_sync_bridge_zip_entry_stat',
+					__( 'Unable to read snapshot archive entry metadata.', 'ag-sync-bridge' ),
+					array(
+						'package' => normalize_path( $package_path ),
+						'index'   => $index,
+					)
+				);
+			}
+
+			$name   = str_replace( '\\', '/', (string) $stat['name'] );
+			$target = $this->resolve_zip_entry_target( $target_dir, $name );
+
+			if ( is_wp_error( $target ) ) {
+				return $target;
+			}
+
+			if ( '/' === substr( $name, -1 ) ) {
+				if ( ! ensure_directory( $target ) ) {
+					return $this->zip_extract_error( 'ag_sync_bridge_zip_entry_dir', $package_path, $target_dir, $name, $target );
+				}
+				continue;
+			}
+
+			if ( ! ensure_directory( dirname( $target ) ) ) {
+				return $this->zip_extract_error( 'ag_sync_bridge_zip_entry_parent', $package_path, $target_dir, $name, dirname( $target ) );
+			}
+
+			$source = $zip->getStream( $name );
+			if ( false === $source ) {
+				return $this->zip_extract_error( 'ag_sync_bridge_zip_entry_open', $package_path, $target_dir, $name, $target );
+			}
+
+			$destination = fopen( $target, 'wb' );
+			if ( false === $destination ) {
+				fclose( $source );
+				return $this->zip_extract_error( 'ag_sync_bridge_zip_entry_write_open', $package_path, $target_dir, $name, $target );
+			}
+
+			while ( ! feof( $source ) ) {
+				$buffer = fread( $source, 1048576 );
+				if ( false === $buffer ) {
+					fclose( $source );
+					fclose( $destination );
+					return $this->zip_extract_error( 'ag_sync_bridge_zip_entry_read', $package_path, $target_dir, $name, $target );
+				}
+
+				if ( '' !== $buffer && false === fwrite( $destination, $buffer ) ) {
+					fclose( $source );
+					fclose( $destination );
+					return $this->zip_extract_error( 'ag_sync_bridge_zip_entry_write', $package_path, $target_dir, $name, $target );
+				}
+			}
+
+			fclose( $source );
+			fclose( $destination );
+		}
+
+		return true;
+	}
+
+	private function resolve_zip_entry_target( $target_dir, $entry_name ) {
+		$entry_name = str_replace( '\\', '/', (string) $entry_name );
+
+		if ( '' === $entry_name || false !== strpos( $entry_name, "\0" ) || preg_match( '#^([a-zA-Z]:)?/#', $entry_name ) ) {
+			return new WP_Error(
+				'ag_sync_bridge_zip_entry_invalid',
+				__( 'Snapshot archive contains an invalid entry path.', 'ag-sync-bridge' ),
+				array(
+					'entry'      => $entry_name,
+					'target_dir' => normalize_path( $target_dir ),
+				)
+			);
+		}
+
+		$parts = explode( '/', $entry_name );
+		if ( in_array( '..', $parts, true ) ) {
+			return new WP_Error(
+				'ag_sync_bridge_zip_entry_traversal',
+				__( 'Snapshot archive contains an unsafe relative entry path.', 'ag-sync-bridge' ),
+				array(
+					'entry'      => $entry_name,
+					'target_dir' => normalize_path( $target_dir ),
+				)
+			);
+		}
+
+		$root   = rtrim( normalize_path( $target_dir ), '/' );
+		$target = normalize_path( $root . '/' . ltrim( $entry_name, '/' ) );
+
+		if ( 0 !== strpos( $target . '/', $root . '/' ) ) {
+			return new WP_Error(
+				'ag_sync_bridge_zip_entry_outside_target',
+				__( 'Snapshot archive entry resolves outside the extraction directory.', 'ag-sync-bridge' ),
+				array(
+					'entry'      => $entry_name,
+					'target'     => $target,
+					'target_dir' => $root,
+				)
+			);
+		}
+
+		return $target;
+	}
+
+	private function zip_extract_error( $code, $package_path, $target_dir, $entry_name, $target_path ) {
+		return new WP_Error(
+			$code,
+			sprintf(
+				/* translators: %s: archive entry path. */
+				__( 'Unable to extract snapshot archive entry: %s', 'ag-sync-bridge' ),
+				$entry_name
+			),
+			array(
+				'package'    => normalize_path( $package_path ),
+				'target_dir' => normalize_path( $target_dir ),
+				'entry'      => $entry_name,
+				'target'     => normalize_path( $target_path ),
+				'php_error'  => error_get_last(),
+			)
+		);
 	}
 
 	private function add_directory( ZipArchive $zip, $source_dir, $archive_dir, $component, callable $exclude_callback ) {

@@ -76,7 +76,7 @@ class File_System_Service {
 		return normalize_path( $dir );
 	}
 
-	public function diagnose_runtime_storage( $required_bytes = 0 ) {
+	public function diagnose_runtime_storage( $required_bytes = 0, $deep = false ) {
 		$required_bytes = max( 0, (int) $required_bytes );
 		$directories    = array(
 			'storage'       => $this->config->get_storage_dir(),
@@ -101,7 +101,7 @@ class File_System_Service {
 		$current_operation = array_get( $state, 'current_operation', array() );
 		$remote_import     = array_get( $state, 'remote_import_operation', array() );
 
-		return array(
+		$result = array(
 			'checked_at'          => gmdate( 'c' ),
 			'ok'                  => $ok,
 			'required_free_bytes' => $required_bytes,
@@ -119,6 +119,30 @@ class File_System_Service {
 				'max_execution_time' => (string) ini_get( 'max_execution_time' ),
 			),
 		);
+
+		if ( $deep ) {
+			$latest_snapshot = $this->list_packages( 'snapshots', 1, true );
+			$latest_snapshot = empty( $latest_snapshot ) ? array() : $latest_snapshot[0];
+
+			if ( ! empty( $latest_snapshot ) ) {
+				$latest_snapshot['full_snapshot_validation'] = $this->validate_full_snapshot_manifest( array_get( $latest_snapshot, 'manifest', array() ) );
+			}
+
+			$sitemap_integrity = $this->get_root_sitemap_integrity( ABSPATH );
+			if ( empty( $sitemap_integrity['ok'] ) ) {
+				$ok = false;
+			}
+
+			$result['ok']                 = $ok;
+			$result['plugin_version']     = AG_SYNC_BRIDGE_VERSION;
+			$result['ziparchive']         = array(
+				'available' => class_exists( 'ZipArchive' ),
+			);
+			$result['latest_snapshot']    = $latest_snapshot;
+			$result['sitemap_integrity']  = $sitemap_integrity;
+		}
+
+		return $result;
 	}
 
 	public function get_new_package_path( $type = 'snapshot' ) {
@@ -670,6 +694,132 @@ class File_System_Service {
 		);
 	}
 
+	public function get_snapshot_integrity_for_export( array $entries ) {
+		$included_root_files = array();
+
+		foreach ( $entries as $entry ) {
+			$archive = (string) array_get( $entry, 'archive', '' );
+			if ( 0 === strpos( $archive, 'files/root/' ) ) {
+				$included_root_files[] = basename( $archive );
+			}
+		}
+
+		$included_root_files = array_values( array_unique( array_filter( $included_root_files ) ) );
+		natcasesort( $included_root_files );
+		$included_root_files = array_values( $included_root_files );
+
+		$sitemap_integrity = $this->get_root_sitemap_integrity( ABSPATH, $included_root_files );
+
+		return array(
+			'root_sync_files'   => $included_root_files,
+			'sitemap_integrity' => $sitemap_integrity,
+		);
+	}
+
+	public function get_root_sitemap_integrity( $root_dir, array $included_root_files = null ) {
+		$root_dir = rtrim( normalize_path( $root_dir ), '/\\' );
+
+		if ( null === $included_root_files ) {
+			$included_root_files = array_keys( $this->get_root_sync_files( $root_dir ) );
+		}
+
+		$included_root_files = array_values( array_unique( array_map( 'basename', $included_root_files ) ) );
+		$required_files      = $this->get_required_root_sitemap_files( $root_dir );
+		$missing_files       = array_values( array_diff( $required_files, $included_root_files ) );
+
+		return array(
+			'ok'                          => empty( $missing_files ),
+			'root_dir'                    => $root_dir,
+			'included_root_files'         => $included_root_files,
+			'required_root_sitemap_files' => $required_files,
+			'missing_root_sitemap_files'  => $missing_files,
+		);
+	}
+
+	public function validate_full_snapshot_package( $package_path ) {
+		$manifest = $this->read_package_manifest( $package_path );
+
+		if ( empty( $manifest ) ) {
+			return new \WP_Error(
+				'ag_sync_bridge_snapshot_manifest_missing',
+				__( 'Snapshot cannot be reused for push because manifest.json is missing or unreadable.', 'ag-sync-bridge' )
+			);
+		}
+
+		$validation = $this->validate_full_snapshot_manifest( $manifest );
+
+		if ( empty( $validation['ok'] ) ) {
+			return new \WP_Error(
+				'ag_sync_bridge_snapshot_not_full',
+				__( 'Snapshot cannot be reused for push because it is not marked as a complete AG Sync snapshot.', 'ag-sync-bridge' ),
+				$validation
+			);
+		}
+
+		return $validation;
+	}
+
+	public function validate_full_snapshot_manifest( array $manifest ) {
+		$errors     = array();
+		$scope      = $this->get_snapshot_scope_from_manifest( $manifest );
+		$components = array_get( $manifest, 'components', array() );
+		$entries    = array_get( $manifest, 'entries_included', array() );
+
+		$components = is_array( $components ) ? array_keys( $components ) : array();
+		$entries    = is_array( $entries ) ? $entries : array();
+		$present    = array_values( array_unique( array_filter( array_merge( $components, $entries ) ) ) );
+
+		if ( 'full' !== $scope ) {
+			$errors[] = 'snapshot_scope_not_full';
+		}
+
+		if ( empty( $manifest['database'] ) || empty( $manifest['database']['filename'] ) ) {
+			$errors[] = 'database_missing';
+		}
+
+		$requirements       = array_get( $manifest, 'full_snapshot_requirements', array() );
+		$required_components = array_get(
+			is_array( $requirements ) ? $requirements : array(),
+			'required_components',
+			array( 'uploads', 'mpg-uploads', 'plugins', 'themes', 'wp-config.php' )
+		);
+		$required_components = is_array( $required_components ) ? $required_components : array();
+
+		foreach ( $required_components as $component ) {
+			if ( ! in_array( $component, $present, true ) ) {
+				$errors[] = 'component_missing:' . $component;
+			}
+		}
+
+		$sitemap_integrity = array_get( $manifest, 'sitemap_integrity', array() );
+		if ( is_array( $sitemap_integrity ) ) {
+			foreach ( array_get( $sitemap_integrity, 'missing_root_sitemap_files', array() ) as $missing_file ) {
+				$errors[] = 'root_sitemap_missing:' . $missing_file;
+			}
+		}
+
+		return array(
+			'ok'                  => empty( $errors ),
+			'snapshot_scope'      => $scope ?: 'unknown',
+			'errors'              => array_values( array_unique( $errors ) ),
+			'components_present'  => $present,
+			'sitemap_integrity'   => is_array( $sitemap_integrity ) ? $sitemap_integrity : array(),
+		);
+	}
+
+	public function get_snapshot_scope_from_manifest( array $manifest ) {
+		$scope = (string) array_get( $manifest, 'snapshot_scope', '' );
+		if ( '' === $scope ) {
+			$scope = (string) array_get( $manifest, 'scope', '' );
+		}
+
+		if ( '' === $scope && ! empty( $manifest['is_full_snapshot'] ) ) {
+			$scope = 'full';
+		}
+
+		return sanitize_key( $scope );
+	}
+
 	public function should_exclude( $path ) {
 		$path      = normalize_path( $path );
 		$relative  = ltrim( str_replace( normalize_path( ABSPATH ), '', $path ), '/' );
@@ -1162,6 +1312,111 @@ class File_System_Service {
 		return $files;
 	}
 
+	private function get_required_root_sitemap_files( $root_dir ) {
+		$root_dir = rtrim( normalize_path( $root_dir ), '/\\' );
+		$files    = array();
+		$index    = $root_dir . '/sitemap_index.xml';
+
+		if ( is_file( $index ) ) {
+			foreach ( $this->extract_sitemap_locs_from_file( $index ) as $loc ) {
+				$basename = $this->root_xml_basename_from_url( $loc );
+				if ( $basename ) {
+					$files[] = $basename;
+				}
+			}
+		}
+
+		foreach ( $this->get_mpg_project_sitemap_files() as $basename ) {
+			$files[] = $basename;
+		}
+
+		$files = array_values( array_unique( array_filter( $files ) ) );
+		natcasesort( $files );
+
+		return array_values( $files );
+	}
+
+	private function extract_sitemap_locs_from_file( $path ) {
+		$content = (string) file_get_contents( $path );
+		$locs    = array();
+
+		if ( '' === trim( $content ) ) {
+			return $locs;
+		}
+
+		if ( function_exists( 'simplexml_load_string' ) ) {
+			$previous = libxml_use_internal_errors( true );
+			$xml      = simplexml_load_string( $content );
+			libxml_clear_errors();
+			libxml_use_internal_errors( $previous );
+
+			if ( $xml ) {
+				$nodes = $xml->xpath( '//*[local-name()="loc"]' );
+				if ( is_array( $nodes ) ) {
+					foreach ( $nodes as $node ) {
+						$locs[] = trim( (string) $node );
+					}
+				}
+			}
+		}
+
+		if ( empty( $locs ) && preg_match_all( '#<loc>\s*([^<]+)\s*</loc>#i', $content, $matches ) ) {
+			$locs = array_map( 'trim', $matches[1] );
+		}
+
+		return array_values( array_filter( $locs ) );
+	}
+
+	private function get_mpg_project_sitemap_files() {
+		global $wpdb;
+
+		if ( empty( $wpdb ) || ! is_object( $wpdb ) || empty( $wpdb->prefix ) ) {
+			return array();
+		}
+
+		$table = $wpdb->prefix . 'mpg_projects';
+		$found = $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $table ) );
+
+		if ( $found !== $table ) {
+			return array();
+		}
+
+		$table_sql = str_replace( '`', '``', $table );
+		$values    = $wpdb->get_col( "SELECT sitemap_url FROM `{$table_sql}` WHERE sitemap_url <> ''" );
+		$values    = is_array( $values ) ? $values : array();
+		$files     = array();
+
+		foreach ( $values as $value ) {
+			$basename = $this->root_xml_basename_from_url( $value );
+			if ( $basename ) {
+				$files[] = $basename;
+			}
+		}
+
+		$files = array_values( array_unique( $files ) );
+		natcasesort( $files );
+
+		return array_values( $files );
+	}
+
+	private function root_xml_basename_from_url( $value ) {
+		$value = trim( html_entity_decode( (string) $value, ENT_QUOTES, 'UTF-8' ) );
+
+		if ( '' === $value ) {
+			return '';
+		}
+
+		$path = wp_parse_url( $value, PHP_URL_PATH );
+		$path = $path ? $path : $value;
+		$name = basename( strtok( $path, '?' ) );
+
+		if ( ! preg_match( '/^[a-zA-Z0-9._-]+\.xml$/', $name ) ) {
+			return '';
+		}
+
+		return $name;
+	}
+
 	private function extract_wp_config_defines( $content ) {
 		$defines = array();
 
@@ -1284,6 +1539,9 @@ class File_System_Service {
 		$manifest = $this->read_package_manifest( $package_path );
 		if ( ! empty( $manifest ) ) {
 			$meta['manifest'] = $manifest;
+			$meta['snapshot_scope'] = $this->get_snapshot_scope_from_manifest( $manifest );
+			$meta['is_full_snapshot'] = 'full' === $meta['snapshot_scope'];
+			$meta['full_snapshot_validation'] = $this->validate_full_snapshot_manifest( $manifest );
 
 			if ( ! empty( $manifest['type'] ) ) {
 				$meta['type'] = $manifest['type'];

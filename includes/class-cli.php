@@ -53,6 +53,9 @@ if ( defined( 'WP_CLI' ) && WP_CLI ) {
 			\WP_CLI::log( 'Remote URL: ' . self::$config->get_remote_url() );
 			\WP_CLI::log( 'Storage: ' . self::$config->get_storage_dir() );
 			\WP_CLI::log( 'Latest snapshot: ' . ( empty( $latest_snapshot ) ? 'none' : array_get( $latest_snapshot, 'basename', '' ) ) );
+			if ( ! empty( $latest_snapshot ) ) {
+				\WP_CLI::log( 'Latest snapshot scope: ' . array_get( $latest_snapshot, 'snapshot_scope', 'unknown' ) );
+			}
 		}
 
 		/**
@@ -65,17 +68,21 @@ if ( defined( 'WP_CLI' ) && WP_CLI ) {
 		 *
 		 * [--skip-remote]
 		 * : Only check the current site.
+		 *
+		 * [--deep]
+		 * : Include latest snapshot validation and root sitemap coherence checks.
 		 */
 		public function doctor( $args, $assoc_args ) {
 			unset( $args );
 
 			$required_bytes = isset( $assoc_args['required-bytes'] ) ? max( 0, (int) $assoc_args['required-bytes'] ) : self::estimate_required_bytes_for_doctor();
-			$local          = self::$file_system->diagnose_runtime_storage( $required_bytes );
+			$deep           = ! empty( $assoc_args['deep'] );
+			$local          = self::$file_system->diagnose_runtime_storage( $required_bytes, $deep );
 			$ok             = self::log_doctor_result( 'Local', $local );
 
 			if ( empty( $assoc_args['skip-remote'] ) && self::$config->get_remote_url() && self::$config->get_secret() ) {
 				$client = new Http_Client( self::$config, self::$logger );
-				$remote = $client->remote_doctor( $required_bytes );
+				$remote = $client->remote_doctor( $required_bytes, $deep );
 
 				if ( is_wp_error( $remote ) ) {
 					$ok = false;
@@ -194,12 +201,20 @@ if ( defined( 'WP_CLI' ) && WP_CLI ) {
 		 *
 		 * [--skip-remote-backup]
 		 * : Skip live backup creation, useful only for retrying a failed upload after a backup already succeeded.
+		 *
+		 * [--allow-partial-snapshot]
+		 * : Explicitly allow pushing a snapshot that is not marked as full. Use only for deliberate recovery operations.
 		 */
 		public function push( $args, $assoc_args ) {
+			if ( ! empty( $assoc_args['allow-partial-snapshot'] ) ) {
+				\WP_CLI::warning( 'Partial snapshot override enabled. This can omit files from live if the selected snapshot is incomplete.' );
+			}
+
 			$result = self::$sync->push_to_remote(
 				array(
-					'use_existing_snapshot' => ! empty( $assoc_args['use-existing-snapshot'] ),
-					'skip_remote_backup'    => ! empty( $assoc_args['skip-remote-backup'] ),
+					'use_existing_snapshot'  => ! empty( $assoc_args['use-existing-snapshot'] ),
+					'skip_remote_backup'     => ! empty( $assoc_args['skip-remote-backup'] ),
+					'allow_partial_snapshot' => ! empty( $assoc_args['allow-partial-snapshot'] ),
 				)
 			);
 
@@ -320,6 +335,28 @@ if ( defined( 'WP_CLI' ) && WP_CLI ) {
 				$errors = array_get( $directory, 'errors', array() );
 				if ( is_array( $errors ) && ! empty( $errors ) ) {
 					\WP_CLI::log( '    errors: ' . implode( ', ', $errors ) );
+				}
+			}
+
+			$latest_snapshot = array_get( $result, 'latest_snapshot', array() );
+			if ( is_array( $latest_snapshot ) && ! empty( $latest_snapshot ) ) {
+				$validation = array_get( $latest_snapshot, 'full_snapshot_validation', array() );
+				\WP_CLI::log( 'Latest snapshot scope: ' . array_get( $latest_snapshot, 'snapshot_scope', 'unknown' ) );
+				if ( is_array( $validation ) && ! empty( $validation ) ) {
+					\WP_CLI::log( 'Latest snapshot full validation: ' . ( ! empty( $validation['ok'] ) ? 'ok' : 'failed' ) );
+					$errors = array_get( $validation, 'errors', array() );
+					if ( is_array( $errors ) && ! empty( $errors ) ) {
+						\WP_CLI::log( '    validation errors: ' . implode( ', ', $errors ) );
+					}
+				}
+			}
+
+			$sitemap_integrity = array_get( $result, 'sitemap_integrity', array() );
+			if ( is_array( $sitemap_integrity ) && ! empty( $sitemap_integrity ) ) {
+				\WP_CLI::log( 'Root sitemap integrity: ' . ( ! empty( $sitemap_integrity['ok'] ) ? 'ok' : 'failed' ) );
+				$missing = array_get( $sitemap_integrity, 'missing_root_sitemap_files', array() );
+				if ( is_array( $missing ) && ! empty( $missing ) ) {
+					\WP_CLI::log( '    missing root XML files: ' . implode( ', ', $missing ) );
 				}
 			}
 

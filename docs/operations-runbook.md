@@ -47,6 +47,12 @@ Doctor / preflight before large syncs:
 C:\xampp\php\php.exe C:\xampp\wp-cli.phar agsync doctor --path=C:\xampp\htdocs\<site>
 ```
 
+Deep doctor with snapshot and root sitemap checks:
+
+```powershell
+C:\xampp\php\php.exe C:\xampp\wp-cli.phar agsync doctor --deep --path=C:\xampp\htdocs\<site>
+```
+
 Local-only doctor:
 
 ```powershell
@@ -57,6 +63,20 @@ Pull live to local:
 
 ```powershell
 C:\xampp\php\php.exe C:\xampp\wp-cli.phar agsync pull --path=C:\xampp\htdocs\<site>
+```
+
+Push using the latest existing local snapshot is allowed only when that package
+has a manifest scope of `full`:
+
+```powershell
+C:\xampp\php\php.exe C:\xampp\wp-cli.phar agsync push --use-existing-snapshot --path=C:\xampp\htdocs\<site>
+```
+
+Do not use manually slimmed snapshots for normal deploys. The only bypass is a
+deliberate recovery operation:
+
+```powershell
+C:\xampp\php\php.exe C:\xampp\wp-cli.phar agsync push --use-existing-snapshot --allow-partial-snapshot --path=C:\xampp\htdocs\<site>
 ```
 
 Show lock:
@@ -224,6 +244,11 @@ From `0.1.24`, completed and failed operations mark their operation state as
 finished and trigger runtime cleanup automatically. The default retention for
 snapshots/backups is `1`; existing sites still on the old default `3` are
 migrated down to `1` once, unless `AG_SYNC_BRIDGE_RETENTION_COUNT` is defined.
+
+From `0.1.25`, `--use-existing-snapshot` blocks packages that are not marked
+`full`. If a sitemap index or `wp_mpg_projects.sitemap_url` references root XML
+files, those XML files must exist in the snapshot. Use `agsync doctor --deep`
+to check this before a push.
 
 ### Plugin Deactivated: File Does Not Exist
 

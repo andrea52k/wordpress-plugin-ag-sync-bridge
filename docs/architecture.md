@@ -142,6 +142,18 @@ Default excludes include:
 The plugin excludes its own folder from sync to avoid removing itself during an
 operation.
 
+From `0.1.25`, snapshots created by the official exporter include manifest
+metadata:
+
+- `snapshot_scope: full`
+- `root_sync_files`
+- `sitemap_integrity`
+- `full_snapshot_requirements`
+
+Pushes that reuse an existing local snapshot are blocked unless the manifest is
+marked `full`. If the sitemap index or V4MPG project rows reference root XML
+files, those files must also be present in the package.
+
 ## Database Import
 
 `Database_Service::import_from_file()` always prepares SQL before import.
@@ -212,15 +224,19 @@ Old binary formats such as `.xls` are not guaranteed.
 2. run remote storage doctor/preflight
 3. request live pre-push backup
 4. create local snapshot
-5. upload snapshot
-6. trigger remote async import
-7. poll remote import state
-8. save `last_push`
-9. release lock
+5. validate the local package and `full` snapshot manifest
+6. upload snapshot
+7. trigger remote async import
+8. poll remote import state
+9. save `last_push`
+10. release lock
 
 Remote import is asynchronous through `ag_sync_bridge_async_import_snapshot`.
 This avoids treating SSL/proxy disconnects during long imports as immediate
 push failures.
+
+The remote import endpoint also rejects non-`full` snapshots unless the caller
+passes the explicit partial-snapshot override for a recovery operation.
 
 ## Updater Sequence
 

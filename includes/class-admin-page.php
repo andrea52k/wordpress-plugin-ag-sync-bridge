@@ -457,6 +457,7 @@ class Admin_Page {
 
 		$parts = array(
 			'File: ' . array_get( $snapshot, 'basename', '' ),
+			'Scope: ' . array_get( $snapshot, 'snapshot_scope', 'unknown' ),
 			'Created: ' . $this->format_timestamp( array_get( $snapshot, 'created_at', '' ) ),
 			'Size: ' . format_bytes( (int) array_get( $snapshot, 'size_bytes', 0 ) ),
 			'SHA256: ' . array_get( $snapshot, 'sha256', '' ),
