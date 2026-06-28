@@ -20,7 +20,7 @@ Se devi modificare o gestire il plugin da un agente automatico, leggi prima:
 
 ## Versione
 
-Versione plugin: `0.1.26`
+Versione plugin: `0.1.27`
 
 Slug tecnico WordPress: `ag-sync-bridge`
 
@@ -36,6 +36,7 @@ Lo slug resta invariato per permettere aggiornamenti sicuri delle installazioni 
 - `wp-content/mu-plugins`
 - `wp-config.php` con merge sicuro dei valori ambiente-specifici sul target
 - `.htaccess` opzionale
+- root text sicuri come `robots.txt`, `llms.txt`, `llms-full.txt`, `ads.txt`, `app-ads.txt` e `humans.txt`
 - Replace URL nei dataset V4MPG supportati (`.xlsx` e file testuali) durante l'import
 
 ## Cosa esclude di default
@@ -157,13 +158,14 @@ Esempi WP-CLI:
 
 ```bash
 wp agsync push --paths=robots.txt
+wp agsync push --paths="robots.txt,llms.txt"
 wp agsync push --paths="robots.txt,wp-content/mu-plugins/mio-file.php"
 wp agsync snapshot --type=partial-test --paths=robots.txt
 ```
 
 Nella UI admin, lascia vuoto il campo percorsi per un push completo oppure
-inserisci un percorso per riga. Sono supportati percorsi sotto `wp-content/`
-e file root sicuri come `robots.txt` o XML. `wp-config.php`, core WordPress,
+inserisci un percorso per riga. Sono supportati percorsi sotto `wp-content/`,
+file root sicuri come `robots.txt`, `llms.txt`, `ads.txt` e XML. `wp-config.php`, core WordPress,
 cache, runtime AG Sync e la cartella del plugin sono bloccati.
 
 ## Auto-pull locale
@@ -268,7 +270,7 @@ Da `0.1.17`, cliccare `Bacheca > Aggiornamenti > Verifica di nuovo` forza anche 
 - Snapshot molto grandi possono richiedere tempi lunghi su hosting condiviso.
 - Se `ZipArchive` manca, il plugin non puo creare/importare snapshot ZIP.
 - `wp agsync push --use-existing-snapshot` riusa solo snapshot marcati `full`; vecchi pacchetti senza scope vengono bloccati.
-- `wp agsync push --paths=...` crea un pacchetto parziale file-only e richiede AG Sync Bridge `0.1.26` o superiore anche sul live.
+- `wp agsync push --paths=...` crea un pacchetto parziale file-only e richiede AG Sync Bridge `0.1.26` o superiore anche sul live; i root text sicuri come `llms.txt` richiedono `0.1.27`.
 - `--allow-partial-snapshot` esiste solo per recovery deliberate e puo omettere file dal live.
 - Il fallback PHP per import/export DB e piu lento di `mysqldump/mysql`.
 - `.htaccess` viene sovrascritto solo se abilitato.

@@ -77,12 +77,17 @@ AG Sync Bridge `0.1.26` or newer:
 
 ```powershell
 C:\xampp\php\php.exe C:\xampp\wp-cli.phar agsync push --paths=robots.txt --path=C:\xampp\htdocs\<site>
+C:\xampp\php\php.exe C:\xampp\wp-cli.phar agsync push --paths="robots.txt,llms.txt" --path=C:\xampp\htdocs\<site>
 C:\xampp\php\php.exe C:\xampp\wp-cli.phar agsync push --paths="robots.txt,wp-content/mu-plugins/example.php" --path=C:\xampp\htdocs\<site>
 ```
 
 Selective packages are file-only. They do not import the database, do not
-replace unrelated directories, and cannot update `wp-config.php`, WordPress
-core, AG Sync runtime data, cache paths, or the AG Sync Bridge plugin folder.
+replace unrelated directories, and can include safe root text files such as
+`robots.txt`, `llms.txt`, `llms-full.txt`, `ads.txt`, `app-ads.txt` and
+`humans.txt`. They cannot update `wp-config.php`, WordPress core, AG Sync
+runtime data, cache paths, or the AG Sync Bridge plugin folder.
+
+Safe root text files beyond `robots.txt` are supported from `0.1.27`.
 
 Do not use manually slimmed snapshots for normal deploys. The only bypass is a
 deliberate recovery operation:
@@ -263,8 +268,9 @@ files, those XML files must exist in the snapshot. Use `agsync doctor --deep`
 to check this before a push.
 
 From `0.1.26`, use `agsync push --paths=<relative-paths>` for deliberate
-file-only deploys such as `robots.txt`. Update the live plugin first; older
-live versions reject or cannot import partial packages.
+file-only deploys such as `robots.txt`. From `0.1.27`, the same flow also
+supports safe root text files such as `llms.txt`. Update the live plugin first;
+older live versions reject or cannot import unsupported partial packages.
 
 ### Plugin Deactivated: File Does Not Exist
 

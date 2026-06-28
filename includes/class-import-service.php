@@ -470,7 +470,7 @@ class Import_Service {
 			return new WP_Error( 'ag_sync_bridge_partial_entry_forbidden', __( 'Partial snapshot contains a forbidden target path.', 'ag-sync-bridge' ) );
 		}
 
-		if ( false === strpos( $relative, '/' ) && ! preg_match( '/^(robots\.txt|.+\.xml)$/i', $relative ) ) {
+		if ( false === strpos( $relative, '/' ) && ! preg_match( '/^(robots\.txt|llms\.txt|llms-full\.txt|ads\.txt|app-ads\.txt|humans\.txt|.+\.xml)$/i', $relative ) ) {
 			return new WP_Error( 'ag_sync_bridge_partial_entry_root_forbidden', __( 'Partial snapshot contains an unsupported root file.', 'ag-sync-bridge' ) );
 		}
 

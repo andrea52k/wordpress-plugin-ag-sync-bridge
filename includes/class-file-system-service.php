@@ -1381,10 +1381,12 @@ class File_System_Service {
 	private function get_root_sync_files( $root_dir ) {
 		$root_dir = rtrim( normalize_path( $root_dir ), '/\\' );
 		$files    = array();
-		$robots   = $root_dir . '/robots.txt';
 
-		if ( is_file( $robots ) ) {
-			$files['robots.txt'] = normalize_path( $robots );
+		foreach ( $this->get_allowed_root_text_files() as $basename ) {
+			$path = $root_dir . '/' . $basename;
+			if ( is_file( $path ) ) {
+				$files[ $basename ] = normalize_path( $path );
+			}
 		}
 
 		$xml_files = glob( $root_dir . '/*.xml' );
@@ -1440,7 +1442,7 @@ class File_System_Service {
 				'ag_sync_bridge_partial_path_not_supported',
 				sprintf(
 					/* translators: %s: requested path */
-					__( 'Partial push supports wp-content paths plus root robots.txt/XML files only: %s', 'ag-sync-bridge' ),
+					__( 'Partial push supports wp-content paths plus safe root text/XML files only: %s', 'ag-sync-bridge' ),
 					$relative
 				)
 			);
@@ -1495,7 +1497,18 @@ class File_System_Service {
 		}
 
 		$basename = strtolower( basename( $relative ) );
-		return 'robots.txt' === $basename || (bool) preg_match( '/\.xml$/i', $basename );
+		return in_array( $basename, $this->get_allowed_root_text_files(), true ) || (bool) preg_match( '/\.xml$/i', $basename );
+	}
+
+	private function get_allowed_root_text_files() {
+		return array(
+			'robots.txt',
+			'llms.txt',
+			'llms-full.txt',
+			'ads.txt',
+			'app-ads.txt',
+			'humans.txt',
+		);
 	}
 
 	private function get_partial_archive_path( $relative ) {
