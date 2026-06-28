@@ -72,6 +72,18 @@ has a manifest scope of `full`:
 C:\xampp\php\php.exe C:\xampp\wp-cli.phar agsync push --use-existing-snapshot --path=C:\xampp\htdocs\<site>
 ```
 
+Selective file/folder push, available only when both local and live run
+AG Sync Bridge `0.1.26` or newer:
+
+```powershell
+C:\xampp\php\php.exe C:\xampp\wp-cli.phar agsync push --paths=robots.txt --path=C:\xampp\htdocs\<site>
+C:\xampp\php\php.exe C:\xampp\wp-cli.phar agsync push --paths="robots.txt,wp-content/mu-plugins/example.php" --path=C:\xampp\htdocs\<site>
+```
+
+Selective packages are file-only. They do not import the database, do not
+replace unrelated directories, and cannot update `wp-config.php`, WordPress
+core, AG Sync runtime data, cache paths, or the AG Sync Bridge plugin folder.
+
 Do not use manually slimmed snapshots for normal deploys. The only bypass is a
 deliberate recovery operation:
 
@@ -249,6 +261,10 @@ From `0.1.25`, `--use-existing-snapshot` blocks packages that are not marked
 `full`. If a sitemap index or `wp_mpg_projects.sitemap_url` references root XML
 files, those XML files must exist in the snapshot. Use `agsync doctor --deep`
 to check this before a push.
+
+From `0.1.26`, use `agsync push --paths=<relative-paths>` for deliberate
+file-only deploys such as `robots.txt`. Update the live plugin first; older
+live versions reject or cannot import partial packages.
 
 ### Plugin Deactivated: File Does Not Exist
 

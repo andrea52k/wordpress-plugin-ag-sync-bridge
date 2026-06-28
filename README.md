@@ -20,7 +20,7 @@ Se devi modificare o gestire il plugin da un agente automatico, leggi prima:
 
 ## Versione
 
-Versione plugin: `0.1.25`
+Versione plugin: `0.1.26`
 
 Slug tecnico WordPress: `ag-sync-bridge`
 
@@ -55,7 +55,7 @@ Il plugin esclude la propria cartella dal full overwrite per non interrompere op
 - Upload snapshot diretto o a chunk form-encoded, compatibile con hosting che svuotano il raw body REST
 - Import remoto asincrono con polling dello stato remoto
 - Preflight `doctor` locale/remoto per spazio, permessi e test scrittura prima dei push
-- Manifest snapshot con scope `full`/`partial` e blocco dei push che riusano snapshot non completi
+- Manifest snapshot con scope `full`/`partial`, blocco dei push che riusano snapshot non completi e push selettivo file-only
 - Controllo root sitemap/XML per evitare DB o sitemap index che puntano a file non presenti
 - Estrazione ZIP entry-by-entry con diagnostica del file che fallisce
 - Pulizia automatica di snapshot, backup, incoming, temp e upload chunk dopo operazioni e fallimenti
@@ -147,6 +147,25 @@ Quando premi `Invia il locale al live`:
 
 L'import sul live viene accettato in modalita asincrona, pianificato come evento WordPress cron singolo e monitorato dal locale con polling dello stato remoto. Questo evita che una chiusura SSL/proxy durante un import lungo venga interpretata come fallimento immediato del deploy.
 
+### Push selettivo file/cartelle
+
+Da `0.1.26`, il push puo inviare solo percorsi specifici dal locale al live.
+Il pacchetto selettivo e file-only: non contiene database, non sostituisce
+directory non richieste e non puo aggiornare AG Sync Bridge stesso.
+
+Esempi WP-CLI:
+
+```bash
+wp agsync push --paths=robots.txt
+wp agsync push --paths="robots.txt,wp-content/mu-plugins/mio-file.php"
+wp agsync snapshot --type=partial-test --paths=robots.txt
+```
+
+Nella UI admin, lascia vuoto il campo percorsi per un push completo oppure
+inserisci un percorso per riga. Sono supportati percorsi sotto `wp-content/`
+e file root sicuri come `robots.txt` o XML. `wp-config.php`, core WordPress,
+cache, runtime AG Sync e la cartella del plugin sono bloccati.
+
 ## Auto-pull locale
 
 - Nel sito con `role = local` puoi attivare `Auto pull settimanale`.
@@ -176,8 +195,10 @@ wp agsync status
 wp agsync doctor
 wp agsync doctor --deep
 wp agsync snapshot --type=manual
+wp agsync snapshot --type=partial-test --paths=robots.txt
 wp agsync pull
 wp agsync push
+wp agsync push --paths=robots.txt
 wp agsync cleanup
 wp agsync remote_cleanup
 wp agsync lock
@@ -247,6 +268,7 @@ Da `0.1.17`, cliccare `Bacheca > Aggiornamenti > Verifica di nuovo` forza anche 
 - Snapshot molto grandi possono richiedere tempi lunghi su hosting condiviso.
 - Se `ZipArchive` manca, il plugin non puo creare/importare snapshot ZIP.
 - `wp agsync push --use-existing-snapshot` riusa solo snapshot marcati `full`; vecchi pacchetti senza scope vengono bloccati.
+- `wp agsync push --paths=...` crea un pacchetto parziale file-only e richiede AG Sync Bridge `0.1.26` o superiore anche sul live.
 - `--allow-partial-snapshot` esiste solo per recovery deliberate e puo omettere file dal live.
 - Il fallback PHP per import/export DB e piu lento di `mysqldump/mysql`.
 - `.htaccess` viene sovrascritto solo se abilitato.

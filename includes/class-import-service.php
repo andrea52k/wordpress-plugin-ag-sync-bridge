@@ -85,6 +85,7 @@ class Import_Service {
 		}
 
 		$manifest      = $prepared['manifest'];
+		$is_partial    = $this->is_partial_manifest( $manifest );
 		$current_state = $this->database->capture_environment_state();
 		$target_site   = array_get( $args, 'target_site_url', array_get( $current_state, 'siteurl', site_url() ) );
 		$target_home   = array_get( $args, 'target_home_url', array_get( $current_state, 'home', home_url() ) );
@@ -96,23 +97,31 @@ class Import_Service {
 		try {
 			$this->enable_maintenance_mode();
 
-			$import_result = $this->database->import_from_file(
-				$prepared['database_sql'],
-				array(
-					'source_prefix' => $source_prefix,
-					'target_prefix' => $target_prefix,
-				)
+			$import_result = array(
+				'method' => 'none',
+				'scope'  => 'partial',
 			);
-			if ( is_wp_error( $import_result ) ) {
-				return $import_result;
-			}
+			$prefix_remap  = array();
 
-			$this->database->refresh_runtime_cache();
-			$source_active_plugins = $this->database->get_active_plugins();
+			if ( ! $is_partial ) {
+				$import_result = $this->database->import_from_file(
+					$prepared['database_sql'],
+					array(
+						'source_prefix' => $source_prefix,
+						'target_prefix' => $target_prefix,
+					)
+				);
+				if ( is_wp_error( $import_result ) ) {
+					return $import_result;
+				}
 
-			$prefix_remap = $this->database->remap_site_prefix_keys( $source_prefix, $target_prefix );
-			if ( is_wp_error( $prefix_remap ) ) {
-				return $prefix_remap;
+				$this->database->refresh_runtime_cache();
+				$source_active_plugins = $this->database->get_active_plugins();
+
+				$prefix_remap = $this->database->remap_site_prefix_keys( $source_prefix, $target_prefix );
+				if ( is_wp_error( $prefix_remap ) ) {
+					return $prefix_remap;
+				}
 			}
 
 			$replacements = array();
@@ -127,14 +136,21 @@ class Import_Service {
 				$replacements[ $source_home ] = $target_home;
 			}
 
-			$replace_result = $this->database->replace_urls( $replacements, $target_prefix );
-			if ( is_wp_error( $replace_result ) ) {
-				return $replace_result;
+			$replace_result = array(
+				'rows_updated' => 0,
+				'scope'        => 'partial',
+			);
+
+			if ( ! $is_partial ) {
+				$replace_result = $this->database->replace_urls( $replacements, $target_prefix );
+				if ( is_wp_error( $replace_result ) ) {
+					return $replace_result;
+				}
 			}
 
 			$files_root = normalize_path( $prepared['temp_dir'] . '/files' );
 			$this->refresh_maintenance_mode();
-			$result     = $this->import_files( $files_root, $replacements );
+			$result     = $is_partial ? $this->import_partial_files( $files_root, $manifest, $replacements ) : $this->import_files( $files_root, $replacements );
 
 			if ( is_wp_error( $result ) ) {
 				return $result;
@@ -142,13 +158,16 @@ class Import_Service {
 
 			$this->clear_target_builder_caches();
 
-			$sync_active_plugins = true;
+			if ( ! $is_partial ) {
+				$sync_active_plugins = true;
+			}
 
 			$response = array(
 				'basename'        => basename( $package_path ),
 				'path'            => normalize_path( $package_path ),
 				'sha256'          => $prepared['sha256'],
 				'manifest'        => $manifest,
+				'import_scope'    => $is_partial ? 'partial' : 'full',
 				'database_method' => array_get( $import_result, 'method', 'php' ),
 				'table_prefix'    => array(
 					'source' => $source_prefix,
@@ -156,6 +175,7 @@ class Import_Service {
 					'remap'  => $prefix_remap,
 				),
 				'url_replace'     => $replace_result,
+				'file_import'     => $result,
 				'duration_ms'     => (int) round( ( microtime( true ) - $started_at ) * 1000 ),
 			);
 
@@ -184,7 +204,9 @@ class Import_Service {
 				__( 'Snapshot import failed because the target site hit a runtime error during URL replacement.', 'ag-sync-bridge' )
 			);
 		} finally {
-			$this->database->restore_environment_state( $current_state );
+			if ( ! $is_partial ) {
+				$this->database->restore_environment_state( $current_state );
+			}
 
 			if ( $sync_active_plugins ) {
 				$plugin_sync = $this->database->sync_active_plugins( $source_active_plugins );
@@ -278,15 +300,26 @@ class Import_Service {
 		$manifest_path = normalize_path( $temp_dir . '/manifest.json' );
 		$database_sql  = normalize_path( $temp_dir . '/database.sql' );
 
-		if ( ! file_exists( $manifest_path ) || ! file_exists( $database_sql ) ) {
+		if ( ! file_exists( $manifest_path ) ) {
 			$this->file_system->cleanup_path( $temp_dir );
-			return new WP_Error( 'ag_sync_bridge_invalid_package', __( 'Snapshot package is missing manifest.json or database.sql.', 'ag-sync-bridge' ) );
+			return new WP_Error( 'ag_sync_bridge_invalid_package', __( 'Snapshot package is missing manifest.json.', 'ag-sync-bridge' ) );
 		}
 
 		$manifest = json_decode( (string) file_get_contents( $manifest_path ), true );
 		if ( ! is_array( $manifest ) ) {
 			$this->file_system->cleanup_path( $temp_dir );
 			return new WP_Error( 'ag_sync_bridge_invalid_manifest', __( 'Snapshot manifest is invalid.', 'ag-sync-bridge' ) );
+		}
+
+		$is_partial = $this->is_partial_manifest( $manifest );
+		if ( ! $is_partial && ! file_exists( $database_sql ) ) {
+			$this->file_system->cleanup_path( $temp_dir );
+			return new WP_Error( 'ag_sync_bridge_invalid_package', __( 'Snapshot package is missing database.sql.', 'ag-sync-bridge' ) );
+		}
+
+		if ( $is_partial && empty( $manifest['partial_entries'] ) ) {
+			$this->file_system->cleanup_path( $temp_dir );
+			return new WP_Error( 'ag_sync_bridge_invalid_partial_package', __( 'Partial snapshot package is missing partial_entries metadata.', 'ag-sync-bridge' ) );
 		}
 
 		return array(
@@ -314,6 +347,167 @@ class Import_Service {
 		}
 
 		return '';
+	}
+
+	private function is_partial_manifest( array $manifest ) {
+		return 'partial' === $this->file_system->get_snapshot_scope_from_manifest( $manifest );
+	}
+
+	private function import_partial_files( $files_root, array $manifest, array $replacements = array() ) {
+		$entries = array_get( $manifest, 'partial_entries', array() );
+		$entries = is_array( $entries ) ? $entries : array();
+
+		$summary = array(
+			'scope'      => 'partial',
+			'file_count' => 0,
+			'dir_count'  => 0,
+			'paths'      => array(),
+		);
+
+		foreach ( $entries as $entry ) {
+			$result = $this->import_partial_entry( $files_root, is_array( $entry ) ? $entry : array(), $replacements );
+			if ( is_wp_error( $result ) ) {
+				return $result;
+			}
+
+			$summary['paths'][] = array_get( $result, 'path', '' );
+			if ( 'directory' === array_get( $result, 'type', '' ) ) {
+				$summary['dir_count']++;
+			} else {
+				$summary['file_count']++;
+			}
+		}
+
+		return $summary;
+	}
+
+	private function import_partial_entry( $files_root, array $entry, array $replacements = array() ) {
+		$relative = $this->sanitize_partial_entry_path( array_get( $entry, 'path', '' ) );
+		if ( is_wp_error( $relative ) ) {
+			return $relative;
+		}
+
+		$type        = 'directory' === array_get( $entry, 'type', '' ) ? 'directory' : 'file';
+		$source_path = $this->resolve_partial_source_path( $files_root, $relative );
+		$target_path = normalize_path( ABSPATH . $relative );
+
+		if ( ! file_exists( $source_path ) ) {
+			return new WP_Error(
+				'ag_sync_bridge_partial_source_missing',
+				sprintf(
+					/* translators: %s: relative path */
+					__( 'Partial snapshot is missing the archived path: %s', 'ag-sync-bridge' ),
+					$relative
+				)
+			);
+		}
+
+		if ( 'directory' === $type ) {
+			if ( ! is_dir( $source_path ) ) {
+				return new WP_Error( 'ag_sync_bridge_partial_source_type', __( 'Partial snapshot entry expected a directory but found a file.', 'ag-sync-bridge' ) );
+			}
+
+			$result = $this->file_system->replace_directory( $source_path, $target_path );
+			if ( is_wp_error( $result ) ) {
+				return $result;
+			}
+
+			if ( $this->is_mpg_uploads_path( $relative ) ) {
+				$result = $this->file_system->replace_urls_in_dataset_files( $target_path, $replacements );
+				if ( is_wp_error( $result ) ) {
+					return $result;
+				}
+			}
+		} else {
+			if ( is_dir( $source_path ) ) {
+				return new WP_Error( 'ag_sync_bridge_partial_source_type', __( 'Partial snapshot entry expected a file but found a directory.', 'ag-sync-bridge' ) );
+			}
+
+			$result = $this->is_text_like_partial_file( $relative )
+				? $this->file_system->copy_text_file_with_replacements( $source_path, $target_path, $replacements )
+				: $this->file_system->copy_file( $source_path, $target_path );
+
+			if ( false === $result ) {
+				return new WP_Error(
+					'ag_sync_bridge_partial_copy_failed',
+					sprintf(
+						/* translators: %s: relative path */
+						__( 'Unable to copy partial snapshot file: %s', 'ag-sync-bridge' ),
+						$relative
+					)
+				);
+			}
+
+			if ( $this->is_mpg_uploads_path( $relative ) ) {
+				$result = $this->file_system->replace_urls_in_dataset_files( dirname( $target_path ), $replacements );
+				if ( is_wp_error( $result ) ) {
+					return $result;
+				}
+			}
+		}
+
+		return array(
+			'path' => $relative,
+			'type' => $type,
+		);
+	}
+
+	private function sanitize_partial_entry_path( $path ) {
+		$relative = trim( str_replace( '\\', '/', (string) $path ) );
+		$relative = preg_replace( '#/+#', '/', $relative );
+		$relative = trim( $relative, '/' );
+
+		if ( '' === $relative || false !== strpos( $relative, "\0" ) || preg_match( '#^[a-zA-Z]:/#', $relative ) || preg_match( '#(^|/)\.\.(/|$)#', $relative ) ) {
+			return new WP_Error( 'ag_sync_bridge_partial_entry_unsafe', __( 'Partial snapshot contains an unsafe target path.', 'ag-sync-bridge' ) );
+		}
+
+		$relative_lc = strtolower( $relative );
+		$plugin_dir  = dirname( $this->config->get_plugin_basename() );
+		$plugin_dir  = '.' === $plugin_dir ? 'ag-sync-bridge' : trim( str_replace( '\\', '/', $plugin_dir ), '/' );
+		$plugin_rel  = strtolower( 'wp-content/plugins/' . $plugin_dir );
+
+		if ( 'wp-config.php' === $relative_lc || 0 === strpos( $relative_lc, 'wp-admin/' ) || 0 === strpos( $relative_lc, 'wp-includes/' ) || 0 === strpos( $relative_lc, 'wp-content/ag-sync-bridge-data/' ) || $relative_lc === $plugin_rel || 0 === strpos( $relative_lc, $plugin_rel . '/' ) ) {
+			return new WP_Error( 'ag_sync_bridge_partial_entry_forbidden', __( 'Partial snapshot contains a forbidden target path.', 'ag-sync-bridge' ) );
+		}
+
+		if ( false === strpos( $relative, '/' ) && ! preg_match( '/^(robots\.txt|.+\.xml)$/i', $relative ) ) {
+			return new WP_Error( 'ag_sync_bridge_partial_entry_root_forbidden', __( 'Partial snapshot contains an unsupported root file.', 'ag-sync-bridge' ) );
+		}
+
+		if ( false !== strpos( $relative, '/' ) && 0 !== strpos( $relative_lc, 'wp-content/' ) ) {
+			return new WP_Error( 'ag_sync_bridge_partial_entry_root_forbidden', __( 'Partial snapshot target must be under wp-content or be a supported root file.', 'ag-sync-bridge' ) );
+		}
+
+		$target = normalize_path( ABSPATH . $relative );
+		$root   = rtrim( normalize_path( ABSPATH ), '/' );
+		if ( 0 !== strpos( $target . '/', $root . '/' ) ) {
+			return new WP_Error( 'ag_sync_bridge_partial_entry_outside_root', __( 'Partial snapshot target resolves outside the WordPress root.', 'ag-sync-bridge' ) );
+		}
+
+		return $relative;
+	}
+
+	private function resolve_partial_source_path( $files_root, $relative ) {
+		$files_root = rtrim( normalize_path( $files_root ), '/\\' );
+
+		if ( false === strpos( $relative, '/' ) ) {
+			return normalize_path( $files_root . '/root/' . basename( $relative ) );
+		}
+
+		return normalize_path( $files_root . '/' . $relative );
+	}
+
+	private function is_text_like_partial_file( $relative ) {
+		if ( false === strpos( $relative, '/' ) ) {
+			return true;
+		}
+
+		return (bool) preg_match( '/\.(?:css|csv|htm|html|js|json|md|php|svg|txt|xml|yml|yaml)$/i', $relative );
+	}
+
+	private function is_mpg_uploads_path( $relative ) {
+		$relative = strtolower( trim( str_replace( '\\', '/', (string) $relative ), '/' ) );
+		return 'wp-content/mpg-uploads' === $relative || 0 === strpos( $relative, 'wp-content/mpg-uploads/' );
 	}
 
 	private function import_files( $files_root, array $replacements = array() ) {

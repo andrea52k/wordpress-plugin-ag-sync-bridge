@@ -104,6 +104,16 @@ class Sync_Service {
 		return $result;
 	}
 
+	public function create_partial_snapshot( array $paths, $type = 'manual-partial-snapshot', array $context = array() ) {
+		$result = $this->exporter->create_partial_snapshot( $paths, $type, $context );
+
+		if ( ! is_wp_error( $result ) ) {
+			$this->cleanup_local_runtime_storage( 'snapshot' );
+		}
+
+		return $result;
+	}
+
 	public function create_backup( $type = 'manual-backup', array $context = array() ) {
 		$result = $this->exporter->create_snapshot( $type, $context );
 
@@ -233,12 +243,24 @@ class Sync_Service {
 			$use_existing_snapshot = ! empty( $args['use_existing_snapshot'] );
 			$skip_remote_backup    = ! empty( $args['skip_remote_backup'] );
 			$allow_partial_snapshot = ! empty( $args['allow_partial_snapshot'] );
+			$partial_paths          = array_get( $args, 'partial_paths', array() );
+			$partial_paths          = is_array( $partial_paths ) ? $partial_paths : array();
+			$partial_paths          = $this->file_system->normalize_partial_export_paths( $partial_paths );
+			if ( is_wp_error( $partial_paths ) ) {
+				return $partial_paths;
+			}
+			$is_partial_push = ! empty( $partial_paths );
 
-			$this->logger->info( 'Push started.', array( 'remote_url' => $this->config->get_remote_url(), 'use_existing_snapshot' => $use_existing_snapshot, 'skip_remote_backup' => $skip_remote_backup, 'allow_partial_snapshot' => $allow_partial_snapshot ) );
+			if ( $is_partial_push && $use_existing_snapshot ) {
+				$error = new WP_Error( 'ag_sync_bridge_partial_push_existing_snapshot', __( 'Partial push cannot reuse an existing snapshot. Remove --use-existing-snapshot and create a fresh partial package.', 'ag-sync-bridge' ) );
+				return $error;
+			}
+
+			$this->logger->info( 'Push started.', array( 'remote_url' => $this->config->get_remote_url(), 'use_existing_snapshot' => $use_existing_snapshot, 'skip_remote_backup' => $skip_remote_backup, 'allow_partial_snapshot' => $allow_partial_snapshot, 'partial_paths' => $partial_paths ) );
 			$remote_backup = array( 'skipped' => true );
 
 			$this->update_operation( 'push', 3, 'remote-preflight', __( 'Controllo prerequisiti storage sul live...', 'ag-sync-bridge' ) );
-			$remote_preflight = $this->run_remote_preflight( $use_existing_snapshot );
+			$remote_preflight = $this->run_remote_preflight( $use_existing_snapshot, $is_partial_push );
 			if ( is_wp_error( $remote_preflight ) ) {
 				$this->fail_operation( 'push', $remote_preflight );
 				return $remote_preflight;
@@ -263,16 +285,26 @@ class Sync_Service {
 				$this->logger->info( 'Remote pre-push backup completed.', array( 'backup' => array_get( $remote_backup, 'basename', '' ) ) );
 			}
 
-			$this->update_operation( 'push', 25, 'local-snapshot', $use_existing_snapshot ? __( 'Riutilizzo ultimo snapshot locale...', 'ag-sync-bridge' ) : __( 'Creazione snapshot completo del locale...', 'ag-sync-bridge' ) );
+			$snapshot_message = $is_partial_push ? __( 'Creazione snapshot parziale del locale...', 'ag-sync-bridge' ) : ( $use_existing_snapshot ? __( 'Riutilizzo ultimo snapshot locale...', 'ag-sync-bridge' ) : __( 'Creazione snapshot completo del locale...', 'ag-sync-bridge' ) );
+			$this->update_operation( 'push', 25, 'local-snapshot', $snapshot_message );
 			$local_snapshot = $use_existing_snapshot ? $this->get_latest_local_snapshot() : array();
 
 			if ( empty( $local_snapshot ) ) {
-				$local_snapshot = $this->create_snapshot(
-					'manual-push-snapshot',
-					array(
-						'trigger' => 'push',
+				$local_snapshot = $is_partial_push
+					? $this->create_partial_snapshot(
+						$partial_paths,
+						'manual-partial-push-snapshot',
+						array(
+							'trigger'       => 'push',
+							'partial_paths' => $partial_paths,
+						)
 					)
-				);
+					: $this->create_snapshot(
+						'manual-push-snapshot',
+						array(
+							'trigger' => 'push',
+						)
+					);
 			}
 
 			if ( is_wp_error( $local_snapshot ) ) {
@@ -281,7 +313,7 @@ class Sync_Service {
 			}
 
 			$this->update_operation( 'push', 35, 'local-validation', __( 'Validazione snapshot prima dell upload...', 'ag-sync-bridge' ) );
-			$validation = $this->validate_local_snapshot_for_push( $local_snapshot, $allow_partial_snapshot );
+			$validation = $this->validate_local_snapshot_for_push( $local_snapshot, $allow_partial_snapshot, $is_partial_push );
 			if ( is_wp_error( $validation ) ) {
 				$this->fail_operation( 'push', $validation );
 				return $validation;
@@ -306,7 +338,7 @@ class Sync_Service {
 
 			$this->logger->info( 'Snapshot uploaded to live.', array( 'snapshot' => array_get( $upload, 'snapshot', '' ) ) );
 			$this->update_operation( 'push', 85, 'remote-import', __( 'Import snapshot sul live e replace URL...', 'ag-sync-bridge' ) );
-			$remote_import = $this->http_client->trigger_remote_import( array_get( $upload, 'snapshot', '' ), array_get( $upload, 'sha256', '' ), $allow_partial_snapshot );
+			$remote_import = $this->http_client->trigger_remote_import( array_get( $upload, 'snapshot', '' ), array_get( $upload, 'sha256', '' ), $allow_partial_snapshot || $is_partial_push );
 			if ( is_wp_error( $remote_import ) ) {
 				$this->fail_operation( 'push', $remote_import );
 				return $remote_import;
@@ -343,11 +375,16 @@ class Sync_Service {
 	}
 
 	private function get_latest_local_snapshot() {
-		$list = $this->file_system->list_packages( 'snapshots', 1, true );
-		return empty( $list ) ? array() : $list[0];
+		foreach ( $this->file_system->list_packages( 'snapshots', 50, true ) as $snapshot ) {
+			if ( 'full' === array_get( $snapshot, 'snapshot_scope', '' ) ) {
+				return $snapshot;
+			}
+		}
+
+		return array();
 	}
 
-	private function validate_local_snapshot_for_push( array $snapshot, $allow_partial_snapshot = false ) {
+	private function validate_local_snapshot_for_push( array $snapshot, $allow_partial_snapshot = false, $expect_partial_snapshot = false ) {
 		$path = (string) array_get( $snapshot, 'path', '' );
 
 		if ( '' === $path || ! file_exists( $path ) ) {
@@ -365,7 +402,39 @@ class Sync_Service {
 			return $package;
 		}
 
-		$validation = $this->file_system->validate_full_snapshot_manifest( array_get( $package, 'manifest', array() ) );
+		$manifest = array_get( $package, 'manifest', array() );
+		$scope    = $this->file_system->get_snapshot_scope_from_manifest( $manifest );
+
+		if ( $expect_partial_snapshot ) {
+			$partial_entries = array_get( $manifest, 'partial_entries', array() );
+			$partial_entries = is_array( $partial_entries ) ? array_values( array_filter( $partial_entries ) ) : array();
+			$validation      = array(
+				'ok'              => 'partial' === $scope && ! empty( $partial_entries ),
+				'snapshot_scope'  => $scope ?: 'unknown',
+				'partial_entries' => $partial_entries,
+				'errors'          => array(),
+			);
+
+			if ( 'partial' !== $scope ) {
+				$validation['errors'][] = 'snapshot_scope_not_partial';
+			}
+
+			if ( empty( $partial_entries ) ) {
+				$validation['errors'][] = 'partial_entries_missing';
+			}
+
+			if ( empty( $validation['ok'] ) ) {
+				return new WP_Error(
+					'ag_sync_bridge_push_snapshot_not_partial',
+					__( 'Partial push blocked: the package is not marked as a valid partial AG Sync snapshot.', 'ag-sync-bridge' ),
+					$validation
+				);
+			}
+
+			return $validation;
+		}
+
+		$validation = $this->file_system->validate_full_snapshot_manifest( $manifest );
 
 		if ( empty( $validation['ok'] ) && ! $allow_partial_snapshot ) {
 			return new WP_Error(
@@ -388,7 +457,7 @@ class Sync_Service {
 		return $validation;
 	}
 
-	private function run_remote_preflight( $use_existing_snapshot = false ) {
+	private function run_remote_preflight( $use_existing_snapshot = false, $requires_partial_push = false ) {
 		$required_bytes = $this->estimate_remote_required_bytes( $use_existing_snapshot );
 		$result         = $this->http_client->remote_doctor( $required_bytes );
 
@@ -437,14 +506,33 @@ class Sync_Service {
 			);
 		}
 
+		if ( $requires_partial_push && $remote_plugin && version_compare( $remote_plugin, '0.1.26', '<' ) ) {
+			return new WP_Error(
+				'ag_sync_bridge_remote_version_too_old_for_partial',
+				sprintf(
+					/* translators: 1: remote version, 2: required version. */
+					__( 'Il live usa AG Sync Bridge %1$s. Aggiorna il plugin live almeno alla versione %2$s prima di fare push selettivi.', 'ag-sync-bridge' ),
+					$remote_plugin,
+					'0.1.26'
+				),
+				$result
+			);
+		}
+
 		return $result;
 	}
 
 	private function estimate_remote_required_bytes( $use_existing_snapshot = false ) {
 		unset( $use_existing_snapshot );
 
-		$list   = $this->file_system->list_packages( 'snapshots', 1, false );
-		$latest = empty( $list ) ? array() : $list[0];
+		$list   = $this->file_system->list_packages( 'snapshots', 50, false );
+		$latest = array();
+		foreach ( $list as $snapshot ) {
+			if ( 'full' === array_get( $snapshot, 'snapshot_scope', '' ) ) {
+				$latest = $snapshot;
+				break;
+			}
+		}
 		$size   = (int) array_get( $latest, 'size_bytes', 0 );
 		$path   = (string) array_get( $latest, 'path', '' );
 

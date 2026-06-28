@@ -134,7 +134,12 @@ class Admin_Page {
 			$this->respond_error( __( 'Push aborted: confirmation phrase mismatch.', 'ag-sync-bridge' ) );
 		}
 
-		$result = $this->sync->push_to_remote();
+		$partial_paths = isset( $_POST['partial_paths'] ) ? $this->parse_partial_paths( wp_unslash( $_POST['partial_paths'] ) ) : array();
+		$result        = $this->sync->push_to_remote(
+			array(
+				'partial_paths' => $partial_paths,
+			)
+		);
 		$this->respond_after_action( $result, __( 'Live site updated from local snapshot.', 'ag-sync-bridge' ) );
 	}
 
@@ -346,6 +351,9 @@ class Admin_Page {
 							<?php wp_nonce_field( 'ag_sync_bridge_push' ); ?>
 							<label for="agsb-push-confirm"><?php esc_html_e( 'Digita INVIA LIVE per confermare il push distruttivo verso il live.', 'ag-sync-bridge' ); ?></label>
 							<input id="agsb-push-confirm" type="text" name="push_confirmation" class="regular-text code" />
+							<label for="agsb-partial-paths"><?php esc_html_e( 'Percorsi file/cartelle da spingere (opzionale)', 'ag-sync-bridge' ); ?></label>
+							<textarea id="agsb-partial-paths" name="partial_paths" class="large-text code" rows="4" placeholder="robots.txt&#10;wp-content/mu-plugins/mio-file.php"></textarea>
+							<p class="description"><?php esc_html_e( 'Lascia vuoto per push completo. Usa percorsi relativi alla root WordPress, uno per riga. Il push selettivo non include database e non puo aggiornare AG Sync Bridge stesso.', 'ag-sync-bridge' ); ?></p>
 							<?php submit_button( __( 'Invia il locale al live', 'ag-sync-bridge' ), 'delete', 'submit', false ); ?>
 						</form>
 
@@ -439,6 +447,22 @@ class Admin_Page {
 		$posted = isset( $_POST['agsb_async'] ) ? sanitize_text_field( wp_unslash( $_POST['agsb_async'] ) ) : '';
 
 		return '1' === $header || '1' === $posted;
+	}
+
+	private function parse_partial_paths( $value ) {
+		$items = preg_split( '/[\r\n,]+/', (string) $value );
+		$items = is_array( $items ) ? $items : array();
+
+		return array_values(
+			array_filter(
+				array_map(
+					static function ( $path ) {
+						return trim( (string) $path );
+					},
+					$items
+				)
+			)
+		);
 	}
 
 	private function build_async_payload( $message, $result = null ) {

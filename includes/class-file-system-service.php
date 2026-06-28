@@ -295,13 +295,15 @@ class File_System_Service {
 		$packages  = $this->list_packages( $type, 999, false );
 		$summary   = $this->empty_cleanup_summary( $type );
 
-		if ( count( $packages ) <= $retention ) {
-			return $summary;
+		if ( 'snapshots' === $type ) {
+			$packages = $this->get_stale_snapshot_packages_by_scope( $packages, $retention );
+		} elseif ( count( $packages ) > $retention ) {
+			$packages = array_slice( $packages, $retention );
+		} else {
+			$packages = array();
 		}
 
-		$stale = array_slice( $packages, $retention );
-
-		foreach ( $stale as $package ) {
+		foreach ( $packages as $package ) {
 			$path = array_get( $package, 'path', '' );
 
 			if ( ! $path || ! file_exists( $path ) ) {
@@ -313,6 +315,30 @@ class File_System_Service {
 		}
 
 		return $summary;
+	}
+
+	private function get_stale_snapshot_packages_by_scope( array $packages, $retention ) {
+		$groups = array();
+
+		foreach ( $packages as $package ) {
+			$scope = (string) array_get( $package, 'snapshot_scope', 'unknown' );
+			$scope = $scope ? $scope : 'unknown';
+
+			if ( ! isset( $groups[ $scope ] ) ) {
+				$groups[ $scope ] = array();
+			}
+
+			$groups[ $scope ][] = $package;
+		}
+
+		$stale = array();
+		foreach ( $groups as $scope_packages ) {
+			if ( count( $scope_packages ) > $retention ) {
+				$stale = array_merge( $stale, array_slice( $scope_packages, $retention ) );
+			}
+		}
+
+		return $stale;
 	}
 
 	public function cleanup_runtime_storage( $snapshot_retention = null, $backup_retention = null, $temp_hours = 6 ) {
@@ -692,6 +718,69 @@ class File_System_Service {
 				}
 			)
 		);
+	}
+
+	public function normalize_partial_export_paths( array $paths ) {
+		$normalized = array();
+
+		foreach ( $paths as $path ) {
+			$relative = $this->normalize_partial_export_path( $path );
+			if ( is_wp_error( $relative ) ) {
+				return $relative;
+			}
+
+			if ( '' !== $relative ) {
+				$normalized[] = $relative;
+			}
+		}
+
+		$normalized = array_values( array_unique( array_filter( $normalized ) ) );
+		usort(
+			$normalized,
+			static function ( $left, $right ) {
+				return strlen( $left ) <=> strlen( $right );
+			}
+		);
+
+		$collapsed = array();
+		foreach ( $normalized as $relative ) {
+			foreach ( $collapsed as $existing ) {
+				if ( $relative === $existing || 0 === strpos( $relative, rtrim( $existing, '/' ) . '/' ) ) {
+					continue 2;
+				}
+			}
+			$collapsed[] = $relative;
+		}
+
+		return $collapsed;
+	}
+
+	public function get_partial_export_entries( array $paths ) {
+		$relative_paths = $this->normalize_partial_export_paths( $paths );
+		if ( is_wp_error( $relative_paths ) ) {
+			return $relative_paths;
+		}
+
+		if ( empty( $relative_paths ) ) {
+			return new \WP_Error( 'ag_sync_bridge_partial_paths_empty', __( 'No valid partial push paths were provided.', 'ag-sync-bridge' ) );
+		}
+
+		$entries = array();
+		foreach ( $relative_paths as $relative ) {
+			$source = normalize_path( ABSPATH . $relative );
+			$type   = is_dir( $source ) ? 'directory' : 'file';
+
+			$entries[] = array(
+				'component'    => 'partial:' . $relative,
+				'source'       => $source,
+				'archive'      => $this->get_partial_archive_path( $relative ),
+				'type'         => $type,
+				'partial_path' => $relative,
+				'partial_type' => $type,
+			);
+		}
+
+		return $entries;
 	}
 
 	public function get_snapshot_integrity_for_export( array $entries ) {
@@ -1310,6 +1399,113 @@ class File_System_Service {
 		}
 
 		return $files;
+	}
+
+	private function normalize_partial_export_path( $path ) {
+		$relative = trim( str_replace( '\\', '/', (string) $path ) );
+		$relative = preg_replace( '#/+#', '/', $relative );
+		$relative = ltrim( $relative, '/' );
+		$relative = rtrim( $relative, '/' );
+
+		if ( '' === $relative ) {
+			return '';
+		}
+
+		if ( false !== strpos( $relative, "\0" ) || preg_match( '#^[a-zA-Z]:/#', $relative ) || preg_match( '#(^|/)\.\.(/|$)#', $relative ) ) {
+			return new \WP_Error(
+				'ag_sync_bridge_partial_path_unsafe',
+				sprintf(
+					/* translators: %s: requested path */
+					__( 'Partial push path is unsafe or absolute: %s', 'ag-sync-bridge' ),
+					(string) $path
+				)
+			);
+		}
+
+		$relative_lc = strtolower( $relative );
+
+		if ( 'wp-config.php' === $relative_lc || 0 === strpos( $relative_lc, 'wp-admin/' ) || 0 === strpos( $relative_lc, 'wp-includes/' ) ) {
+			return new \WP_Error(
+				'ag_sync_bridge_partial_path_forbidden',
+				sprintf(
+					/* translators: %s: requested path */
+					__( 'Partial push cannot include WordPress core files or wp-config.php: %s', 'ag-sync-bridge' ),
+					$relative
+				)
+			);
+		}
+
+		if ( ! $this->is_allowed_partial_root_path( $relative ) && 0 !== strpos( $relative_lc, 'wp-content/' ) ) {
+			return new \WP_Error(
+				'ag_sync_bridge_partial_path_not_supported',
+				sprintf(
+					/* translators: %s: requested path */
+					__( 'Partial push supports wp-content paths plus root robots.txt/XML files only: %s', 'ag-sync-bridge' ),
+					$relative
+				)
+			);
+		}
+
+		$plugin_dir = dirname( $this->config->get_plugin_basename() );
+		$plugin_dir = '.' === $plugin_dir ? 'ag-sync-bridge' : trim( str_replace( '\\', '/', $plugin_dir ), '/' );
+		$plugin_rel = strtolower( 'wp-content/plugins/' . $plugin_dir );
+
+		if ( $relative_lc === $plugin_rel || 0 === strpos( $relative_lc, $plugin_rel . '/' ) ) {
+			return new \WP_Error(
+				'ag_sync_bridge_partial_path_plugin_self',
+				__( 'Partial push cannot update AG Sync Bridge itself. Release and install the plugin update instead.', 'ag-sync-bridge' )
+			);
+		}
+
+		$absolute = normalize_path( ABSPATH . $relative );
+		$root     = rtrim( normalize_path( ABSPATH ), '/' );
+
+		if ( 0 !== strpos( $absolute . '/', $root . '/' ) ) {
+			return new \WP_Error( 'ag_sync_bridge_partial_path_outside_root', __( 'Partial push path resolves outside the WordPress root.', 'ag-sync-bridge' ) );
+		}
+
+		if ( ! file_exists( $absolute ) ) {
+			return new \WP_Error(
+				'ag_sync_bridge_partial_path_missing',
+				sprintf(
+					/* translators: %s: requested path */
+					__( 'Partial push path does not exist locally: %s', 'ag-sync-bridge' ),
+					$relative
+				)
+			);
+		}
+
+		if ( $this->should_exclude( $absolute ) ) {
+			return new \WP_Error(
+				'ag_sync_bridge_partial_path_excluded',
+				sprintf(
+					/* translators: %s: requested path */
+					__( 'Partial push path is excluded by AG Sync settings: %s', 'ag-sync-bridge' ),
+					$relative
+				)
+			);
+		}
+
+		return $relative;
+	}
+
+	private function is_allowed_partial_root_path( $relative ) {
+		if ( false !== strpos( $relative, '/' ) ) {
+			return false;
+		}
+
+		$basename = strtolower( basename( $relative ) );
+		return 'robots.txt' === $basename || (bool) preg_match( '/\.xml$/i', $basename );
+	}
+
+	private function get_partial_archive_path( $relative ) {
+		$relative = trim( str_replace( '\\', '/', (string) $relative ), '/' );
+
+		if ( false === strpos( $relative, '/' ) ) {
+			return 'files/root/' . basename( $relative );
+		}
+
+		return 'files/' . $relative;
 	}
 
 	private function get_required_root_sitemap_files( $root_dir ) {

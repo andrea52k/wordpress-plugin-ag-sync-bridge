@@ -154,6 +154,11 @@ Pushes that reuse an existing local snapshot are blocked unless the manifest is
 marked `full`. If the sitemap index or V4MPG project rows reference root XML
 files, those files must also be present in the package.
 
+From `0.1.26`, the exporter can also create intentional partial snapshots for
+selective file/folder push. These packages use `snapshot_scope: partial`, omit
+`database.sql`, include `partial_entries`, and are imported with a targeted
+file-only path that does not replace unrelated directories.
+
 ## Database Import
 
 `Database_Service::import_from_file()` always prepares SQL before import.
@@ -223,8 +228,8 @@ Old binary formats such as `.xls` are not guaranteed.
 1. acquire lock
 2. run remote storage doctor/preflight
 3. request live pre-push backup
-4. create local snapshot
-5. validate the local package and `full` snapshot manifest
+4. create local full snapshot or selected-path partial snapshot
+5. validate the local package and expected manifest scope
 6. upload snapshot
 7. trigger remote async import
 8. poll remote import state
@@ -236,7 +241,8 @@ This avoids treating SSL/proxy disconnects during long imports as immediate
 push failures.
 
 The remote import endpoint also rejects non-`full` snapshots unless the caller
-passes the explicit partial-snapshot override for a recovery operation.
+passes the explicit partial-snapshot override for a recovery operation or the
+package is an intentional selective push created by `--paths`.
 
 ## Updater Sequence
 

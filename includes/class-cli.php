@@ -157,10 +157,23 @@ if ( defined( 'WP_CLI' ) && WP_CLI ) {
 		 *
 		 * [--type=<type>]
 		 * : Snapshot type label.
+		 *
+		 * [--paths=<paths>]
+		 * : Optional comma/newline separated relative paths for a file-only partial snapshot.
 		 */
 		public function snapshot( $args, $assoc_args ) {
 			$type   = isset( $assoc_args['type'] ) ? sanitize_key( $assoc_args['type'] ) : 'cli-snapshot';
-			$result = self::$sync->create_snapshot( $type, array( 'trigger' => 'wp-cli' ) );
+			$paths  = self::parse_path_list_arg( array_get( $assoc_args, 'paths', '' ) );
+			$result = empty( $paths )
+				? self::$sync->create_snapshot( $type, array( 'trigger' => 'wp-cli' ) )
+				: self::$sync->create_partial_snapshot(
+					$paths,
+					$type ?: 'cli-partial-snapshot',
+					array(
+						'trigger'       => 'wp-cli',
+						'partial_paths' => $paths,
+					)
+				);
 
 			if ( is_wp_error( $result ) ) {
 				\WP_CLI::error( $result->get_error_message() );
@@ -204,10 +217,18 @@ if ( defined( 'WP_CLI' ) && WP_CLI ) {
 		 *
 		 * [--allow-partial-snapshot]
 		 * : Explicitly allow pushing a snapshot that is not marked as full. Use only for deliberate recovery operations.
+		 *
+		 * [--paths=<paths>]
+		 * : Comma/newline separated relative paths to push as a file-only partial package. Cannot be combined with --use-existing-snapshot.
 		 */
 		public function push( $args, $assoc_args ) {
 			if ( ! empty( $assoc_args['allow-partial-snapshot'] ) ) {
 				\WP_CLI::warning( 'Partial snapshot override enabled. This can omit files from live if the selected snapshot is incomplete.' );
+			}
+
+			$paths = self::parse_path_list_arg( array_get( $assoc_args, 'paths', '' ) );
+			if ( ! empty( $paths ) ) {
+				\WP_CLI::log( 'Partial push paths: ' . implode( ', ', $paths ) );
 			}
 
 			$result = self::$sync->push_to_remote(
@@ -215,6 +236,7 @@ if ( defined( 'WP_CLI' ) && WP_CLI ) {
 					'use_existing_snapshot'  => ! empty( $assoc_args['use-existing-snapshot'] ),
 					'skip_remote_backup'     => ! empty( $assoc_args['skip-remote-backup'] ),
 					'allow_partial_snapshot' => ! empty( $assoc_args['allow-partial-snapshot'] ),
+					'partial_paths'          => $paths,
 				)
 			);
 
@@ -285,6 +307,26 @@ if ( defined( 'WP_CLI' ) && WP_CLI ) {
 				'snapshots'  => isset( $assoc_args['snapshots'] ) ? absint( $assoc_args['snapshots'] ) : null,
 				'backups'    => isset( $assoc_args['backups'] ) ? absint( $assoc_args['backups'] ) : null,
 				'temp_hours' => isset( $assoc_args['temp-hours'] ) ? absint( $assoc_args['temp-hours'] ) : 6,
+			);
+		}
+
+		private static function parse_path_list_arg( $value ) {
+			if ( is_array( $value ) ) {
+				$raw = $value;
+			} else {
+				$raw = preg_split( '/[\r\n,]+/', (string) $value );
+			}
+
+			$raw = is_array( $raw ) ? $raw : array();
+			return array_values(
+				array_filter(
+					array_map(
+						static function ( $path ) {
+							return trim( (string) $path );
+						},
+						$raw
+					)
+				)
 			);
 		}
 

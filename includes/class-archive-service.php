@@ -37,15 +37,21 @@ class Archive_Service {
 			return new WP_Error( 'ag_sync_bridge_zip_create', __( 'Unable to create snapshot archive.', 'ag-sync-bridge' ) );
 		}
 
-		$manifest['database'] = array(
-			'filename'    => 'database.sql',
-			'size_bytes'  => filesize( $database_path ),
-			'sha256'      => hash_file( 'sha256', $database_path ),
-			'exported_at' => gmdate( 'c' ),
-		);
+		$database_path = (string) $database_path;
+		if ( $database_path && file_exists( $database_path ) ) {
+			$manifest['database'] = array(
+				'filename'    => 'database.sql',
+				'size_bytes'  => filesize( $database_path ),
+				'sha256'      => hash_file( 'sha256', $database_path ),
+				'exported_at' => gmdate( 'c' ),
+			);
+			$zip->addFile( $database_path, 'database.sql' );
+		} else {
+			$manifest['database'] = array(
+				'included' => false,
+			);
+		}
 		$manifest['components'] = array();
-
-		$zip->addFile( $database_path, 'database.sql' );
 
 		foreach ( $entries as $entry ) {
 			if ( 'directory' === $entry['type'] ) {
