@@ -188,6 +188,20 @@ class Import_Service {
 				)
 			);
 
+			do_action(
+				'ag_sync_bridge_after_import',
+				$response,
+				array(
+					'package_path'     => normalize_path( $package_path ),
+					'import_scope'     => $is_partial ? 'partial' : 'full',
+					'target_site_url'  => $target_site,
+					'target_home_url'  => $target_home,
+					'source_site_url'  => $source_site,
+					'source_home_url'  => $source_home,
+					'replacements'     => $replacements,
+				)
+			);
+
 			return $response;
 		} catch ( \Throwable $throwable ) {
 			$this->logger->error(

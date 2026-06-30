@@ -20,7 +20,7 @@ Se devi modificare o gestire il plugin da un agente automatico, leggi prima:
 
 ## Versione
 
-Versione plugin: `0.1.29`
+Versione plugin: `0.1.30`
 
 Slug tecnico WordPress: `ag-sync-bridge`
 
@@ -72,6 +72,7 @@ Il plugin esclude la propria cartella dal full overwrite per non interrompere op
 - Import SQL con remap prefisso tabelle e rimozione commenti MariaDB sandbox non compatibili
 - Export PHP a batch con retry su perdita connessione MySQL
 - Import/export CLI con limiti piu robusti per snapshot grandi
+- Hook `ag_sync_bridge_after_import` eseguito sul target dopo import riuscito, utile per rebuild/cache post-sync
 
 ## Architettura
 
@@ -146,7 +147,8 @@ Quando premi `Invia il locale al live`:
 8. Il live importa database e file.
 9. Il live esegue replace URL locale -> live.
 10. Il live riscrive URL locale -> live nei dataset V4MPG supportati.
-11. Il plugin scrive log e aggiorna lo stato.
+11. Il live esegue l'hook `ag_sync_bridge_after_import` per integrazioni post-import.
+12. Il plugin scrive log e aggiorna lo stato.
 
 L'import sul live viene accettato in modalita asincrona, pianificato come evento WordPress cron singolo e monitorato dal locale con polling dello stato remoto. Questo evita che una chiusura SSL/proxy durante un import lungo venga interpretata come fallimento immediato del deploy.
 
