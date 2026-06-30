@@ -11,6 +11,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 class Database_Service {
 	const IMPORT_MAX_ALLOWED_PACKET = 268435456;
 	const IMPORT_NET_TIMEOUT        = 120;
+	const URL_REPLACE_BATCH_SIZE    = 500;
 
 	/**
 	 * @var Config
@@ -278,6 +279,7 @@ class Database_Service {
 
 		$tables_count = 0;
 		$rows_updated = 0;
+		$sources      = array_keys( $replacements );
 
 		foreach ( $tables as $table ) {
 			$text_columns = $this->get_text_columns( $table );
@@ -286,13 +288,43 @@ class Database_Service {
 			}
 
 			$tables_count++;
+			$fast_columns = $this->get_fast_replace_columns( $table, $text_columns );
+
+			if ( ! empty( $fast_columns ) ) {
+				$fast_rows = $this->replace_plain_text_columns( $table, $fast_columns, $replacements );
+				if ( is_wp_error( $fast_rows ) ) {
+					return $fast_rows;
+				}
+
+				$rows_updated += (int) $fast_rows;
+				$text_columns  = array_values( array_diff( $text_columns, $fast_columns ) );
+			}
+
+			if ( empty( $text_columns ) ) {
+				continue;
+			}
+
 			$primary_keys = $this->get_primary_keys( $table );
-			$offset       = 0;
-			$batch_size   = 200;
+			$single_key   = 1 === count( $primary_keys ) ? reset( $primary_keys ) : '';
+			$last_key     = null;
+			$batch_size   = self::URL_REPLACE_BATCH_SIZE;
 
 			do {
-				$rows = $wpdb->get_results( "SELECT * FROM `{$table}` LIMIT {$batch_size} OFFSET {$offset}", ARRAY_A );
+				$where_sql = $this->build_url_match_sql( $text_columns, $sources );
+				if ( is_wp_error( $where_sql ) ) {
+					return $where_sql;
+				}
+
+				if ( $single_key && null !== $last_key ) {
+					$where_sql = $this->quote_identifier( $single_key ) . ' > ' . $this->prepare_sql_value( $last_key ) . ' AND (' . $where_sql . ')';
+				}
+
+				$select_columns = array_values( array_unique( array_merge( $primary_keys, $text_columns ) ) );
+				$select_sql     = empty( $primary_keys ) ? '*' : implode( ', ', array_map( array( $this, 'quote_identifier' ), $select_columns ) );
+				$order_sql      = $single_key ? ' ORDER BY ' . $this->quote_identifier( $single_key ) . ' ASC' : '';
+				$rows           = $wpdb->get_results( "SELECT {$select_sql} FROM " . $this->quote_identifier( $table ) . " WHERE {$where_sql}{$order_sql} LIMIT {$batch_size}", ARRAY_A );
 				$rows = is_array( $rows ) ? $rows : array();
+				$batch_updates = 0;
 
 				foreach ( $rows as $row ) {
 					$updates = array();
@@ -327,10 +359,16 @@ class Database_Service {
 					$updated = $wpdb->update( $table, $updates, $where );
 					if ( false !== $updated ) {
 						$rows_updated++;
+						$batch_updates++;
 					}
 				}
 
-				$offset += count( $rows );
+				if ( $single_key && ! empty( $rows ) ) {
+					$last_row = end( $rows );
+					$last_key = array_get( is_array( $last_row ) ? $last_row : array(), $single_key );
+				} elseif ( ! $single_key && 0 === $batch_updates ) {
+					break;
+				}
 			} while ( count( $rows ) === $batch_size );
 		}
 
@@ -340,6 +378,90 @@ class Database_Service {
 			'tables_scanned' => $tables_count,
 			'rows_updated'   => $rows_updated,
 		);
+	}
+
+	private function get_fast_replace_columns( $table, array $text_columns ) {
+		$table = strtolower( (string) $table );
+
+		if ( ! preg_match( '/(^|_)mpg_dataset_rows$/', $table ) ) {
+			return array();
+		}
+
+		return in_array( 'row_data', $text_columns, true ) ? array( 'row_data' ) : array();
+	}
+
+	private function replace_plain_text_columns( $table, array $columns, array $replacements ) {
+		global $wpdb;
+
+		$rows_updated = 0;
+
+		foreach ( $columns as $column ) {
+			foreach ( $replacements as $source => $target ) {
+				if ( '' === $source || $source === $target ) {
+					continue;
+				}
+
+				$sql = $wpdb->prepare(
+					'UPDATE ' . $this->quote_identifier( $table ) .
+					' SET ' . $this->quote_identifier( $column ) . ' = REPLACE(' . $this->quote_identifier( $column ) . ', %s, %s)' .
+					' WHERE ' . $this->quote_identifier( $column ) . ' LIKE %s',
+					$source,
+					$target,
+					'%' . $wpdb->esc_like( $source ) . '%'
+				);
+
+				$result = $wpdb->query( $sql );
+				if ( false === $result ) {
+					return new WP_Error(
+						'ag_sync_bridge_url_replace_fast_failed',
+						$wpdb->last_error ? $wpdb->last_error : __( 'Fast URL replacement failed.', 'ag-sync-bridge' ),
+						array(
+							'table'  => $table,
+							'column' => $column,
+						)
+					);
+				}
+
+				$rows_updated += (int) $result;
+			}
+		}
+
+		if ( $rows_updated > 0 ) {
+			$this->logger->info(
+				'Fast URL replacement completed.',
+				array(
+					'table'        => $table,
+					'columns'      => array_values( $columns ),
+					'rows_updated' => $rows_updated,
+				)
+			);
+		}
+
+		return $rows_updated;
+	}
+
+	private function build_url_match_sql( array $columns, array $sources ) {
+		global $wpdb;
+
+		$conditions = array();
+		$values     = array();
+
+		foreach ( $columns as $column ) {
+			foreach ( $sources as $source ) {
+				if ( '' === $source ) {
+					continue;
+				}
+
+				$conditions[] = $this->quote_identifier( $column ) . ' LIKE %s';
+				$values[]     = '%' . $wpdb->esc_like( $source ) . '%';
+			}
+		}
+
+		if ( empty( $conditions ) ) {
+			return new WP_Error( 'ag_sync_bridge_url_replace_empty_match', __( 'URL replacement has no searchable source values.', 'ag-sync-bridge' ) );
+		}
+
+		return $wpdb->prepare( '(' . implode( ' OR ', $conditions ) . ')', $values );
 	}
 
 	private function expand_url_replacements( array $replacements ) {
@@ -499,6 +621,7 @@ class Database_Service {
 			array(
 				'--default-character-set=' . $this->get_mysql_charset(),
 				'--binary-mode',
+				'--init-command=' . $this->get_mysql_import_init_command(),
 				'--max-allowed-packet=' . self::IMPORT_MAX_ALLOWED_PACKET,
 			)
 		);
@@ -1383,6 +1506,25 @@ class Database_Service {
 		return implode( ' ', $escaped );
 	}
 
+	private function get_mysql_import_init_command() {
+		$modes      = array(
+			'NO_ZERO_DATE',
+			'NO_ZERO_IN_DATE',
+			'STRICT_TRANS_TABLES',
+			'STRICT_ALL_TABLES',
+			'TRADITIONAL',
+			'ANSI',
+			'ONLY_FULL_GROUP_BY',
+		);
+		$expression = "CONCAT(',', @@SESSION.sql_mode, ',')";
+
+		foreach ( $modes as $mode ) {
+			$expression = "REPLACE({$expression}, ',{$mode},', ',')";
+		}
+
+		return "SET SESSION sql_mode = TRIM(BOTH ',' FROM {$expression})";
+	}
+
 	private function escape_shell_argument( $argument ) {
 		$argument = (string) $argument;
 
@@ -1423,6 +1565,12 @@ class Database_Service {
 
 	private function quote_identifier( $identifier ) {
 		return '`' . str_replace( '`', '``', (string) $identifier ) . '`';
+	}
+
+	private function prepare_sql_value( $value ) {
+		global $wpdb;
+
+		return $wpdb->prepare( '%s', $value );
 	}
 
 	private function get_text_columns( $table ) {

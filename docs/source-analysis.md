@@ -67,6 +67,9 @@ La prima versione canonica della repo e stata `0.1.12`, perche incorporava anche
   - rimozione commenti MariaDB sandbox anche quando il prefisso tabelle non cambia
   - `--skip-extended-insert` su `mysqldump`
   - `--max-allowed-packet=134217728` su `mysqldump` e `mysql`
+  - import `mysql` con SQL mode di sessione compatibile con dump WordPress legacy e zero-date
+  - replace URL veloce via SQL per `wp_mpg_dataset_rows.row_data`
+  - scansione URL mirata alle righe che contengono l'URL sorgente
   - tentativo automatico di alzare limiti globali MySQL durante import, disattivabile con `AG_SYNC_BRIDGE_ALLOW_GLOBAL_MYSQL_LIMITS` impostata a false
   - filtro transient/site transient da `wp_options` durante import SQL per evitare righe cache enormi
 
@@ -94,7 +97,7 @@ La prima versione canonica della repo e stata `0.1.12`, perche incorporava anche
 - Exclude di cartelle temporanee legacy con nome derivato da un sito, perche site-specific.
 - Versione header `site-c` `0.1.11` come base, perche il numero e piu alto ma il codice e meno completo.
 - Sostituzione delle classi `class-http-client.php`, `class-rest-controller.php`, `class-lock-manager.php`, `class-file-system-service.php` con quelle di `site-c`, perche rimuoverebbe funzionalita gia migliori in `site-b`.
-- Disabilitazione totale del fallback PHP dopo errore `mysql` CLI. La repo mantiene il fallback per compatibilita e recupero, mentre riduce le cause note di errore CLI con sandbox cleanup e packet limit.
+- Disabilitazione totale del fallback PHP dopo errore `mysql` CLI. La repo mantiene il fallback per compatibilita e recupero, mentre riduce le cause note di errore CLI con sandbox cleanup, packet limit e SQL mode di sessione compatibile con WordPress.
 - `SET GLOBAL` MySQL sempre attivo. Rimane disponibile solo via costante opt-in, perche su hosting condivisi puo fallire o modificare variabili globali del server.
 
 ## Stato finale atteso

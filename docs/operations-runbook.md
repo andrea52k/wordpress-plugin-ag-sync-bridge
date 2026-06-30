@@ -342,6 +342,26 @@ Fix is in `0.1.14+`:
 - MySQL import packet limit is larger
 - runtime cache is refreshed before restoring local state
 
+### Slow Pull After MySQL CLI Fallback
+
+Symptom:
+
+```text
+mysql import failed. Falling back to PHP importer.
+ERROR 1067 (42000): Invalid default value for 'scheduled_date_gmt'
+```
+
+Cause: the local MySQL session rejects legacy WordPress zero-date defaults while
+importing tables such as `wp_actionscheduler_actions`, so the sync falls back to
+the slower PHP importer. Sites with large MPG datasets can then spend a long time
+in URL replacement.
+
+Fix is in `0.1.29+`:
+
+- the `mysql` import session removes WordPress-incompatible SQL modes
+- `wp_mpg_dataset_rows.row_data` URL replacement uses direct SQL `REPLACE`
+- other text columns are selected only when they contain a source URL
+
 ### Bad Signature
 
 Symptom:
