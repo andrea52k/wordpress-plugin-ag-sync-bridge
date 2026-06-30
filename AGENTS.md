@@ -148,9 +148,9 @@ Live to local pull:
 
 1. Local acquires lock.
 2. Local creates pre-pull backup.
-3. Local asks live to create fresh snapshot.
-4. Live exports DB and files into ZIP.
-5. Local downloads snapshot, usually raw chunks.
+3. Local asks live to create a fresh async snapshot.
+4. Live exports DB and files into ZIP through WP-Cron.
+5. Local polls remote state and downloads snapshot, usually raw chunks.
 6. Local verifies checksum.
 7. Local imports DB.
 8. Local replaces live URLs with local URLs.
@@ -172,7 +172,7 @@ Important DB import behavior:
 Local to live push:
 
 1. UI requires exact confirmation `INVIA LIVE`.
-2. Live creates pre-push backup.
+2. Live pre-push backup is skipped by default unless explicitly enabled.
 3. Local creates complete snapshot.
 4. Local uploads snapshot to live.
 5. Live imports asynchronously through WP-Cron.

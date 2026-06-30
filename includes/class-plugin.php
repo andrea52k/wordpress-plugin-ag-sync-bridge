@@ -160,6 +160,7 @@ class Plugin {
 		add_action( 'wp_ajax_ag_sync_bridge_operation_status', array( $this->admin_page, 'handle_operation_status' ) );
 		add_action( 'update_option_' . Config::OPTION_SETTINGS, array( $this, 'handle_settings_updated' ), 10, 3 );
 		add_action( Scheduler::HOOK_ASYNC_IMPORT, array( $this->rest_controller, 'run_async_import_snapshot' ), 10, 3 );
+		add_action( Scheduler::HOOK_ASYNC_SNAPSHOT, array( $this->rest_controller, 'run_async_create_snapshot' ), 10, 2 );
 
 		$this->scheduler->register();
 		$this->maybe_register_cli();

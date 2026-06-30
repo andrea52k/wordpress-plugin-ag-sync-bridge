@@ -2,7 +2,7 @@
 
 Versione canonica del plugin WordPress `ag-sync-bridge`.
 
-Il plugin sincronizza un sito WordPress locale e un sito live tramite snapshot completi, con pull manuale o auto-pull settimanale sul locale, push manuale protetto verso il live, cron settimanale sul live, backup automatici e log leggibili.
+Il plugin sincronizza un sito WordPress locale e un sito live tramite snapshot completi, con pull manuale o auto-pull settimanale sul locale, push manuale protetto verso il live, cron settimanale sul live, backup locali automatici e log leggibili.
 
 Questa repo nasce dal confronto di quattro installazioni WordPress preesistenti.
 I percorsi locali e i domini reali non sono documentati nella repo pubblica.
@@ -20,7 +20,7 @@ Se devi modificare o gestire il plugin da un agente automatico, leggi prima:
 
 ## Versione
 
-Versione plugin: `0.1.27`
+Versione plugin: `0.1.28`
 
 Slug tecnico WordPress: `ag-sync-bridge`
 
@@ -52,6 +52,7 @@ Il plugin esclude la propria cartella dal full overwrite per non interrompere op
 
 - Endpoint REST protetti con HMAC SHA-256, timestamp e anti-replay transient
 - Aggiornamenti plugin da GitHub Releases
+- Creazione snapshot live asincrona per evitare timeout HTTP durante i pull
 - Download snapshot streaming, chunked JSON e raw chunked
 - Upload snapshot diretto o a chunk form-encoded, compatibile con hosting che svuotano il raw body REST
 - Import remoto asincrono con polling dello stato remoto
@@ -60,7 +61,8 @@ Il plugin esclude la propria cartella dal full overwrite per non interrompere op
 - Controllo root sitemap/XML per evitare DB o sitemap index che puntano a file non presenti
 - Estrazione ZIP entry-by-entry con diagnostica del file che fallisce
 - Pulizia automatica di snapshot, backup, incoming, temp e upload chunk dopo operazioni e fallimenti
-- Backup automatico prima di pull e push
+- Backup automatico locale prima del pull
+- Backup live pre-push disattivati di default, riattivabili solo da impostazione/costante
 - Restore locale da backup
 - Cleanup storage locale e remoto
 - Lock runtime con sblocco forzato via WP-CLI
@@ -119,7 +121,7 @@ Il plugin esclude la propria cartella dal full overwrite per non interrompere op
 Quando premi `Aggiorna il locale dal live`:
 
 1. Il locale crea un backup automatico.
-2. Il live genera uno snapshot aggiornato.
+2. Il live accetta la richiesta e genera uno snapshot aggiornato in asincrono.
 3. Il locale scarica lo snapshot.
 4. Il locale importa il database.
 5. Il locale esegue replace URL live -> locale in modo serializzato-safe.
@@ -136,7 +138,7 @@ Quando premi `Invia il locale al live`:
 
 1. Devi digitare `INVIA LIVE`.
 2. Il locale esegue un preflight remoto su storage, permessi e test scrittura.
-3. Il live crea un backup automatico.
+3. Il backup live pre-push viene saltato di default per non consumare quota hosting.
 4. Il locale crea uno snapshot completo.
 5. Lo snapshot viene validato localmente: ZIP estraibile, manifest `full`, database, componenti e sitemap root coerenti.
 6. Lo snapshot viene caricato sul live.
@@ -183,11 +185,13 @@ cache, runtime AG Sync e la cartella del plugin sono bloccati.
 - Temp/incoming/chunk upload: puliti automaticamente dopo operazioni concluse o fallite
 - Restore locale disponibile dalla UI admin
 - Restore da ZIP/cartella esterna configurabile nelle impostazioni
+- I backup live prima dei push sono disattivati di default; se servono, abilita `Backup live prima dei push` consapevolmente.
 
 ## Cron
 
 - Snapshot settimanale live: `ag_sync_bridge_weekly_snapshot`
 - Auto-pull settimanale locale: `ag_sync_bridge_weekly_pull`
+- Snapshot live asincrona per pull manuale: `ag_sync_bridge_async_create_snapshot`
 - Import remoto asincrono: `ag_sync_bridge_async_import_snapshot`
 
 ## WP-CLI
@@ -215,6 +219,7 @@ wp agsync unlock
 - `AG_SYNC_BRIDGE_STORAGE_DIR`
 - `AG_SYNC_BRIDGE_AUTO_PULL_ENABLED`
 - `AG_SYNC_BRIDGE_INCLUDE_HTACCESS`
+- `AG_SYNC_BRIDGE_REMOTE_BACKUPS_ENABLED`
 - `AG_SYNC_BRIDGE_RETENTION_COUNT`
 - `AG_SYNC_BRIDGE_REQUEST_TIMEOUT`
 - `AG_SYNC_BRIDGE_EXCLUDE_PATTERNS`
@@ -268,6 +273,7 @@ Da `0.1.17`, cliccare `Bacheca > Aggiornamenti > Verifica di nuovo` forza anche 
 ## Limiti tecnici
 
 - Snapshot molto grandi possono richiedere tempi lunghi su hosting condiviso.
+- Da `0.1.28`, i pull freschi richiedono AG Sync Bridge `0.1.28` anche sul live per creare la snapshot in asincrono; con live piu vecchi il provider puo ancora tagliare la chiamata HTTP.
 - Se `ZipArchive` manca, il plugin non puo creare/importare snapshot ZIP.
 - `wp agsync push --use-existing-snapshot` riusa solo snapshot marcati `full`; vecchi pacchetti senza scope vengono bloccati.
 - `wp agsync push --paths=...` crea un pacchetto parziale file-only e richiede AG Sync Bridge `0.1.26` o superiore anche sul live; i root text sicuri come `llms.txt` richiedono `0.1.27`.

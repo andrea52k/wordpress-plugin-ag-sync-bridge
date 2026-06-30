@@ -9,6 +9,7 @@ class Scheduler {
 	const HOOK_WEEKLY_SNAPSHOT = 'ag_sync_bridge_weekly_snapshot';
 	const HOOK_WEEKLY_PULL     = 'ag_sync_bridge_weekly_pull';
 	const HOOK_ASYNC_IMPORT    = 'ag_sync_bridge_async_import_snapshot';
+	const HOOK_ASYNC_SNAPSHOT  = 'ag_sync_bridge_async_create_snapshot';
 
 	/**
 	 * @var Config
@@ -83,6 +84,8 @@ class Scheduler {
 	public function clear() {
 		$this->clear_hook( self::HOOK_WEEKLY_SNAPSHOT );
 		$this->clear_hook( self::HOOK_WEEKLY_PULL );
+		$this->clear_hook( self::HOOK_ASYNC_IMPORT );
+		$this->clear_hook( self::HOOK_ASYNC_SNAPSHOT );
 	}
 
 	public function run_weekly_snapshot() {

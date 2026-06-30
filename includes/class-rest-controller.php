@@ -260,6 +260,45 @@ class Rest_Controller {
 	public function create_snapshot( WP_REST_Request $request ) {
 		$type   = sanitize_key( (string) $request->get_param( 'type' ) );
 		$type   = $type ?: 'manual-remote-snapshot';
+		$async  = (bool) $request->get_param( 'async' );
+
+		if ( $async ) {
+			$operation_id = function_exists( 'wp_generate_uuid4' ) ? wp_generate_uuid4() : md5( uniqid( (string) wp_rand(), true ) );
+			$operation    = array(
+				'id'         => $operation_id,
+				'type'       => $type,
+				'status'     => 'queued',
+				'stage'      => 'remote-snapshot',
+				'started_at' => gmdate( 'c' ),
+				'updated_at' => gmdate( 'c' ),
+			);
+
+			$this->config->set_state_value( 'remote_snapshot_operation', $operation );
+			$this->logger->info( 'Remote async snapshot queued.', $operation );
+
+			$scheduled = wp_schedule_single_event( time() + 1, Scheduler::HOOK_ASYNC_SNAPSHOT, array( $operation_id, $type ) );
+			if ( false === $scheduled ) {
+				return new WP_Error(
+					'ag_sync_bridge_remote_snapshot_schedule_failed',
+					__( 'Unable to schedule remote async snapshot.', 'ag-sync-bridge' ),
+					array( 'status' => 500 )
+				);
+			}
+
+			if ( function_exists( 'spawn_cron' ) ) {
+				spawn_cron( time() );
+			}
+
+			return new WP_REST_Response(
+				array(
+					'accepted'     => true,
+					'operation_id' => $operation_id,
+					'type'         => $type,
+				),
+				202
+			);
+		}
+
 		$result = $this->sync->create_snapshot(
 			$type,
 			array(
@@ -273,6 +312,18 @@ class Rest_Controller {
 	public function create_backup( WP_REST_Request $request ) {
 		$type   = sanitize_key( (string) $request->get_param( 'type' ) );
 		$type   = $type ?: 'remote-backup';
+
+		if ( ! $this->config->get( 'remote_backups_enabled', false ) ) {
+			$result = array(
+				'skipped'    => true,
+				'reason'     => 'remote_backups_disabled',
+				'type'       => $type,
+				'skipped_at' => gmdate( 'c' ),
+			);
+			$this->logger->info( 'Remote backup request skipped because remote backups are disabled.', $result );
+			return new WP_REST_Response( $result );
+		}
+
 		$result = $this->sync->create_backup(
 			$type,
 			array(
@@ -281,6 +332,50 @@ class Rest_Controller {
 		);
 
 		return is_wp_error( $result ) ? $result : new WP_REST_Response( $result );
+	}
+
+	public function run_async_create_snapshot( $operation_id, $type ) {
+		@set_time_limit( 0 );
+		@ini_set( 'memory_limit', '-1' );
+
+		$type      = sanitize_key( (string) $type );
+		$type      = $type ?: 'manual-remote-snapshot';
+		$operation = array(
+			'id'         => $operation_id,
+			'type'       => $type,
+			'status'     => 'running',
+			'stage'      => 'remote-snapshot',
+			'started_at' => gmdate( 'c' ),
+			'updated_at' => gmdate( 'c' ),
+		);
+		$this->config->set_state_value( 'remote_snapshot_operation', $operation );
+
+		$result = $this->sync->create_snapshot(
+			$type,
+			array(
+				'trigger' => 'remote-api-async',
+			)
+		);
+
+		if ( is_wp_error( $result ) ) {
+			$operation['status']      = 'error';
+			$operation['updated_at']  = gmdate( 'c' );
+			$operation['finished_at'] = gmdate( 'c' );
+			$operation['message']     = $result->get_error_message();
+			$operation['data']        = $result->get_error_data();
+			$this->config->set_state_value( 'remote_snapshot_operation', $operation );
+			$this->file_system->cleanup_runtime_storage( null, null, 0 );
+			$this->logger->error( 'Remote async snapshot failed.', $operation );
+			return;
+		}
+
+		$operation['status']      = 'complete';
+		$operation['updated_at']  = gmdate( 'c' );
+		$operation['finished_at'] = gmdate( 'c' );
+		$operation['result']      = $result;
+		$this->config->set_state_value( 'remote_snapshot_operation', $operation );
+		$this->file_system->cleanup_runtime_storage( null, null, 0 );
+		$this->logger->info( 'Remote async snapshot completed.', $operation );
 	}
 
 	public function upload_snapshot( WP_REST_Request $request ) {

@@ -241,7 +241,9 @@ class Sync_Service {
 
 		try {
 			$use_existing_snapshot = ! empty( $args['use_existing_snapshot'] );
-			$skip_remote_backup    = ! empty( $args['skip_remote_backup'] );
+			$remote_backups_enabled = ! empty( $this->config->get( 'remote_backups_enabled', false ) );
+			$skip_remote_backup_arg = ! empty( $args['skip_remote_backup'] );
+			$skip_remote_backup    = $skip_remote_backup_arg || ! $remote_backups_enabled;
 			$allow_partial_snapshot = ! empty( $args['allow_partial_snapshot'] );
 			$partial_paths          = array_get( $args, 'partial_paths', array() );
 			$partial_paths          = is_array( $partial_paths ) ? $partial_paths : array();
@@ -256,8 +258,11 @@ class Sync_Service {
 				return $error;
 			}
 
-			$this->logger->info( 'Push started.', array( 'remote_url' => $this->config->get_remote_url(), 'use_existing_snapshot' => $use_existing_snapshot, 'skip_remote_backup' => $skip_remote_backup, 'allow_partial_snapshot' => $allow_partial_snapshot, 'partial_paths' => $partial_paths ) );
-			$remote_backup = array( 'skipped' => true );
+			$this->logger->info( 'Push started.', array( 'remote_url' => $this->config->get_remote_url(), 'use_existing_snapshot' => $use_existing_snapshot, 'remote_backups_enabled' => $remote_backups_enabled, 'skip_remote_backup' => $skip_remote_backup, 'allow_partial_snapshot' => $allow_partial_snapshot, 'partial_paths' => $partial_paths ) );
+			$remote_backup = array(
+				'skipped' => true,
+				'reason'  => $remote_backups_enabled ? 'skip_remote_backup' : 'remote_backups_disabled',
+			);
 
 			$this->update_operation( 'push', 3, 'remote-preflight', __( 'Controllo prerequisiti storage sul live...', 'ag-sync-bridge' ) );
 			$remote_preflight = $this->run_remote_preflight( $use_existing_snapshot, $is_partial_push );
@@ -283,6 +288,8 @@ class Sync_Service {
 				}
 
 				$this->logger->info( 'Remote pre-push backup completed.', array( 'backup' => array_get( $remote_backup, 'basename', '' ) ) );
+			} else {
+				$this->logger->info( 'Remote pre-push backup skipped.', $remote_backup );
 			}
 
 			$snapshot_message = $is_partial_push ? __( 'Creazione snapshot parziale del locale...', 'ag-sync-bridge' ) : ( $use_existing_snapshot ? __( 'Riutilizzo ultimo snapshot locale...', 'ag-sync-bridge' ) : __( 'Creazione snapshot completo del locale...', 'ag-sync-bridge' ) );

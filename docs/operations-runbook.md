@@ -72,6 +72,10 @@ has a manifest scope of `full`:
 C:\xampp\php\php.exe C:\xampp\wp-cli.phar agsync push --use-existing-snapshot --path=C:\xampp\htdocs\<site>
 ```
 
+From `0.1.28`, live pre-push backups are disabled by default. Enable the
+`Backup live prima dei push` setting or `AG_SYNC_BRIDGE_REMOTE_BACKUPS_ENABLED`
+only when the live hosting quota can safely hold those backups.
+
 Selective file/folder push, available only when both local and live run
 AG Sync Bridge `0.1.26` or newer:
 
@@ -123,6 +127,10 @@ In WordPress admin:
 3. upload ZIP
 4. confirm replacement
 5. activate if WordPress leaves it inactive
+
+For `0.1.28`, update both local and live before retrying a fresh pull. The live
+must expose async snapshot creation or the hosting provider can still cut the
+snapshot request with an HTTP timeout.
 
 Do not delete:
 
@@ -253,9 +261,9 @@ C:\xampp\php\php.exe C:\xampp\wp-cli.phar agsync doctor --path=C:\xampp\htdocs\<
 
 If the remote doctor route is missing, update AG Sync Bridge on the live site
 before retrying push. If doctor reports free space below required or failed
-write tests, fix server quota/permissions first. Do not use
-`--skip-remote-backup` as a workaround unless a fresh live backup already
-completed and the server storage issue is understood.
+write tests, fix server quota/permissions first. Do not enable live pre-push
+backups as a workaround unless the server quota and storage requirement are
+understood.
 
 From `0.1.24`, completed and failed operations mark their operation state as
 finished and trigger runtime cleanup automatically. The default retention for
@@ -271,6 +279,11 @@ From `0.1.26`, use `agsync push --paths=<relative-paths>` for deliberate
 file-only deploys such as `robots.txt`. From `0.1.27`, the same flow also
 supports safe root text files such as `llms.txt`. Update the live plugin first;
 older live versions reject or cannot import unsupported partial packages.
+
+From `0.1.28`, fresh pulls create the live snapshot asynchronously through
+`ag_sync_bridge_async_create_snapshot`. If a pull still fails with provider
+messages such as `Request Timeout` or `takes too long to process`, confirm the
+live is also on `0.1.28` or newer.
 
 ### Plugin Deactivated: File Does Not Exist
 

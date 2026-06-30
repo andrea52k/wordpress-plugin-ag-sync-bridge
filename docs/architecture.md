@@ -30,7 +30,7 @@ The plugin version must be kept in sync in:
 | `includes/class-archive-service.php` | ZIP creation/extraction |
 | `includes/class-http-client.php` | Remote calls, chunk upload/download, polling |
 | `includes/class-lock-manager.php` | Runtime lock acquisition/release |
-| `includes/class-scheduler.php` | Weekly snapshot/pull cron and async import cron |
+| `includes/class-scheduler.php` | Weekly snapshot/pull cron, async snapshot cron, async import cron |
 | `includes/class-github-updater.php` | GitHub Releases based plugin updater |
 | `includes/class-cli.php` | `wp agsync ...` commands |
 | `includes/class-logger.php` | File log and recent log option |
@@ -77,7 +77,7 @@ not overwrite the local remote URL, shared secret, role, `siteurl`, or `home`.
 
 - live hosting
 - accepts authenticated REST actions
-- creates snapshots/backups for local
+- creates snapshots for local and optional backups when explicitly enabled
 - imports pushed snapshots asynchronously
 
 Role detection is based on `home_url()` host unless overridden by settings or
@@ -202,11 +202,16 @@ Old binary formats such as `.xls` are not guaranteed.
 
 1. acquire lock
 2. create local pre-pull backup
-3. request live snapshot
+3. request live snapshot asynchronously and poll remote state
 4. download snapshot
 5. import snapshot
 6. save `last_pull`
 7. release lock
+
+Remote snapshot creation is asynchronous through
+`ag_sync_bridge_async_create_snapshot`. The REST request returns `202` quickly,
+then the local client polls `remote_snapshot_operation` until the live ZIP is
+ready. This avoids provider/proxy timeouts while the live exports a large site.
 
 `Import_Service::import_snapshot()`:
 
@@ -227,7 +232,7 @@ Old binary formats such as `.xls` are not guaranteed.
 
 1. acquire lock
 2. run remote storage doctor/preflight
-3. request live pre-push backup
+3. skip live pre-push backup unless `remote_backups_enabled` is explicitly on
 4. create local full snapshot or selected-path partial snapshot
 5. validate the local package and expected manifest scope
 6. upload snapshot
@@ -239,6 +244,10 @@ Old binary formats such as `.xls` are not guaranteed.
 Remote import is asynchronous through `ag_sync_bridge_async_import_snapshot`.
 This avoids treating SSL/proxy disconnects during long imports as immediate
 push failures.
+
+Live pre-push backups are disabled by default from `0.1.28` to avoid consuming
+hosting quota. They can be enabled from the admin setting or the
+`AG_SYNC_BRIDGE_REMOTE_BACKUPS_ENABLED` constant.
 
 The remote import endpoint also rejects non-`full` snapshots unless the caller
 passes the explicit partial-snapshot override for a recovery operation or the

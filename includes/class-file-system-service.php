@@ -99,6 +99,7 @@ class File_System_Service {
 
 		$state            = $this->config->get_state();
 		$current_operation = array_get( $state, 'current_operation', array() );
+		$remote_snapshot   = array_get( $state, 'remote_snapshot_operation', array() );
 		$remote_import     = array_get( $state, 'remote_import_operation', array() );
 
 		$result = array(
@@ -109,8 +110,9 @@ class File_System_Service {
 			'storage_dir'         => $this->config->get_storage_dir(),
 			'directories'         => $results,
 			'operation'           => array(
-				'current'       => is_array( $current_operation ) ? $current_operation : array(),
-				'remote_import' => is_array( $remote_import ) ? $remote_import : array(),
+				'current'         => is_array( $current_operation ) ? $current_operation : array(),
+				'remote_snapshot' => is_array( $remote_snapshot ) ? $remote_snapshot : array(),
+				'remote_import'   => is_array( $remote_import ) ? $remote_import : array(),
 			),
 			'php'                 => array(
 				'upload_tmp_dir'     => (string) ini_get( 'upload_tmp_dir' ),
@@ -348,9 +350,11 @@ class File_System_Service {
 		$min_age_seconds = max( 0, absint( $temp_hours ) * HOUR_IN_SECONDS );
 		$state           = $this->config->get_state();
 		$operation       = array_get( $state, 'current_operation', array() );
+		$remote_snapshot = array_get( $state, 'remote_snapshot_operation', array() );
 		$remote_import   = array_get( $state, 'remote_import_operation', array() );
 		$operation_status = is_array( $operation ) ? (string) array_get( $operation, 'status', '' ) : '';
 		$operation_open  = is_array( $operation ) && ! empty( $operation ) && in_array( $operation_status, array( 'queued', 'running' ), true );
+		$operation_open  = $operation_open || ( is_array( $remote_snapshot ) && in_array( array_get( $remote_snapshot, 'status', '' ), array( 'queued', 'running' ), true ) );
 		$operation_open  = $operation_open || ( is_array( $remote_import ) && in_array( array_get( $remote_import, 'status', '' ), array( 'queued', 'running' ), true ) );
 		$results         = array(
 			'snapshots'       => $this->cleanup_old_packages( 'snapshots', $snapshot_retention ),

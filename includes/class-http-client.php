@@ -54,13 +54,24 @@ class Http_Client {
 	}
 
 	public function create_remote_snapshot( $type = 'manual-remote-snapshot' ) {
-		return $this->request_json(
+		$result = $this->request_json(
 			'POST',
 			'/ag-sync-bridge/v1/snapshot/create',
 			array(
-				'type' => $type,
+				'type'  => $type,
+				'async' => true,
 			)
 		);
+
+		if ( is_wp_error( $result ) ) {
+			return $this->normalize_remote_snapshot_create_error( $result );
+		}
+
+		if ( ! empty( $result['accepted'] ) && ! empty( $result['operation_id'] ) ) {
+			return $this->wait_for_remote_snapshot( (string) $result['operation_id'] );
+		}
+
+		return $result;
 	}
 
 	public function get_latest_snapshot() {
@@ -510,6 +521,85 @@ class Http_Client {
 		}
 
 		return $this->wait_for_remote_import( (string) $result['operation_id'] );
+	}
+
+	private function wait_for_remote_snapshot( $operation_id ) {
+		$started_at       = time();
+		$timeout          = max( 60, $this->config->get_request_timeout() );
+		$transient_errors = 0;
+
+		while ( ( time() - $started_at ) < $timeout ) {
+			sleep( 5 );
+
+			$status = $this->request_json( 'GET', '/ag-sync-bridge/v1/operation/status' );
+			if ( is_wp_error( $status ) ) {
+				if ( $this->is_retryable_remote_import_poll_error( $status ) ) {
+					$transient_errors++;
+					$this->logger->warning(
+						'Remote snapshot status polling hit a transient error. Retrying.',
+						array(
+							'operation_id' => $operation_id,
+							'attempt'      => $transient_errors,
+							'status'       => $this->get_remote_http_error_status( $status ),
+							'error'        => $status->get_error_message(),
+						)
+					);
+					continue;
+				}
+
+				return $status;
+			}
+
+			$operation = array_get( $status, 'remote_snapshot_operation', array() );
+			if ( empty( $operation ) || (string) array_get( $operation, 'id', '' ) !== $operation_id ) {
+				continue;
+			}
+
+			$state = (string) array_get( $operation, 'status', '' );
+			if ( 'complete' === $state ) {
+				return array_get( $operation, 'result', array() );
+			}
+
+			if ( 'error' === $state ) {
+				return new WP_Error(
+					'ag_sync_bridge_remote_snapshot_async_failed',
+					(string) array_get( $operation, 'message', __( 'Remote snapshot failed.', 'ag-sync-bridge' ) ),
+					array_get( $operation, 'data', null )
+				);
+			}
+		}
+
+		return new WP_Error(
+			'ag_sync_bridge_remote_snapshot_timeout',
+			__( 'Remote snapshot did not finish before the request timeout.', 'ag-sync-bridge' ),
+			array(
+				'operation_id' => $operation_id,
+				'timeout'      => $timeout,
+			)
+		);
+	}
+
+	private function normalize_remote_snapshot_create_error( WP_Error $error ) {
+		$data = $error->get_error_data();
+		$body = is_array( $data ) ? (string) array_get( $data, 'body', '' ) : '';
+
+		if ( false !== stripos( $error->get_error_message(), 'status 404' ) || false !== stripos( $body, 'rest_no_route' ) ) {
+			return new WP_Error(
+				'ag_sync_bridge_remote_snapshot_async_missing',
+				__( 'Il live non espone ancora la creazione snapshot asincrona. Aggiorna AG Sync Bridge sul live alla versione 0.1.28 o successiva e riprova il pull.', 'ag-sync-bridge' ),
+				$data
+			);
+		}
+
+		if ( false !== stripos( $error->get_error_message(), 'timeout' ) || false !== stripos( $body, 'Request Timeout' ) || false !== stripos( $body, 'takes too long to process' ) ) {
+			return new WP_Error(
+				'ag_sync_bridge_remote_snapshot_sync_timeout',
+				__( 'Il live ha interrotto la creazione snapshot prima della fine. Aggiorna AG Sync Bridge sul live alla versione 0.1.28 o successiva, cosi la snapshot verra creata in asincrono.', 'ag-sync-bridge' ),
+				$data
+			);
+		}
+
+		return $error;
 	}
 
 	private function wait_for_remote_import( $operation_id ) {

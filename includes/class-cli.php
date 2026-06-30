@@ -213,7 +213,7 @@ if ( defined( 'WP_CLI' ) && WP_CLI ) {
 		 * : Reuse the latest local snapshot instead of creating a fresh one.
 		 *
 		 * [--skip-remote-backup]
-		 * : Skip live backup creation, useful only for retrying a failed upload after a backup already succeeded.
+		 * : Skip live backup creation when live backups are explicitly enabled. Live backups are disabled by default.
 		 *
 		 * [--allow-partial-snapshot]
 		 * : Explicitly allow pushing a snapshot that is not marked as full. Use only for deliberate recovery operations.

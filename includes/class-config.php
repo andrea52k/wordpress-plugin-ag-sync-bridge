@@ -18,6 +18,7 @@ class Config {
 			'storage_dir'          => '',
 			'auto_pull_enabled'    => false,
 			'include_htaccess'     => false,
+			'remote_backups_enabled' => false,
 			'retention_count'      => 1,
 			'request_timeout'      => 900,
 			'exclude_patterns'     => implode( "\n", $this->get_default_exclude_patterns() ),
@@ -34,6 +35,8 @@ class Config {
 			'last_connection'    => array(),
 			'last_authenticated_request' => array(),
 			'current_operation'  => array(),
+			'remote_snapshot_operation' => array(),
+			'remote_import_operation' => array(),
 			'last_operation_log' => '',
 			'storage_policy_version' => AG_SYNC_BRIDGE_VERSION,
 		);
@@ -116,6 +119,7 @@ class Config {
 			'storage_dir'          => $storage_dir,
 			'auto_pull_enabled'    => ! empty( $input['auto_pull_enabled'] ),
 			'include_htaccess'     => ! empty( $input['include_htaccess'] ),
+			'remote_backups_enabled' => ! empty( $input['remote_backups_enabled'] ),
 			'retention_count'      => $retention_count,
 			'request_timeout'      => $request_timeout,
 			'exclude_patterns'     => $exclude_patterns,
@@ -153,6 +157,10 @@ class Config {
 
 		if ( defined( 'AG_SYNC_BRIDGE_INCLUDE_HTACCESS' ) ) {
 			$settings['include_htaccess'] = (bool) AG_SYNC_BRIDGE_INCLUDE_HTACCESS;
+		}
+
+		if ( defined( 'AG_SYNC_BRIDGE_REMOTE_BACKUPS_ENABLED' ) ) {
+			$settings['remote_backups_enabled'] = (bool) AG_SYNC_BRIDGE_REMOTE_BACKUPS_ENABLED;
 		}
 
 		if ( defined( 'AG_SYNC_BRIDGE_RETENTION_COUNT' ) ) {

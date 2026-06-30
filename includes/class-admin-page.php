@@ -268,6 +268,13 @@ class Admin_Page {
 								<td><label><input type="checkbox" name="<?php echo esc_attr( Config::OPTION_SETTINGS ); ?>[include_htaccess]" value="1" <?php checked( ! empty( $settings['include_htaccess'] ) ); ?> /> <?php esc_html_e( 'Include and overwrite .htaccess when present in snapshots.', 'ag-sync-bridge' ); ?></label></td>
 							</tr>
 							<tr>
+								<th scope="row"><?php esc_html_e( 'Backup live prima dei push', 'ag-sync-bridge' ); ?></th>
+								<td>
+									<label><input type="checkbox" name="<?php echo esc_attr( Config::OPTION_SETTINGS ); ?>[remote_backups_enabled]" value="1" <?php checked( ! empty( $settings['remote_backups_enabled'] ) ); ?> /> <?php esc_html_e( 'Crea un backup sul live prima dei push.', 'ag-sync-bridge' ); ?></label>
+									<p class="description"><?php esc_html_e( 'Disattivato di default: i backup ordinari restano sul locale per evitare di consumare quota hosting.', 'ag-sync-bridge' ); ?></p>
+								</td>
+							</tr>
+							<tr>
 								<th scope="row"><label for="agsb-retention"><?php esc_html_e( 'Retention', 'ag-sync-bridge' ); ?></label></th>
 								<td><input id="agsb-retention" type="number" min="1" max="10" name="<?php echo esc_attr( Config::OPTION_SETTINGS ); ?>[retention_count]" value="<?php echo esc_attr( $settings['retention_count'] ); ?>" /> <span class="description"><?php esc_html_e( 'Keep this many snapshots/backups.', 'ag-sync-bridge' ); ?></span></td>
 							</tr>
@@ -301,6 +308,7 @@ class Admin_Page {
 							<tr><th><?php esc_html_e( 'Resolved role', 'ag-sync-bridge' ); ?></th><td><code><?php echo esc_html( $settings['role'] ); ?></code></td></tr>
 							<tr><th><?php esc_html_e( 'Plugin version', 'ag-sync-bridge' ); ?></th><td><?php echo esc_html( AG_SYNC_BRIDGE_VERSION ); ?></td></tr>
 							<tr><th><?php esc_html_e( 'Storage', 'ag-sync-bridge' ); ?></th><td><code><?php echo esc_html( $settings['storage_dir'] ); ?></code></td></tr>
+							<tr><th><?php esc_html_e( 'Backup live pre-push', 'ag-sync-bridge' ); ?></th><td><?php echo esc_html( ! empty( $settings['remote_backups_enabled'] ) ? __( 'Attivi', 'ag-sync-bridge' ) : __( 'Disattivati', 'ag-sync-bridge' ) ); ?></td></tr>
 							<tr><th><?php esc_html_e( 'Latest local snapshot', 'ag-sync-bridge' ); ?></th><td><?php echo wp_kses_post( $this->format_snapshot_meta( $latest_snapshot ) ); ?></td></tr>
 							<tr><th><?php esc_html_e( 'Latest remote status', 'ag-sync-bridge' ); ?></th><td><?php echo wp_kses_post( $this->format_remote_status( $last_connection, $remote_status ) ); ?></td></tr>
 							<tr><th><?php esc_html_e( 'Snapshot settimanale', 'ag-sync-bridge' ); ?></th><td><?php echo esc_html( $this->format_schedule_status( $settings, $remote_status, $next_schedule ) ); ?></td></tr>
