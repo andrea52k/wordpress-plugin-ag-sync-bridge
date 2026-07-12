@@ -285,6 +285,11 @@ From `0.1.28`, fresh pulls create the live snapshot asynchronously through
 messages such as `Request Timeout` or `takes too long to process`, confirm the
 live is also on `0.1.28` or newer.
 
+From `0.1.32`, a signed recovery route runs an import that remains `queued` for
+more than 20 seconds. It is used only for the matching uploaded operation and
+prevents hosts with a disabled or unreliable WP-Cron spawn from waiting until
+the full request timeout.
+
 ### Plugin Deactivated: File Does Not Exist
 
 Symptom:

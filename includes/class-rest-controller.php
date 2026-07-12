@@ -168,6 +168,16 @@ class Rest_Controller {
 
 		register_rest_route(
 			'ag-sync-bridge/v1',
+			'/operation/run-pending-import',
+			array(
+				'methods'             => 'POST',
+				'callback'            => array( $this, 'run_pending_import' ),
+				'permission_callback' => array( $this, 'check_permission' ),
+			)
+		);
+
+		register_rest_route(
+			'ag-sync-bridge/v1',
 			'/maintenance/cleanup',
 			array(
 				'methods'             => 'POST',
@@ -787,6 +797,47 @@ class Rest_Controller {
 
 	public function operation_status() {
 		return new WP_REST_Response( $this->config->get_state() );
+	}
+
+	/**
+	 * Run an authenticated import that stayed queued because WP-Cron did not start.
+	 *
+	 * @param WP_REST_Request $request Request instance.
+	 * @return WP_REST_Response|WP_Error
+	 */
+	public function run_pending_import( WP_REST_Request $request ) {
+		$operation_id = sanitize_text_field( (string) $request->get_param( 'operation_id' ) );
+		$operation    = array_get( $this->config->get_state(), 'remote_import_operation', array() );
+
+		if ( empty( $operation ) || $operation_id !== (string) array_get( $operation, 'id', '' ) ) {
+			return new WP_Error( 'ag_sync_bridge_pending_import_mismatch', __( 'Pending import operation does not match.', 'ag-sync-bridge' ), array( 'status' => 409 ) );
+		}
+
+		if ( 'queued' !== (string) array_get( $operation, 'status', '' ) ) {
+			return new WP_REST_Response( array( 'remote_import_operation' => $operation ) );
+		}
+
+		$snapshot = sanitize_file_name( (string) array_get( $operation, 'snapshot', '' ) );
+		$path     = normalize_path( $this->file_system->get_incoming_dir() . '/' . $snapshot );
+		if ( ! $snapshot || ! is_file( $path ) ) {
+			return new WP_Error( 'ag_sync_bridge_pending_import_missing', __( 'Pending import package is missing.', 'ag-sync-bridge' ), array( 'status' => 404 ) );
+		}
+
+		$sha256 = hash_file( 'sha256', $path );
+		$args   = array( $operation_id, $path, $sha256 );
+		$next   = wp_next_scheduled( Scheduler::HOOK_ASYNC_IMPORT, $args );
+		if ( $next ) {
+			wp_unschedule_event( $next, Scheduler::HOOK_ASYNC_IMPORT, $args );
+		}
+
+		$this->logger->warning( 'Running queued remote import through authenticated recovery.', array( 'operation_id' => $operation_id, 'snapshot' => $snapshot ) );
+		$this->run_async_import_snapshot( $operation_id, $path, $sha256 );
+
+		return new WP_REST_Response(
+			array(
+				'remote_import_operation' => array_get( $this->config->get_state(), 'remote_import_operation', array() ),
+			)
+		);
 	}
 
 	public function cleanup_storage( WP_REST_Request $request ) {

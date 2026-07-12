@@ -606,6 +606,8 @@ class Http_Client {
 		$started_at       = time();
 		$timeout          = max( 60, $this->config->get_request_timeout() );
 		$transient_errors = 0;
+		$queued_at        = null;
+		$recovery_sent    = false;
 
 		while ( ( time() - $started_at ) < $timeout ) {
 			sleep( 5 );
@@ -635,6 +637,23 @@ class Http_Client {
 			}
 
 			$state = (string) array_get( $operation, 'status', '' );
+			if ( 'queued' === $state ) {
+				$queued_at = $queued_at ?: time();
+				if ( ! $recovery_sent && ( time() - $queued_at ) >= 20 ) {
+					$recovery_sent = true;
+					$this->logger->warning( 'Remote import stayed queued; requesting authenticated recovery.', array( 'operation_id' => $operation_id ) );
+					$recovery = $this->request_json(
+						'POST',
+						'/ag-sync-bridge/v1/operation/run-pending-import',
+						array( 'operation_id' => $operation_id )
+					);
+					if ( is_wp_error( $recovery ) ) {
+						return $recovery;
+					}
+					$operation = array_get( $recovery, 'remote_import_operation', array() );
+					$state     = (string) array_get( $operation, 'status', '' );
+				}
+			}
 			if ( 'complete' === $state ) {
 				return array_get( $operation, 'result', array() );
 			}
