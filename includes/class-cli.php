@@ -248,6 +248,34 @@ if ( defined( 'WP_CLI' ) && WP_CLI ) {
 		}
 
 		/**
+		 * Shows the non-mutating plan for a full or explicit partial push.
+		 *
+		 * ## OPTIONS
+		 *
+		 * [--paths=<paths>]
+		 * : Comma/newline separated paths. Without it the plan remains full.
+		 *
+		 * [--format=<format>]
+		 * : Use json for a machine-readable, non-mutating plan.
+		 */
+		public function push_plan( $args, $assoc_args ) {
+			unset( $args );
+			$paths = self::parse_path_list_arg( array_get( $assoc_args, 'paths', '' ) );
+			$plan  = self::$sync->plan_push( $paths );
+			if ( is_wp_error( $plan ) ) {
+				\WP_CLI::error( $plan->get_error_message() );
+			}
+
+			if ( 'json' === strtolower( (string) array_get( $assoc_args, 'format', '' ) ) ) {
+				\WP_CLI::line( wp_json_encode( $plan, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE ) );
+				return;
+			}
+
+			\WP_CLI::log( wp_json_encode( $plan, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE ) );
+			\WP_CLI::success( 'Push plan generated without changes.' );
+		}
+
+		/**
 		 * Cleans local AG Sync runtime storage.
 		 *
 		 * ## OPTIONS
@@ -300,6 +328,36 @@ if ( defined( 'WP_CLI' ) && WP_CLI ) {
 
 			self::log_cleanup_result( $result );
 			\WP_CLI::success( 'Remote cleanup completed.' );
+		}
+
+		/**
+		 * Requests cancellation of exactly one remote async snapshot or import.
+		 *
+		 * ## OPTIONS
+		 *
+		 * --operation-id=<id>
+		 * : Remote operation ID returned by AG Sync status.
+		 *
+		 * --kind=<snapshot|import>
+		 * : Type of remote operation to cancel.
+		 */
+		public function remote_cancel( $args, $assoc_args ) {
+			unset( $args );
+
+			$operation_id = sanitize_text_field( (string) array_get( $assoc_args, 'operation-id', '' ) );
+			$kind         = sanitize_key( (string) array_get( $assoc_args, 'kind', '' ) );
+			if ( ! $operation_id || ! in_array( $kind, array( 'snapshot', 'import' ), true ) ) {
+				\WP_CLI::error( 'Specify --operation-id=<id> and --kind=snapshot|import.' );
+			}
+
+			$client = new Http_Client( self::$config, self::$logger );
+			$result = $client->cancel_remote_operation( $operation_id, $kind );
+			if ( is_wp_error( $result ) ) {
+				\WP_CLI::error( $result->get_error_message() );
+			}
+
+			$operation = array_get( $result, 'operation', array() );
+			\WP_CLI::success( 'Remote operation state: ' . array_get( $operation, 'status', 'unknown' ) . '.' );
 		}
 
 		private static function parse_cleanup_options( array $assoc_args ) {

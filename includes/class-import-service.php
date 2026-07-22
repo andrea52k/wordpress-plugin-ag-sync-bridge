@@ -95,6 +95,11 @@ class Import_Service {
 		$sync_active_plugins   = false;
 
 		try {
+			$cancelled = $this->check_cancellation( $args, 'prepared', false );
+			if ( is_wp_error( $cancelled ) ) {
+				return $cancelled;
+			}
+
 			$this->enable_maintenance_mode();
 
 			$import_result = array(
@@ -104,6 +109,11 @@ class Import_Service {
 			$prefix_remap  = array();
 
 			if ( ! $is_partial ) {
+				$cancelled = $this->check_cancellation( $args, 'before_database_import', false );
+				if ( is_wp_error( $cancelled ) ) {
+					return $cancelled;
+				}
+
 				$import_result = $this->database->import_from_file(
 					$prepared['database_sql'],
 					array(
@@ -113,6 +123,11 @@ class Import_Service {
 				);
 				if ( is_wp_error( $import_result ) ) {
 					return $import_result;
+				}
+
+				$cancelled = $this->check_cancellation( $args, 'after_database_import', true );
+				if ( is_wp_error( $cancelled ) ) {
+					return $cancelled;
 				}
 
 				$this->database->refresh_runtime_cache();
@@ -146,14 +161,28 @@ class Import_Service {
 				if ( is_wp_error( $replace_result ) ) {
 					return $replace_result;
 				}
+
+				$cancelled = $this->check_cancellation( $args, 'after_url_replace', true );
+				if ( is_wp_error( $cancelled ) ) {
+					return $cancelled;
+				}
 			}
 
 			$files_root = normalize_path( $prepared['temp_dir'] . '/files' );
 			$this->refresh_maintenance_mode();
+			$cancelled = $this->check_cancellation( $args, 'before_files_import', ! $is_partial );
+			if ( is_wp_error( $cancelled ) ) {
+				return $cancelled;
+			}
 			$result     = $is_partial ? $this->import_partial_files( $files_root, $manifest, $replacements ) : $this->import_files( $files_root, $replacements );
 
 			if ( is_wp_error( $result ) ) {
 				return $result;
+			}
+
+			$cancelled = $this->check_cancellation( $args, 'after_files_import', true );
+			if ( is_wp_error( $cancelled ) ) {
+				return $cancelled;
 			}
 
 			$this->clear_target_builder_caches();
@@ -241,6 +270,35 @@ class Import_Service {
 			$this->disable_maintenance_mode();
 			$this->file_system->cleanup_path( $prepared['temp_dir'] );
 		}
+	}
+
+	/**
+	 * Stops only at durable phase boundaries. A request received after database
+	 * or file mutation must be reported as requiring recovery; it is never
+	 * presented as an intact cancelled import.
+	 *
+	 * @param array  $args Import arguments.
+	 * @param string $stage Current durable stage.
+	 * @param bool   $rollback_required Whether the target may already be changed.
+	 * @return true|WP_Error
+	 */
+	private function check_cancellation( array $args, $stage, $rollback_required ) {
+		$callback = array_get( $args, 'cancellation_check', null );
+		if ( ! is_callable( $callback ) || ! call_user_func( $callback, $stage, $rollback_required ) ) {
+			return true;
+		}
+
+		return new WP_Error(
+			'ag_sync_bridge_operation_cancelled',
+			$rollback_required
+				? __( 'Import cancellation was requested after target data changed. Restore the pre-import backup before treating the site as healthy.', 'ag-sync-bridge' )
+				: __( 'Import was cancelled before target data changed.', 'ag-sync-bridge' ),
+			array(
+				'cancelled'         => true,
+				'rollback_required' => (bool) $rollback_required,
+				'stage'             => sanitize_key( $stage ),
+			)
+		);
 	}
 
 	private function enable_maintenance_mode() {

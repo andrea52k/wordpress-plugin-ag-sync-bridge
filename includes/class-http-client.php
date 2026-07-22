@@ -92,6 +92,17 @@ class Http_Client {
 		return $this->request_json( 'POST', '/ag-sync-bridge/v1/maintenance/cleanup', $args );
 	}
 
+	public function cancel_remote_operation( $operation_id, $kind ) {
+		return $this->request_json(
+			'POST',
+			'/ag-sync-bridge/v1/operation/cancel',
+			array(
+				'operation_id' => (string) $operation_id,
+				'kind'         => sanitize_key( (string) $kind ),
+			)
+		);
+	}
+
 	public function download_snapshot( $basename, $destination_file ) {
 		$this->logger->info( 'Using raw chunked snapshot download.', array( 'snapshot' => $basename ) );
 		$raw_chunked = $this->download_snapshot_in_raw_chunks( $basename, $destination_file );
@@ -567,6 +578,14 @@ class Http_Client {
 					array_get( $operation, 'data', null )
 				);
 			}
+
+			if ( 'cancelled' === $state || 'rollback_required' === $state ) {
+				return new WP_Error(
+					'ag_sync_bridge_remote_snapshot_cancelled',
+					(string) array_get( $operation, 'message', __( 'Remote snapshot was cancelled.', 'ag-sync-bridge' ) ),
+					$operation
+				);
+			}
 		}
 
 		return new WP_Error(
@@ -663,6 +682,14 @@ class Http_Client {
 					'ag_sync_bridge_remote_import_async_failed',
 					(string) array_get( $operation, 'message', __( 'Remote import failed.', 'ag-sync-bridge' ) ),
 					array_get( $operation, 'data', null )
+				);
+			}
+
+			if ( 'cancelled' === $state || 'rollback_required' === $state ) {
+				return new WP_Error(
+					'ag_sync_bridge_remote_import_cancelled',
+					(string) array_get( $operation, 'message', __( 'Remote import was cancelled.', 'ag-sync-bridge' ) ),
+					$operation
 				);
 			}
 		}

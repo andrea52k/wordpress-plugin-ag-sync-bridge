@@ -45,7 +45,10 @@ class Rest_Controller {
 	 */
 	private $auth;
 
-	public function __construct( Config $config, Logger $logger, File_System_Service $file_system, Export_Service $exporter, Import_Service $importer, Sync_Service $sync, Auth $auth ) {
+	/** @var Remote_Operation_Runtime */
+	private $runtime;
+
+	public function __construct( Config $config, Logger $logger, File_System_Service $file_system, Export_Service $exporter, Import_Service $importer, Sync_Service $sync, Auth $auth, Remote_Operation_Runtime $runtime ) {
 		$this->config      = $config;
 		$this->logger      = $logger;
 		$this->file_system = $file_system;
@@ -53,6 +56,7 @@ class Rest_Controller {
 		$this->importer    = $importer;
 		$this->sync        = $sync;
 		$this->auth        = $auth;
+		$this->runtime     = $runtime;
 	}
 
 	public function register_routes() {
@@ -162,6 +166,16 @@ class Rest_Controller {
 			array(
 				'methods'             => 'GET',
 				'callback'            => array( $this, 'operation_status' ),
+				'permission_callback' => array( $this, 'check_permission' ),
+			)
+		);
+
+		register_rest_route(
+			'ag-sync-bridge/v1',
+			'/operation/cancel',
+			array(
+				'methods'             => 'POST',
+				'callback'            => array( $this, 'cancel_operation' ),
 				'permission_callback' => array( $this, 'check_permission' ),
 			)
 		);
@@ -281,13 +295,24 @@ class Rest_Controller {
 				'stage'      => 'remote-snapshot',
 				'started_at' => gmdate( 'c' ),
 				'updated_at' => gmdate( 'c' ),
+				'schedule_args' => array( $operation_id, $type ),
 			);
 
+			$operation = $this->runtime->reserve( 'snapshot', $operation );
+			if ( is_wp_error( $operation ) ) {
+				return $operation;
+			}
 			$this->config->set_state_value( 'remote_snapshot_operation', $operation );
 			$this->logger->info( 'Remote async snapshot queued.', $operation );
 
 			$scheduled = wp_schedule_single_event( time() + 1, Scheduler::HOOK_ASYNC_SNAPSHOT, array( $operation_id, $type ) );
 			if ( false === $scheduled ) {
+				$operation['status']      = 'error';
+				$operation['message']     = __( 'Unable to schedule remote async snapshot.', 'ag-sync-bridge' );
+				$operation['updated_at']  = gmdate( 'c' );
+				$operation['finished_at'] = gmdate( 'c' );
+				$operation = $this->runtime->finalize( $operation_id, 'error', $operation );
+				$this->config->set_state_value( 'remote_snapshot_operation', $operation );
 				return new WP_Error(
 					'ag_sync_bridge_remote_snapshot_schedule_failed',
 					__( 'Unable to schedule remote async snapshot.', 'ag-sync-bridge' ),
@@ -350,14 +375,19 @@ class Rest_Controller {
 
 		$type      = sanitize_key( (string) $type );
 		$type      = $type ?: 'manual-remote-snapshot';
-		$operation = array(
+		$operation = $this->runtime->claim( $operation_id );
+		if ( is_wp_error( $operation ) ) {
+			return;
+		}
+
+		$operation = array_merge( $operation, array(
 			'id'         => $operation_id,
 			'type'       => $type,
 			'status'     => 'running',
 			'stage'      => 'remote-snapshot',
 			'started_at' => gmdate( 'c' ),
 			'updated_at' => gmdate( 'c' ),
-		);
+		) );
 		$this->config->set_state_value( 'remote_snapshot_operation', $operation );
 
 		$result = $this->sync->create_snapshot(
@@ -367,12 +397,20 @@ class Rest_Controller {
 			)
 		);
 
+		if ( $this->runtime->is_cancel_requested( $operation_id ) ) {
+			$operation = $this->runtime->finalize( $operation_id, 'cancelled' );
+			$this->config->set_state_value( 'remote_snapshot_operation', $operation );
+			$this->file_system->cleanup_runtime_storage( null, null, 0 );
+			return;
+		}
+
 		if ( is_wp_error( $result ) ) {
 			$operation['status']      = 'error';
 			$operation['updated_at']  = gmdate( 'c' );
 			$operation['finished_at'] = gmdate( 'c' );
 			$operation['message']     = $result->get_error_message();
 			$operation['data']        = $result->get_error_data();
+			$operation = $this->runtime->finalize( $operation_id, 'error', $operation );
 			$this->config->set_state_value( 'remote_snapshot_operation', $operation );
 			$this->file_system->cleanup_runtime_storage( null, null, 0 );
 			$this->logger->error( 'Remote async snapshot failed.', $operation );
@@ -383,6 +421,7 @@ class Rest_Controller {
 		$operation['updated_at']  = gmdate( 'c' );
 		$operation['finished_at'] = gmdate( 'c' );
 		$operation['result']      = $result;
+		$operation = $this->runtime->finalize( $operation_id, 'complete', $operation );
 		$this->config->set_state_value( 'remote_snapshot_operation', $operation );
 		$this->file_system->cleanup_runtime_storage( null, null, 0 );
 		$this->logger->info( 'Remote async snapshot completed.', $operation );
@@ -704,13 +743,23 @@ class Rest_Controller {
 				'stage'      => 'remote-import',
 				'started_at' => gmdate( 'c' ),
 				'updated_at' => gmdate( 'c' ),
+				'schedule_args' => array( $operation_id, $path, $sha256 ),
 			);
 
+			$operation = $this->runtime->reserve( 'import', $operation );
+			if ( is_wp_error( $operation ) ) {
+				return $operation;
+			}
 			$this->config->set_state_value( 'remote_import_operation', $operation );
 			$this->logger->info( 'Remote async import queued.', $operation );
 
 			$scheduled = wp_schedule_single_event( time() + 1, Scheduler::HOOK_ASYNC_IMPORT, array( $operation_id, $path, $sha256 ) );
 			if ( false === $scheduled ) {
+				$operation['status']      = 'error';
+				$operation['message']     = __( 'Unable to schedule remote async import.', 'ag-sync-bridge' );
+				$operation['updated_at']  = gmdate( 'c' );
+				$operation['finished_at'] = gmdate( 'c' );
+				$this->config->set_state_value( 'remote_import_operation', $operation );
 				return new WP_Error(
 					'ag_sync_bridge_remote_import_schedule_failed',
 					__( 'Unable to schedule remote async import.', 'ag-sync-bridge' ),
@@ -752,14 +801,19 @@ class Rest_Controller {
 		@set_time_limit( 0 );
 		@ini_set( 'memory_limit', '-1' );
 
-		$operation = array(
+		$operation = $this->runtime->claim( $operation_id );
+		if ( is_wp_error( $operation ) ) {
+			return;
+		}
+
+		$operation = array_merge( $operation, array(
 			'id'         => $operation_id,
 			'snapshot'   => basename( $path ),
 			'status'     => 'running',
 			'stage'      => 'remote-import',
 			'started_at' => gmdate( 'c' ),
 			'updated_at' => gmdate( 'c' ),
-		);
+		) );
 		$this->config->set_state_value( 'remote_import_operation', $operation );
 
 		$result = $this->importer->import_snapshot(
@@ -768,15 +822,27 @@ class Rest_Controller {
 				'expected_sha256' => $sha256,
 				'target_site_url' => site_url(),
 				'target_home_url' => home_url(),
+				'cancellation_check' => function ( $stage, $rollback_required ) use ( $operation_id ) {
+					return $this->runtime->is_cancel_requested( $operation_id );
+				},
 			)
 		);
 
 		if ( is_wp_error( $result ) ) {
+			if ( 'ag_sync_bridge_operation_cancelled' === $result->get_error_code() ) {
+				$data = $result->get_error_data();
+				$operation = $this->runtime->finalize( $operation_id, 'cancelled', array( 'rollback_required' => is_array( $data ) && ! empty( $data['rollback_required'] ), 'message' => $result->get_error_message() ) );
+				$this->config->set_state_value( 'remote_import_operation', $operation );
+				$this->file_system->cleanup_path( $path );
+				$this->file_system->cleanup_runtime_storage( null, null, 0 );
+				return;
+			}
 			$operation['status']     = 'error';
 			$operation['updated_at'] = gmdate( 'c' );
 			$operation['finished_at'] = gmdate( 'c' );
 			$operation['message']    = $result->get_error_message();
 			$operation['data']       = $result->get_error_data();
+			$operation = $this->runtime->finalize( $operation_id, 'error', $operation );
 			$this->config->set_state_value( 'remote_import_operation', $operation );
 			$this->file_system->cleanup_path( $path );
 			$this->file_system->cleanup_runtime_storage( null, null, 0 );
@@ -790,13 +856,99 @@ class Rest_Controller {
 		$operation['updated_at'] = gmdate( 'c' );
 		$operation['finished_at'] = gmdate( 'c' );
 		$operation['result']     = $result;
+		$operation = $this->runtime->finalize( $operation_id, 'complete', array_merge( $operation, array( 'rollback_required' => true ) ) );
 		$this->config->set_state_value( 'remote_import_operation', $operation );
 		$this->file_system->cleanup_runtime_storage( null, null, 0 );
 		$this->logger->info( 'Remote async import completed.', $operation );
 	}
 
 	public function operation_status() {
-		return new WP_REST_Response( $this->config->get_state() );
+		$state = $this->config->get_state();
+		$current_operation = $this->runtime->get();
+		if ( is_array( $current_operation ) && ! empty( $current_operation['id'] ) ) {
+			$state_key = 'snapshot' === array_get( $current_operation, 'kind', '' ) ? 'remote_snapshot_operation' : 'remote_import_operation';
+			$state[ $state_key ] = $current_operation;
+		}
+		foreach ( array( 'remote_snapshot_operation', 'remote_import_operation' ) as $key ) {
+			if ( ! empty( $state[ $key ] ) && is_array( $state[ $key ] ) ) {
+				$state[ $key ]['cancellable'] = ! $this->is_terminal_operation( $state[ $key ] );
+			}
+		}
+		return new WP_REST_Response( $state );
+	}
+
+	/**
+	 * Cancel exactly one remote async operation. Queued jobs are unscheduled;
+	 * running jobs receive a cooperative request and report recovery honestly.
+	 *
+	 * @param WP_REST_Request $request Request instance.
+	 * @return WP_REST_Response|WP_Error
+	 */
+	public function cancel_operation( WP_REST_Request $request ) {
+		$operation_id = sanitize_text_field( (string) $request->get_param( 'operation_id' ) );
+		$kind         = sanitize_key( (string) $request->get_param( 'kind' ) );
+		$state_key    = 'snapshot' === $kind ? 'remote_snapshot_operation' : ( 'import' === $kind ? 'remote_import_operation' : '' );
+
+		if ( ! $operation_id || ! $state_key ) {
+			return new WP_Error( 'ag_sync_bridge_cancel_invalid_request', __( 'Operation ID and kind (snapshot or import) are required.', 'ag-sync-bridge' ), array( 'status' => 400 ) );
+		}
+
+		$operation = $this->runtime->request_cancel( $operation_id, $kind );
+		if ( is_wp_error( $operation ) ) {
+			return $operation;
+		}
+		if ( 'cancelled' === (string) array_get( $operation, 'status', '' ) ) {
+			$this->unschedule_operation( $kind, $operation );
+			if ( 'import' === $kind ) {
+				$this->file_system->cleanup_path( normalize_path( $this->file_system->get_incoming_dir() . '/' . sanitize_file_name( (string) array_get( $operation, 'snapshot', '' ) ) ) );
+			}
+		}
+
+		$operation['stage'] = 'cancelled' === (string) array_get( $operation, 'status', '' ) ? 'cancelled' : 'cancel_requested';
+		$operation['message'] = 'cancelled' === (string) array_get( $operation, 'status', '' ) ? __( 'Queued operation cancelled.', 'ag-sync-bridge' ) : __( 'Cancellation requested. The worker will stop at the next safe checkpoint.', 'ag-sync-bridge' );
+		$this->config->set_state_value( $state_key, $operation );
+		$this->logger->warning( 'Remote operation cancellation updated.', $operation );
+
+		return new WP_REST_Response( array( 'operation' => array_get( $this->config->get_state(), $state_key, array() ) ) );
+	}
+
+	private function is_terminal_operation( array $operation ) {
+		return in_array( (string) array_get( $operation, 'status', '' ), array( 'complete', 'error', 'cancelled', 'rollback_required' ), true );
+	}
+
+	private function is_cancel_requested( array $operation ) {
+		return 'cancel_requested' === (string) array_get( $operation, 'status', '' );
+	}
+
+	private function mark_operation_cancelled( $state_key, array $operation, $rollback_required = false, $message = '' ) {
+		$current = array_get( $this->config->get_state(), $state_key, array() );
+		if ( ! empty( $current ) && (string) array_get( $current, 'id', '' ) === (string) array_get( $operation, 'id', '' ) ) {
+			$operation = array_merge( $operation, $current );
+		}
+
+		$operation['status']      = $rollback_required ? 'rollback_required' : 'cancelled';
+		$operation['stage']       = $rollback_required ? 'recovery-required' : 'cancelled';
+		$operation['updated_at']  = gmdate( 'c' );
+		$operation['finished_at'] = gmdate( 'c' );
+		$operation['rollback_required'] = (bool) $rollback_required;
+		$operation['message']     = $message ?: ( $rollback_required
+			? __( 'Cancellation reached a changed target. Restore the pre-import backup before treating the site as healthy.', 'ag-sync-bridge' )
+			: __( 'Operation cancelled before target data changed.', 'ag-sync-bridge' ) );
+		$this->config->set_state_value( $state_key, $operation );
+		$this->logger->warning( 'Remote operation cancelled.', $operation );
+	}
+
+	private function unschedule_operation( $kind, array $operation ) {
+		$hook = 'snapshot' === $kind ? Scheduler::HOOK_ASYNC_SNAPSHOT : Scheduler::HOOK_ASYNC_IMPORT;
+		$args = array_get( $operation, 'schedule_args', array() );
+		$args = is_array( $args ) ? $args : array();
+		if ( empty( $args ) ) {
+			return;
+		}
+
+		while ( $scheduled = wp_next_scheduled( $hook, $args ) ) {
+			wp_unschedule_event( $scheduled, $hook, $args );
+		}
 	}
 
 	/**
@@ -807,9 +959,9 @@ class Rest_Controller {
 	 */
 	public function run_pending_import( WP_REST_Request $request ) {
 		$operation_id = sanitize_text_field( (string) $request->get_param( 'operation_id' ) );
-		$operation    = array_get( $this->config->get_state(), 'remote_import_operation', array() );
+		$operation    = $this->runtime->get();
 
-		if ( empty( $operation ) || $operation_id !== (string) array_get( $operation, 'id', '' ) ) {
+		if ( is_wp_error( $operation ) || empty( $operation ) || 'import' !== (string) array_get( $operation, 'kind', '' ) || $operation_id !== (string) array_get( $operation, 'id', '' ) ) {
 			return new WP_Error( 'ag_sync_bridge_pending_import_mismatch', __( 'Pending import operation does not match.', 'ag-sync-bridge' ), array( 'status' => 409 ) );
 		}
 

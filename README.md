@@ -20,7 +20,7 @@ Se devi modificare o gestire il plugin da un agente automatico, leggi prima:
 
 ## Versione
 
-Versione plugin: `0.1.31`
+Versione plugin: `0.1.33`
 
 Slug tecnico WordPress: `ag-sync-bridge`
 
@@ -56,6 +56,7 @@ Il plugin esclude la propria cartella dal full overwrite per non interrompere op
 - Download snapshot streaming, chunked JSON e raw chunked
 - Upload snapshot diretto o a chunk form-encoded, compatibile con hosting che svuotano il raw body REST
 - Import remoto asincrono con polling dello stato remoto
+- Stop autenticato di un job remoto: annulla subito i job in coda; durante un import segnala `rollback_required` se il target e gia stato modificato
 - Preflight `doctor` locale/remoto per spazio, permessi e test scrittura prima dei push
 - Manifest snapshot con scope `full`/`partial`, blocco dei push che riusano snapshot non completi e push selettivo file-only
 - Controllo root sitemap/XML per evitare DB o sitemap index che puntano a file non presenti
@@ -207,6 +208,8 @@ wp agsync snapshot --type=partial-test --paths=robots.txt
 wp agsync pull
 wp agsync push
 wp agsync push --paths=robots.txt
+wp agsync push_plan --paths=robots.txt
+wp agsync remote_cancel --operation-id=<id> --kind=import
 wp agsync cleanup
 wp agsync remote_cleanup
 wp agsync lock
@@ -280,6 +283,8 @@ Da `0.1.17`, cliccare `Bacheca > Aggiornamenti > Verifica di nuovo` forza anche 
 - Se `ZipArchive` manca, il plugin non puo creare/importare snapshot ZIP.
 - `wp agsync push --use-existing-snapshot` riusa solo snapshot marcati `full`; vecchi pacchetti senza scope vengono bloccati.
 - `wp agsync push --paths=...` crea un pacchetto parziale file-only e richiede AG Sync Bridge `0.1.26` o superiore anche sul live; i root text sicuri come `llms.txt` richiedono `0.1.27`.
+- `wp agsync push_plan [--paths=...]` mostra senza modifiche classificazione, trasferimenti, metriche full/partial e stato del rollback. Un push parziale richiede un backup remoto pre-push: senza backup abilitato viene bloccato, perché una cartella selezionata sostituisce il relativo sottoalbero sul live.
+- `wp agsync remote_cancel --operation-id=<id> --kind=snapshot|import` annulla solo l'operazione remota indicata. Un import che ha gia modificato database o file resta `rollback_required` e va ripristinato dal backup.
 - `--allow-partial-snapshot` esiste solo per recovery deliberate e puo omettere file dal live.
 - Il fallback PHP per import/export DB e piu lento di `mysqldump/mysql`.
 - `.htaccess` viene sovrascritto solo se abilitato.

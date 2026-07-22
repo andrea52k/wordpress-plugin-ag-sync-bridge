@@ -84,6 +84,9 @@ class Plugin {
 	 */
 	private $rest_controller;
 
+	/** @var Remote_Operation_Runtime */
+	private $remote_operation_runtime;
+
 	/**
 	 * @var Admin_Page
 	 */
@@ -124,7 +127,8 @@ class Plugin {
 		$this->sync            = new Sync_Service( $this->config, $this->logger, $this->lock_manager, $this->file_system, $this->exporter, $this->importer, $this->http_client );
 		$this->scheduler       = new Scheduler( $this->config, $this->logger, $this->sync );
 		$this->auth            = new Auth( $this->config, $this->logger );
-		$this->rest_controller = new Rest_Controller( $this->config, $this->logger, $this->file_system, $this->exporter, $this->importer, $this->sync, $this->auth );
+		$this->remote_operation_runtime = new Remote_Operation_Runtime( $this->config, $this->logger );
+		$this->rest_controller = new Rest_Controller( $this->config, $this->logger, $this->file_system, $this->exporter, $this->importer, $this->sync, $this->auth, $this->remote_operation_runtime );
 		$this->admin_page      = new Admin_Page( $this->config, $this->logger, $this->file_system, $this->sync );
 		$this->github_updater  = new GitHub_Updater();
 

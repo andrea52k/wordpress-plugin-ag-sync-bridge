@@ -353,9 +353,10 @@ class File_System_Service {
 		$remote_snapshot = array_get( $state, 'remote_snapshot_operation', array() );
 		$remote_import   = array_get( $state, 'remote_import_operation', array() );
 		$operation_status = is_array( $operation ) ? (string) array_get( $operation, 'status', '' ) : '';
-		$operation_open  = is_array( $operation ) && ! empty( $operation ) && in_array( $operation_status, array( 'queued', 'running' ), true );
-		$operation_open  = $operation_open || ( is_array( $remote_snapshot ) && in_array( array_get( $remote_snapshot, 'status', '' ), array( 'queued', 'running' ), true ) );
-		$operation_open  = $operation_open || ( is_array( $remote_import ) && in_array( array_get( $remote_import, 'status', '' ), array( 'queued', 'running' ), true ) );
+		$open_statuses   = array( 'queued', 'running', 'cancel_requested' );
+		$operation_open  = is_array( $operation ) && ! empty( $operation ) && in_array( $operation_status, $open_statuses, true );
+		$operation_open  = $operation_open || ( is_array( $remote_snapshot ) && in_array( array_get( $remote_snapshot, 'status', '' ), $open_statuses, true ) );
+		$operation_open  = $operation_open || ( is_array( $remote_import ) && in_array( array_get( $remote_import, 'status', '' ), $open_statuses, true ) );
 		$results         = array(
 			'snapshots'       => $this->cleanup_old_packages( 'snapshots', $snapshot_retention ),
 			'backups'         => $this->cleanup_old_packages( 'backups', $backup_retention ),

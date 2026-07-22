@@ -124,6 +124,108 @@ class Sync_Service {
 		return $result;
 	}
 
+	/**
+	 * Build a read-only deployment plan. A partial plan is possible only when
+	 * callers explicitly declare safe file paths; database and unknown changes
+	 * remain full snapshots by design.
+	 *
+	 * @param array $paths Requested partial paths.
+	 * @return array|WP_Error
+	 */
+	public function plan_push( array $paths = array() ) {
+		$paths = $this->file_system->normalize_partial_export_paths( $paths );
+		if ( is_wp_error( $paths ) ) {
+			return $paths;
+		}
+		$full_metrics = $this->estimate_entries( $this->file_system->get_export_entries() );
+		$full_metrics['includes_database']       = true;
+		$full_metrics['database_estimated_bytes'] = null;
+
+		if ( empty( $paths ) ) {
+			return array(
+				'preflight_version' => 1,
+				'decision'       => 'full',
+				'snapshot_scope' => 'full',
+				'reason'         => 'database_or_unknown_scope',
+				'paths'          => array(),
+				'file_count'     => $full_metrics['file_count'],
+				'estimated_bytes'=> $full_metrics['estimated_bytes'],
+				'change_classification' => array(
+					'files'         => 'not_scoped',
+					'database'      => 'unknown',
+					'configuration' => 'unknown',
+				),
+				'transfers' => array(
+					'database' => true,
+					'files'    => true,
+				),
+				'metrics' => array(
+					'full'    => $full_metrics,
+					'partial' => array( 'available' => false, 'file_count' => 0, 'estimated_bytes' => 0 ),
+				),
+				'rollback' => array(
+					'strategy' => 'full_snapshot_and_preflight',
+					'required' => false,
+					'available' => ! empty( $this->config->get( 'remote_backups_enabled', false ) ),
+				),
+			);
+		}
+
+		$entries = $this->file_system->get_partial_export_entries( $paths );
+		if ( is_wp_error( $entries ) ) {
+			return $entries;
+		}
+
+		$partial_metrics = $this->estimate_entries( $entries );
+		$file_count = $partial_metrics['file_count'];
+		$total_bytes = $partial_metrics['estimated_bytes'];
+		$directory_paths = array();
+		foreach ( $entries as $entry ) {
+			if ( 'directory' === (string) array_get( $entry, 'partial_type', '' ) ) {
+				$directory_paths[] = (string) array_get( $entry, 'partial_path', '' );
+			}
+		}
+		$rollback_available = ! empty( $this->config->get( 'remote_backups_enabled', false ) );
+
+		return array(
+			'preflight_version' => 1,
+			'decision'        => 'partial',
+			'snapshot_scope'  => 'partial',
+			'reason'          => 'explicit_safe_paths',
+			'paths'           => $paths,
+			'file_count'      => $file_count,
+			'estimated_bytes' => $total_bytes,
+			'change_classification' => array(
+				'files'         => 'explicit_safe_paths',
+				'database'      => 'excluded',
+				'configuration' => 'excluded_unless_in_paths',
+			),
+			'transfers' => array(
+				'database' => false,
+				'files'    => true,
+			),
+			'metrics' => array(
+				'full'    => $full_metrics,
+				'partial' => array( 'available' => true, 'file_count' => $file_count, 'estimated_bytes' => $total_bytes ),
+				'comparison' => array(
+					'estimated_file_bytes_saved' => max( 0, $full_metrics['estimated_bytes'] - $total_bytes ),
+					'estimated_files_avoided'    => max( 0, $full_metrics['file_count'] - $file_count ),
+					'database_transfer_avoided'  => true,
+				),
+			),
+			'rollback' => array(
+				'strategy'  => 'remote_pre_push_backup',
+				'required'  => true,
+				'available' => $rollback_available,
+			),
+			'risk' => array(
+				'directory_replacement_paths' => array_values( array_filter( $directory_paths ) ),
+				'partial_execution_allowed'   => $rollback_available,
+				'block_reason' => $rollback_available ? '' : 'remote_backup_required_for_partial_push',
+			),
+		);
+	}
+
 	public function pull_from_remote( array $args = array() ) {
 		$lock = $this->lock_manager->acquire( 'pull' );
 		if ( is_wp_error( $lock ) ) {
@@ -252,13 +354,24 @@ class Sync_Service {
 				return $partial_paths;
 			}
 			$is_partial_push = ! empty( $partial_paths );
+			$deployment_plan = $this->plan_push( $partial_paths );
+			if ( is_wp_error( $deployment_plan ) ) {
+				return $deployment_plan;
+			}
+			if ( $is_partial_push && ( ! $remote_backups_enabled || $skip_remote_backup_arg ) ) {
+				return new WP_Error(
+					'ag_sync_bridge_partial_push_backup_required',
+					__( 'Partial push blocked: enable and run a remote pre-push backup before replacing selected files or directories.', 'ag-sync-bridge' ),
+					array( 'deployment_plan' => $deployment_plan )
+				);
+			}
 
 			if ( $is_partial_push && $use_existing_snapshot ) {
 				$error = new WP_Error( 'ag_sync_bridge_partial_push_existing_snapshot', __( 'Partial push cannot reuse an existing snapshot. Remove --use-existing-snapshot and create a fresh partial package.', 'ag-sync-bridge' ) );
 				return $error;
 			}
 
-			$this->logger->info( 'Push started.', array( 'remote_url' => $this->config->get_remote_url(), 'use_existing_snapshot' => $use_existing_snapshot, 'remote_backups_enabled' => $remote_backups_enabled, 'skip_remote_backup' => $skip_remote_backup, 'allow_partial_snapshot' => $allow_partial_snapshot, 'partial_paths' => $partial_paths ) );
+			$this->logger->info( 'Push started.', array( 'remote_url' => $this->config->get_remote_url(), 'use_existing_snapshot' => $use_existing_snapshot, 'remote_backups_enabled' => $remote_backups_enabled, 'skip_remote_backup' => $skip_remote_backup, 'allow_partial_snapshot' => $allow_partial_snapshot, 'partial_paths' => $partial_paths, 'deployment_plan' => $deployment_plan ) );
 			$remote_backup = array(
 				'skipped' => true,
 				'reason'  => $remote_backups_enabled ? 'skip_remote_backup' : 'remote_backups_disabled',
@@ -360,6 +473,7 @@ class Sync_Service {
 					'remote_backup' => $remote_backup,
 					'local_snapshot'=> $local_snapshot,
 					'snapshot_validation' => $validation,
+					'deployment_plan' => $deployment_plan,
 					'upload'        => $upload,
 					'remote_import' => $remote_import,
 				)
@@ -373,12 +487,54 @@ class Sync_Service {
 				'remote_backup' => $remote_backup,
 				'local_snapshot'=> $local_snapshot,
 				'snapshot_validation' => $validation,
+				'deployment_plan' => $deployment_plan,
 				'upload'        => $upload,
 				'remote_import' => $remote_import,
 			);
 		} finally {
 			$this->lock_manager->release();
 		}
+	}
+
+	private function estimate_entry_size( $path ) {
+		if ( ! $path || ! file_exists( $path ) ) {
+			return array( 'file_count' => 0, 'bytes' => 0 );
+		}
+
+		if ( is_file( $path ) ) {
+			return array( 'file_count' => 1, 'bytes' => max( 0, (int) filesize( $path ) ) );
+		}
+
+		$files = 0;
+		$bytes = 0;
+		try {
+			$iterator = new \RecursiveIteratorIterator( new \RecursiveDirectoryIterator( $path, \FilesystemIterator::SKIP_DOTS ) );
+			foreach ( $iterator as $item ) {
+				if ( $item->isFile() ) {
+					$files++;
+					$bytes += max( 0, (int) $item->getSize() );
+				}
+			}
+		} catch ( \UnexpectedValueException $exception ) {
+			$this->logger->warning( 'Unable to fully estimate partial push entry.', array( 'path' => $path, 'error' => $exception->getMessage() ) );
+		}
+
+		return array( 'file_count' => $files, 'bytes' => $bytes );
+	}
+
+	private function estimate_entries( array $entries ) {
+		$file_count = 0;
+		$total_bytes = 0;
+		foreach ( $entries as $entry ) {
+			$estimate = $this->estimate_entry_size( (string) array_get( $entry, 'source', '' ) );
+			$file_count += $estimate['file_count'];
+			$total_bytes += $estimate['bytes'];
+		}
+
+		return array(
+			'file_count'      => $file_count,
+			'estimated_bytes' => $total_bytes,
+		);
 	}
 
 	private function get_latest_local_snapshot() {

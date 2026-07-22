@@ -156,8 +156,20 @@ files, those files must also be present in the package.
 
 From `0.1.26`, the exporter can also create intentional partial snapshots for
 selective file/folder push. These packages use `snapshot_scope: partial`, omit
-`database.sql`, include `partial_entries`, and are imported with a targeted
-file-only path that does not replace unrelated directories.
+`database.sql`, and include `partial_entries`. The explicit preflight reports
+the selected paths, scope and estimated transfer size. A selected directory
+replaces that target subtree, so partial pushes require a remote pre-push
+backup and are blocked without one.
+
+## Remote operation cancellation
+
+Remote async snapshots and imports have an immutable operation ID. A signed
+request can cancel exactly one job. Queued jobs are descheduled and marked
+`cancelled`; running jobs become `cancel_requested` and stop at a durable
+checkpoint. The database importer is never interrupted mid-command: once a
+database or file mutation has completed, cancellation is recorded as
+`rollback_required` and the pre-import backup must be restored before the
+target is considered healthy.
 
 ## Database Import
 
