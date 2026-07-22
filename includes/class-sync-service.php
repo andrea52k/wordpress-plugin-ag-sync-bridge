@@ -43,7 +43,12 @@ class Sync_Service {
 	 */
 	private $http_client;
 
-	public function __construct( Config $config, Logger $logger, Lock_Manager $lock_manager, File_System_Service $file_system, Export_Service $exporter, Import_Service $importer, Http_Client $http_client ) {
+	/**
+	 * @var Local_Maintenance_Service
+	 */
+	private $maintenance;
+
+	public function __construct( Config $config, Logger $logger, Lock_Manager $lock_manager, File_System_Service $file_system, Export_Service $exporter, Import_Service $importer, Http_Client $http_client, Local_Maintenance_Service $maintenance ) {
 		$this->config       = $config;
 		$this->logger       = $logger;
 		$this->lock_manager = $lock_manager;
@@ -51,6 +56,7 @@ class Sync_Service {
 		$this->exporter     = $exporter;
 		$this->importer     = $importer;
 		$this->http_client  = $http_client;
+		$this->maintenance  = $maintenance;
 	}
 
 	public function test_connection() {
@@ -371,7 +377,14 @@ class Sync_Service {
 				return $error;
 			}
 
-			$this->logger->info( 'Push started.', array( 'remote_url' => $this->config->get_remote_url(), 'use_existing_snapshot' => $use_existing_snapshot, 'remote_backups_enabled' => $remote_backups_enabled, 'skip_remote_backup' => $skip_remote_backup, 'allow_partial_snapshot' => $allow_partial_snapshot, 'partial_paths' => $partial_paths, 'deployment_plan' => $deployment_plan ) );
+			$this->update_operation( 'push', 1, 'local-maintenance', __( 'Controllo e aggiornamento locale di plugin, temi e traduzioni...', 'ag-sync-bridge' ) );
+			$maintenance = $this->maintenance->prepare_for_push();
+			if ( is_wp_error( $maintenance ) ) {
+				$this->fail_operation( 'push', $maintenance );
+				return $maintenance;
+			}
+
+			$this->logger->info( 'Push started.', array( 'remote_url' => $this->config->get_remote_url(), 'use_existing_snapshot' => $use_existing_snapshot, 'remote_backups_enabled' => $remote_backups_enabled, 'skip_remote_backup' => $skip_remote_backup, 'allow_partial_snapshot' => $allow_partial_snapshot, 'partial_paths' => $partial_paths, 'deployment_plan' => $deployment_plan, 'local_maintenance' => $maintenance ) );
 			$remote_backup = array(
 				'skipped' => true,
 				'reason'  => $remote_backups_enabled ? 'skip_remote_backup' : 'remote_backups_disabled',
@@ -474,6 +487,7 @@ class Sync_Service {
 					'local_snapshot'=> $local_snapshot,
 					'snapshot_validation' => $validation,
 					'deployment_plan' => $deployment_plan,
+					'local_maintenance' => $maintenance,
 					'upload'        => $upload,
 					'remote_import' => $remote_import,
 				)
@@ -488,6 +502,7 @@ class Sync_Service {
 				'local_snapshot'=> $local_snapshot,
 				'snapshot_validation' => $validation,
 				'deployment_plan' => $deployment_plan,
+				'local_maintenance' => $maintenance,
 				'upload'        => $upload,
 				'remote_import' => $remote_import,
 			);

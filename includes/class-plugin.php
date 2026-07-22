@@ -65,6 +65,11 @@ class Plugin {
 	private $http_client;
 
 	/**
+	 * @var Local_Maintenance_Service
+	 */
+	private $maintenance;
+
+	/**
 	 * @var Sync_Service
 	 */
 	private $sync;
@@ -124,7 +129,8 @@ class Plugin {
 		$this->exporter        = new Export_Service( $this->config, $this->logger, $this->file_system, $this->database, $this->archive );
 		$this->importer        = new Import_Service( $this->config, $this->logger, $this->file_system, $this->database, $this->archive );
 		$this->http_client     = new Http_Client( $this->config, $this->logger );
-		$this->sync            = new Sync_Service( $this->config, $this->logger, $this->lock_manager, $this->file_system, $this->exporter, $this->importer, $this->http_client );
+		$this->maintenance     = new Local_Maintenance_Service( $this->logger );
+		$this->sync            = new Sync_Service( $this->config, $this->logger, $this->lock_manager, $this->file_system, $this->exporter, $this->importer, $this->http_client, $this->maintenance );
 		$this->scheduler       = new Scheduler( $this->config, $this->logger, $this->sync );
 		$this->auth            = new Auth( $this->config, $this->logger );
 		$this->remote_operation_runtime = new Remote_Operation_Runtime( $this->config, $this->logger );

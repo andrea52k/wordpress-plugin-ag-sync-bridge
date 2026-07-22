@@ -20,7 +20,7 @@ Se devi modificare o gestire il plugin da un agente automatico, leggi prima:
 
 ## Versione
 
-Versione plugin: `0.1.33`
+Versione plugin: `0.1.34`
 
 Slug tecnico WordPress: `ag-sync-bridge`
 
@@ -58,6 +58,7 @@ Il plugin esclude la propria cartella dal full overwrite per non interrompere op
 - Import remoto asincrono con polling dello stato remoto
 - Stop autenticato di un job remoto: annulla subito i job in coda; durante un import segnala `rollback_required` se il target e gia stato modificato
 - Preflight `doctor` locale/remoto per spazio, permessi e test scrittura prima dei push
+- Gate locale obbligatorio prima di ogni push: verifica e aggiorna plugin, temi e traduzioni; se un aggiornamento fallisce, non vengono creati snapshot e non parte alcuna chiamata al live
 - Manifest snapshot con scope `full`/`partial`, blocco dei push che riusano snapshot non completi e push selettivo file-only
 - Controllo root sitemap/XML per evitare DB o sitemap index che puntano a file non presenti
 - Estrazione ZIP entry-by-entry con diagnostica del file che fallisce
@@ -139,17 +140,18 @@ Il live crea automaticamente lo snapshot settimanale, ma il locale non lo scaric
 Quando premi `Invia il locale al live`:
 
 1. Devi digitare `INVIA LIVE`.
-2. Il locale esegue un preflight remoto su storage, permessi e test scrittura.
-3. Il backup live pre-push viene saltato di default per non consumare quota hosting.
-4. Il locale crea uno snapshot completo.
-5. Lo snapshot viene validato localmente: ZIP estraibile, manifest `full`, database, componenti e sitemap root coerenti.
-6. Lo snapshot viene caricato sul live.
-7. Il live rifiuta snapshot non `full`, salvo override esplicito di recovery.
-8. Il live importa database e file.
-9. Il live esegue replace URL locale -> live.
-10. Il live riscrive URL locale -> live nei dataset V4MPG supportati.
-11. Il live esegue l'hook `ag_sync_bridge_after_import` per integrazioni post-import.
-12. Il plugin scrive log e aggiorna lo stato.
+2. Il locale rileva e aggiorna plugin, temi e traduzioni disponibili. Se uno step fallisce, il push si ferma prima di contattare il live. Un update di AG Sync Bridge stesso va eseguito dal normale updater WordPress e poi il push va ripetuto.
+3. Il locale esegue un preflight remoto su storage, permessi e test scrittura.
+4. Il backup live pre-push viene saltato di default per non consumare quota hosting.
+5. Il locale crea uno snapshot completo.
+6. Lo snapshot viene validato localmente: ZIP estraibile, manifest `full`, database, componenti e sitemap root coerenti.
+7. Lo snapshot viene caricato sul live.
+8. Il live rifiuta snapshot non `full`, salvo override esplicito di recovery.
+9. Il live importa database e file.
+10. Il live esegue replace URL locale -> live.
+11. Il live riscrive URL locale -> live nei dataset V4MPG supportati.
+12. Il live esegue l'hook `ag_sync_bridge_after_import` per integrazioni post-import.
+13. Il plugin scrive log e aggiorna lo stato.
 
 L'import sul live viene accettato in modalita asincrona, pianificato come evento WordPress cron singolo e monitorato dal locale con polling dello stato remoto. Questo evita che una chiusura SSL/proxy durante un import lungo venga interpretata come fallimento immediato del deploy.
 

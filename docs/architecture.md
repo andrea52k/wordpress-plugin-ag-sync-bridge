@@ -23,6 +23,7 @@ The plugin version must be kept in sync in:
 | `includes/class-admin-page.php` | WordPress admin UI under `Strumenti > AG Sync Bridge` |
 | `includes/class-rest-controller.php` | Authenticated REST API used between local and live |
 | `includes/class-sync-service.php` | High-level pull, push, restore orchestration |
+| `includes/class-local-maintenance-service.php` | Local pre-push check and update of plugins, themes and translation packs |
 | `includes/class-export-service.php` | Snapshot/backup creation |
 | `includes/class-import-service.php` | Snapshot validation/import, file import, cache clearing |
 | `includes/class-database-service.php` | DB export/import, URL replace, prefix remap |
