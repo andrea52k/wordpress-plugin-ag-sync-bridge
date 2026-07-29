@@ -20,7 +20,7 @@ Se devi modificare o gestire il plugin da un agente automatico, leggi prima:
 
 ## Versione
 
-Versione plugin: `0.1.34`
+Versione plugin: `0.1.35`
 
 Slug tecnico WordPress: `ag-sync-bridge`
 
@@ -280,6 +280,10 @@ Da `0.1.17`, cliccare `Bacheca > Aggiornamenti > Verifica di nuovo` forza anche 
 ## Limiti tecnici
 
 - Snapshot molto grandi possono richiedere tempi lunghi su hosting condiviso.
+- Da `0.1.35`, identita URL, configurazione AG Sync e plugin attivi del target
+  vengono ripristinati subito dopo l'import del database, prima delle fasi
+  lunghe. Un worker terminato dall'hosting non lascia piu il live con
+  `siteurl`/`home` e impostazioni del sito locale.
 - Da `0.1.28`, i pull freschi richiedono AG Sync Bridge `0.1.28` anche sul live per creare la snapshot in asincrono; con live piu vecchi il provider puo ancora tagliare la chiamata HTTP.
 - Da `0.1.29`, l'import via `mysql` rimuove dalla sessione SQL mode i flag incompatibili con dump WordPress legacy (`NO_ZERO_DATE`, `NO_ZERO_IN_DATE`, strict modes) per evitare fallback PHP lenti. Il replace URL usa anche un percorso veloce SQL per `wp_mpg_dataset_rows.row_data`.
 - Se `ZipArchive` manca, il plugin non puo creare/importare snapshot ZIP.

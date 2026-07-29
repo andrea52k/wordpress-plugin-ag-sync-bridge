@@ -133,6 +133,24 @@ class Import_Service {
 				$this->database->refresh_runtime_cache();
 				$source_active_plugins = $this->database->get_active_plugins();
 
+				/*
+				 * Restore the target identity before URL replacement and file sync.
+				 *
+				 * Large imports can outlive a hosting worker even when PHP's time
+				 * limit is disabled. Keeping this only in `finally` can therefore
+				 * leave a live site with the source home/site URL, bridge settings
+				 * and plugin activation list when the worker is killed externally.
+				 * The final restore remains as an idempotent safety net.
+				 */
+				$this->database->restore_environment_state( $current_state );
+				$this->logger->info(
+					'Target environment restored immediately after database import.',
+					array(
+						'target_site_url' => $target_site,
+						'target_home_url' => $target_home,
+					)
+				);
+
 				$prefix_remap = $this->database->remap_site_prefix_keys( $source_prefix, $target_prefix );
 				if ( is_wp_error( $prefix_remap ) ) {
 					return $prefix_remap;
