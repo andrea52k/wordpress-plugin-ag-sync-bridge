@@ -48,7 +48,10 @@ class Rest_Controller {
 	/** @var Remote_Operation_Runtime */
 	private $runtime;
 
-	public function __construct( Config $config, Logger $logger, File_System_Service $file_system, Export_Service $exporter, Import_Service $importer, Sync_Service $sync, Auth $auth, Remote_Operation_Runtime $runtime ) {
+	/** @var Remote_Update_Service */
+	private $remote_update;
+
+	public function __construct( Config $config, Logger $logger, File_System_Service $file_system, Export_Service $exporter, Import_Service $importer, Sync_Service $sync, Auth $auth, Remote_Operation_Runtime $runtime, $remote_update = null ) {
 		$this->config      = $config;
 		$this->logger      = $logger;
 		$this->file_system = $file_system;
@@ -57,6 +60,7 @@ class Rest_Controller {
 		$this->sync        = $sync;
 		$this->auth        = $auth;
 		$this->runtime     = $runtime;
+		$this->remote_update = $remote_update instanceof Remote_Update_Service ? $remote_update : new Remote_Update_Service( $config, $logger, $runtime );
 	}
 
 	public function register_routes() {
@@ -182,6 +186,16 @@ class Rest_Controller {
 
 		register_rest_route(
 			'ag-sync-bridge/v1',
+			'/operation/reconcile',
+			array(
+				'methods'             => 'POST',
+				'callback'            => array( $this, 'reconcile_operation' ),
+				'permission_callback' => array( $this, 'check_permission' ),
+			)
+		);
+
+		register_rest_route(
+			'ag-sync-bridge/v1',
 			'/operation/run-pending-import',
 			array(
 				'methods'             => 'POST',
@@ -196,6 +210,16 @@ class Rest_Controller {
 			array(
 				'methods'             => 'POST',
 				'callback'            => array( $this, 'cleanup_storage' ),
+				'permission_callback' => array( $this, 'check_permission' ),
+			)
+		);
+
+		register_rest_route(
+			'ag-sync-bridge/v1',
+			'/maintenance/update-bridge',
+			array(
+				'methods'             => 'POST',
+				'callback'            => array( $this, 'update_bridge' ),
 				'permission_callback' => array( $this, 'check_permission' ),
 			)
 		);
@@ -388,12 +412,18 @@ class Rest_Controller {
 			'started_at' => gmdate( 'c' ),
 			'updated_at' => gmdate( 'c' ),
 		) );
+		$this->runtime->heartbeat( $operation_id, 'snapshot-start', 2 );
 		$this->config->set_state_value( 'remote_snapshot_operation', $operation );
 
 		$result = $this->sync->create_snapshot(
 			$type,
 			array(
-				'trigger' => 'remote-api-async',
+				'trigger'           => 'remote-api-async',
+				'progress_callback' => function ( $stage, $progress, array $details = array() ) use ( $operation_id ) {
+					$current  = $this->runtime->get();
+					$fallback = is_array( $current ) ? (int) array_get( $current, 'progress', 2 ) : 2;
+					$this->runtime->heartbeat( $operation_id, $stage, null === $progress ? $fallback : $progress, $details );
+				},
 			)
 		);
 
@@ -814,8 +844,17 @@ class Rest_Controller {
 			'started_at' => gmdate( 'c' ),
 			'updated_at' => gmdate( 'c' ),
 		) );
+		$this->runtime->heartbeat( $operation_id, 'import-start', 2 );
 		$this->config->set_state_value( 'remote_import_operation', $operation );
 
+		$checkpoint_progress = array(
+			'prepared'               => 10,
+			'before_database_import' => 20,
+			'after_database_import'  => 55,
+			'after_url_replace'      => 70,
+			'before_files_import'    => 75,
+			'after_files_import'     => 92,
+		);
 		$result = $this->importer->import_snapshot(
 			$path,
 			array(
@@ -824,6 +863,26 @@ class Rest_Controller {
 				'target_home_url' => home_url(),
 				'cancellation_check' => function ( $stage, $rollback_required ) use ( $operation_id ) {
 					return $this->runtime->is_cancel_requested( $operation_id );
+				},
+				'checkpoint_callback' => function ( $stage, $rollback_required ) use ( $operation_id, $checkpoint_progress ) {
+					$progress = array_key_exists( $stage, $checkpoint_progress ) ? $checkpoint_progress[ $stage ] : 50;
+					$this->runtime->heartbeat(
+						$operation_id,
+						'import-' . sanitize_key( $stage ),
+						$progress,
+						array( 'rollback_required_at_checkpoint' => (bool) $rollback_required )
+					);
+				},
+				'progress_callback' => function ( $stage, $progress, array $details = array() ) use ( $operation_id, $checkpoint_progress ) {
+					if ( 'package-extract' === $stage && null !== $progress ) {
+						$progress = 2 + (int) round( max( 0, min( 100, (int) $progress ) ) * 0.08 );
+					} elseif ( null === $progress ) {
+						$current  = $this->runtime->get();
+						$progress = array_key_exists( $stage, $checkpoint_progress )
+							? $checkpoint_progress[ $stage ]
+							: ( is_array( $current ) ? (int) array_get( $current, 'progress', 50 ) : 50 );
+					}
+					$this->runtime->heartbeat( $operation_id, 'import-' . sanitize_key( $stage ), $progress, $details );
 				},
 			)
 		);
@@ -864,7 +923,7 @@ class Rest_Controller {
 
 	public function operation_status() {
 		$state = $this->config->get_state();
-		$current_operation = $this->runtime->get();
+		$current_operation = $this->runtime->inspect();
 		if ( is_array( $current_operation ) && ! empty( $current_operation['id'] ) ) {
 			$state_key = 'snapshot' === array_get( $current_operation, 'kind', '' ) ? 'remote_snapshot_operation' : 'remote_import_operation';
 			$state[ $state_key ] = $current_operation;
@@ -913,7 +972,51 @@ class Rest_Controller {
 	}
 
 	private function is_terminal_operation( array $operation ) {
-		return in_array( (string) array_get( $operation, 'status', '' ), array( 'complete', 'error', 'cancelled', 'rollback_required' ), true );
+		return in_array( (string) array_get( $operation, 'status', '' ), array( 'complete', 'error', 'cancelled', 'rollback_required', 'reconciled' ), true );
+	}
+
+	/**
+	 * Two-phase authenticated reconciliation for stale remote operations.
+	 * It never reports a stale operation as successfully completed.
+	 */
+	public function reconcile_operation( WP_REST_Request $request ) {
+		$operation_id = sanitize_text_field( (string) $request->get_param( 'operation_id' ) );
+		$kind         = sanitize_key( (string) $request->get_param( 'kind' ) );
+		$action       = sanitize_key( (string) $request->get_param( 'action' ) );
+		$expected     = sanitize_text_field( (string) $request->get_param( 'expected_updated_at' ) );
+		$note         = sanitize_text_field( (string) $request->get_param( 'note' ) );
+
+		if ( ! $operation_id || ! in_array( $kind, array( 'snapshot', 'import' ), true ) || ! in_array( $action, array( 'quarantine', 'close' ), true ) || ! $expected ) {
+			return new WP_Error( 'ag_sync_bridge_reconcile_invalid_request', __( 'Operation ID, kind, action and expected updated_at are required.', 'ag-sync-bridge' ), array( 'status' => 400 ) );
+		}
+
+		if ( 'quarantine' === $action ) {
+			if ( ! $request->get_param( 'worker_absent_verified' ) || '' === trim( $note ) ) {
+				return new WP_Error( 'ag_sync_bridge_reconcile_verification_incomplete', __( 'Quarantine requires explicit worker absence verification and a note.', 'ag-sync-bridge' ), array( 'status' => 400 ) );
+			}
+			$operation = $this->runtime->request_reconciliation( $operation_id, $kind, $expected, $note );
+		} else {
+			$operation = $this->runtime->close_reconciliation(
+				$operation_id,
+				$kind,
+				$expected,
+				array(
+					'worker_absent_verified'    => (bool) $request->get_param( 'worker_absent_verified' ),
+					'target_integrity_verified' => (bool) $request->get_param( 'target_integrity_verified' ),
+					'rollback_verified'         => (bool) $request->get_param( 'rollback_verified' ),
+					'note'                      => $note,
+				)
+			);
+		}
+
+		if ( is_wp_error( $operation ) ) {
+			return $operation;
+		}
+
+		$state_key = 'snapshot' === $kind ? 'remote_snapshot_operation' : 'remote_import_operation';
+		$this->config->set_state_value( $state_key, $operation );
+		$this->logger->warning( 'Remote operation reconciliation updated.', array( 'action' => $action, 'operation' => $operation ) );
+		return new WP_REST_Response( array( 'operation' => $operation, 'declared_success' => false ) );
 	}
 
 	private function is_cancel_requested( array $operation ) {
@@ -1002,6 +1105,16 @@ class Rest_Controller {
 		$this->logger->info( 'Runtime storage cleanup completed.', array_get( $result, 'total', array() ) );
 
 		return new WP_REST_Response( $result );
+	}
+
+	public function update_bridge( WP_REST_Request $request ) {
+		$result = $this->remote_update->update_from_github_release(
+			sanitize_text_field( (string) $request->get_param( 'version' ) ),
+			sanitize_text_field( (string) $request->get_param( 'sha256' ) ),
+			sanitize_text_field( (string) $request->get_param( 'expected_current_version' ) ),
+			(string) $request->get_param( 'confirmation' )
+		);
+		return is_wp_error( $result ) ? $result : new WP_REST_Response( $result );
 	}
 
 	public function download_snapshot( WP_REST_Request $request ) {

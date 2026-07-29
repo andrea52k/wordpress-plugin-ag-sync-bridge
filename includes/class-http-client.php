@@ -103,6 +103,23 @@ class Http_Client {
 		);
 	}
 
+	public function reconcile_remote_operation( array $args ) {
+		return $this->request_json( 'POST', '/ag-sync-bridge/v1/operation/reconcile', $args );
+	}
+
+	public function update_remote_bridge( $version, $sha256, $expected_current_version, $confirmation ) {
+		return $this->request_json(
+			'POST',
+			'/ag-sync-bridge/v1/maintenance/update-bridge',
+			array(
+				'version'                  => (string) $version,
+				'sha256'                   => strtolower( (string) $sha256 ),
+				'expected_current_version' => (string) $expected_current_version,
+				'confirmation'             => (string) $confirmation,
+			)
+		);
+	}
+
 	public function download_snapshot( $basename, $destination_file ) {
 		$this->logger->info( 'Using raw chunked snapshot download.', array( 'snapshot' => $basename ) );
 		$raw_chunked = $this->download_snapshot_in_raw_chunks( $basename, $destination_file );

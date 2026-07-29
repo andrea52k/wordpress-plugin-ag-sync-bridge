@@ -158,6 +158,40 @@ Older versions can cache GitHub release metadata for up to 6 hours. If a live
 site is stuck on an older version and no update appears, install the ZIP
 manually once.
 
+### Update the live bridge from the local peer (0.1.36+)
+
+Install the target AG Sync version on local first, calculate the SHA-256 of the
+published `ag-sync-bridge.zip` asset, then run:
+
+```powershell
+C:\xampp\php\php.exe C:\xampp\wp-cli.phar agsync remote_update_bridge --version=X.Y.Z --sha256=<64-hex> --confirm="UPDATE AG SYNC" --path=C:\xampp\htdocs\<site>
+```
+
+The command preflights the remote version, sends a signed request, and verifies
+the version after installation. It refuses downgrade, reinstall, non-official
+assets, checksum mismatches, unresolved async work, and filesystem methods that
+need interactive credentials.
+
+### Reconcile a stale remote operation
+
+Never treat `stale_or_orphaned` as success. First verify the hosting worker is
+absent and inspect logs, site identity, frontend, database and rollback state.
+Copy the exact operation `updated_at`, then quarantine:
+
+```powershell
+wp agsync remote_reconcile --operation-id=<id> --kind=import --action=quarantine --expected-updated-at=<timestamp> --note="Worker assente verificato" --worker-absent-verified
+```
+
+Wait at least 30 seconds, read status again, and close using the new
+`updated_at`. For an import, add the verification actually performed:
+
+```powershell
+wp agsync remote_reconcile --operation-id=<id> --kind=import --action=close --expected-updated-at=<new-timestamp> --note="Identita, dati e frontend verificati" --worker-absent-verified --target-integrity-verified
+```
+
+Use `--rollback-verified` instead when a rollback was completed and verified.
+The `reconciled` record is an administrative closure, not a successful sync.
+
 ## Release Procedure
 
 1. Update version in:

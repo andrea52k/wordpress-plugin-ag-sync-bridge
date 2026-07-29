@@ -12,6 +12,9 @@ if ( ! defined( 'ABSPATH' ) ) {
  * It remains outside snapshots, so a cancellation survives a database import.
  */
 class Remote_Operation_Runtime {
+	const DEFAULT_STALE_AFTER = 900;
+	const RECONCILE_GRACE_SECONDS = 30;
+
 	private $config;
 	private $logger;
 
@@ -27,7 +30,11 @@ class Remote_Operation_Runtime {
 			}
 			$operation['kind'] = $kind;
 			$operation['status'] = 'queued';
+			$operation['stage'] = array_get( $operation, 'stage', 'queued' );
+			$operation['progress'] = max( 0, min( 100, (int) array_get( $operation, 'progress', 0 ) ) );
 			$operation['updated_at'] = gmdate( 'c' );
+			$operation['heartbeat_at'] = $operation['updated_at'];
+			$operation['heartbeat_sequence'] = 0;
 			return $operation;
 		} );
 	}
@@ -39,6 +46,31 @@ class Remote_Operation_Runtime {
 			}
 			$current['status'] = 'running';
 			$current['updated_at'] = gmdate( 'c' );
+			$current['heartbeat_at'] = $current['updated_at'];
+			$current['heartbeat_sequence'] = (int) array_get( $current, 'heartbeat_sequence', 0 ) + 1;
+			return $current;
+		} );
+	}
+
+	public function heartbeat( $operation_id, $stage, $progress, array $changes = array() ) {
+		return $this->locked( function ( array $current ) use ( $operation_id, $stage, $progress, $changes ) {
+			if ( (string) array_get( $current, 'id', '' ) !== (string) $operation_id ) {
+				return new WP_Error( 'ag_sync_bridge_remote_operation_mismatch', __( 'Remote operation changed before heartbeat.', 'ag-sync-bridge' ), array( 'status' => 409 ) );
+			}
+
+			$status = (string) array_get( $current, 'status', '' );
+			if ( ! in_array( $status, array( 'running', 'cancel_requested', 'reconcile_requested' ), true ) ) {
+				return new WP_Error( 'ag_sync_bridge_remote_operation_not_running', __( 'Remote operation is not running.', 'ag-sync-bridge' ), array( 'status' => 409, 'operation' => $current ) );
+			}
+
+			$now = gmdate( 'c' );
+			unset( $changes['id'], $changes['kind'], $changes['status'], $changes['started_at'], $changes['finished_at'] );
+			$current = array_merge( $current, $changes );
+			$current['stage'] = sanitize_key( (string) $stage );
+			$current['progress'] = max( 0, min( 100, (int) $progress ) );
+			$current['updated_at'] = $now;
+			$current['heartbeat_at'] = $now;
+			$current['heartbeat_sequence'] = (int) array_get( $current, 'heartbeat_sequence', 0 ) + 1;
 			return $current;
 		} );
 	}
@@ -66,7 +98,7 @@ class Remote_Operation_Runtime {
 			if ( (string) array_get( $current, 'id', '' ) !== (string) $operation_id ) {
 				return new WP_Error( 'ag_sync_bridge_remote_operation_mismatch', __( 'Remote operation changed before finalization.', 'ag-sync-bridge' ), array( 'status' => 409 ) );
 			}
-			$cancel_requested = 'cancel_requested' === (string) array_get( $current, 'status', '' );
+			$cancel_requested = in_array( (string) array_get( $current, 'status', '' ), array( 'cancel_requested', 'reconcile_requested' ), true );
 			if ( $cancel_requested ) {
 				$status = ! empty( $changes['rollback_required'] ) ? 'rollback_required' : 'cancelled';
 			} elseif ( 'complete' === $status ) {
@@ -81,13 +113,113 @@ class Remote_Operation_Runtime {
 		return $this->locked( function ( array $current ) { return $current; }, false );
 	}
 
+	public function inspect( $stale_after = self::DEFAULT_STALE_AFTER ) {
+		$current = $this->get();
+		if ( is_wp_error( $current ) || empty( $current ) ) {
+			return $current;
+		}
+
+		$stale_after = max( 60, (int) $stale_after );
+		$heartbeat   = strtotime( (string) array_get( $current, 'heartbeat_at', array_get( $current, 'updated_at', '' ) ) );
+		$age         = false === $heartbeat ? null : max( 0, time() - $heartbeat );
+		$status      = (string) array_get( $current, 'status', '' );
+		$running     = in_array( $status, array( 'running', 'cancel_requested', 'reconcile_requested' ), true );
+		$stale       = $running && ( null === $age || $age > $stale_after );
+
+		$current['heartbeat'] = array(
+			'age_seconds' => $age,
+			'stale_after_seconds' => $stale_after,
+			'is_stale'    => $stale,
+			'liveness'    => $this->is_terminal( $current ) ? 'terminal' : ( $stale ? 'stale_or_orphaned' : ( $running ? 'active' : 'queued' ) ),
+		);
+		return $current;
+	}
+
 	public function is_cancel_requested( $operation_id ) {
 		$current = $this->get();
-		return is_array( $current ) && (string) array_get( $current, 'id', '' ) === (string) $operation_id && 'cancel_requested' === (string) array_get( $current, 'status', '' );
+		return is_array( $current )
+			&& (string) array_get( $current, 'id', '' ) === (string) $operation_id
+			&& in_array( (string) array_get( $current, 'status', '' ), array( 'cancel_requested', 'reconcile_requested' ), true );
+	}
+
+	public function request_reconciliation( $operation_id, $kind, $expected_updated_at, $note, $stale_after = self::DEFAULT_STALE_AFTER ) {
+		return $this->locked( function ( array $current ) use ( $operation_id, $kind, $expected_updated_at, $note, $stale_after ) {
+			if ( (string) array_get( $current, 'id', '' ) !== (string) $operation_id || (string) array_get( $current, 'kind', '' ) !== (string) $kind ) {
+				return new WP_Error( 'ag_sync_bridge_reconcile_operation_mismatch', __( 'The requested operation does not match the active remote operation.', 'ag-sync-bridge' ), array( 'status' => 409 ) );
+			}
+			if ( (string) array_get( $current, 'updated_at', '' ) !== (string) $expected_updated_at ) {
+				return new WP_Error( 'ag_sync_bridge_reconcile_state_changed', __( 'Remote operation changed after it was inspected. Read status again before reconciling.', 'ag-sync-bridge' ), array( 'status' => 409, 'operation' => $current ) );
+			}
+			if ( ! in_array( (string) array_get( $current, 'status', '' ), array( 'running', 'cancel_requested' ), true ) ) {
+				return new WP_Error( 'ag_sync_bridge_reconcile_not_running', __( 'Only a running remote operation can enter reconciliation.', 'ag-sync-bridge' ), array( 'status' => 409, 'operation' => $current ) );
+			}
+
+			$stale_after = max( 60, (int) $stale_after );
+			$heartbeat   = strtotime( (string) array_get( $current, 'heartbeat_at', array_get( $current, 'updated_at', '' ) ) );
+			$age         = false === $heartbeat ? PHP_INT_MAX : max( 0, time() - $heartbeat );
+			if ( $age <= $stale_after ) {
+				return new WP_Error( 'ag_sync_bridge_reconcile_operation_active', __( 'The operation heartbeat is still active; reconciliation is blocked.', 'ag-sync-bridge' ), array( 'status' => 409, 'heartbeat_age_seconds' => $age ) );
+			}
+
+			$now = gmdate( 'c' );
+			$current['status'] = 'reconcile_requested';
+			$current['stage'] = 'reconciliation-quarantine';
+			$current['updated_at'] = $now;
+			$current['reconcile_requested_at'] = $now;
+			$current['reconciliation_note'] = sanitize_text_field( (string) $note );
+			return $current;
+		} );
+	}
+
+	public function close_reconciliation( $operation_id, $kind, $expected_updated_at, array $verification ) {
+		return $this->locked( function ( array $current ) use ( $operation_id, $kind, $expected_updated_at, $verification ) {
+			if ( (string) array_get( $current, 'id', '' ) !== (string) $operation_id || (string) array_get( $current, 'kind', '' ) !== (string) $kind ) {
+				return new WP_Error( 'ag_sync_bridge_reconcile_operation_mismatch', __( 'The requested operation does not match the quarantined remote operation.', 'ag-sync-bridge' ), array( 'status' => 409 ) );
+			}
+			if ( 'reconcile_requested' !== (string) array_get( $current, 'status', '' ) ) {
+				return new WP_Error( 'ag_sync_bridge_reconcile_not_quarantined', __( 'The operation must be quarantined before controlled closure.', 'ag-sync-bridge' ), array( 'status' => 409, 'operation' => $current ) );
+			}
+			if ( (string) array_get( $current, 'updated_at', '' ) !== (string) $expected_updated_at ) {
+				return new WP_Error( 'ag_sync_bridge_reconcile_state_changed', __( 'Remote operation changed after quarantine. Read status again before closing it.', 'ag-sync-bridge' ), array( 'status' => 409, 'operation' => $current ) );
+			}
+
+			$requested_at = strtotime( (string) array_get( $current, 'reconcile_requested_at', '' ) );
+			if ( false === $requested_at || ( time() - $requested_at ) < self::RECONCILE_GRACE_SECONDS ) {
+				return new WP_Error( 'ag_sync_bridge_reconcile_grace_period', __( 'Wait for the reconciliation grace period before controlled closure.', 'ag-sync-bridge' ), array( 'status' => 409, 'retry_after' => self::RECONCILE_GRACE_SECONDS ) );
+			}
+
+			$note = trim( (string) array_get( $verification, 'note', '' ) );
+			$worker_absent = ! empty( $verification['worker_absent_verified'] );
+			$target_verified = ! empty( $verification['target_integrity_verified'] );
+			$rollback_verified = ! empty( $verification['rollback_verified'] );
+			if ( ! $worker_absent || '' === $note ) {
+				return new WP_Error( 'ag_sync_bridge_reconcile_verification_incomplete', __( 'Controlled closure requires worker absence verification and a verification note.', 'ag-sync-bridge' ), array( 'status' => 400 ) );
+			}
+			if ( 'import' === $kind && ! $target_verified && ! $rollback_verified ) {
+				return new WP_Error( 'ag_sync_bridge_reconcile_import_unverified', __( 'An orphaned import requires verified target integrity or verified rollback.', 'ag-sync-bridge' ), array( 'status' => 400 ) );
+			}
+
+			$now = gmdate( 'c' );
+			$current['status'] = ( 'import' === $kind && ! $target_verified && ! $rollback_verified ) ? 'rollback_required' : 'reconciled';
+			$current['stage'] = 'reconciled';
+			$current['progress'] = min( 99, (int) array_get( $current, 'progress', 0 ) );
+			$current['updated_at'] = $now;
+			$current['finished_at'] = $now;
+			$current['reconciliation'] = array(
+				'closed_at'                 => $now,
+				'worker_absent_verified'    => $worker_absent,
+				'target_integrity_verified' => $target_verified,
+				'rollback_verified'         => $rollback_verified,
+				'note'                      => sanitize_text_field( $note ),
+				'declared_success'          => false,
+			);
+			$current['message'] = __( 'Stale operation closed after explicit reconciliation; this is not a successful sync result.', 'ag-sync-bridge' );
+			return $current;
+		} );
 	}
 
 	private function is_terminal( array $operation ) {
-		return in_array( (string) array_get( $operation, 'status', '' ), array( 'complete', 'error', 'cancelled', 'rollback_required' ), true );
+		return in_array( (string) array_get( $operation, 'status', '' ), array( 'complete', 'error', 'cancelled', 'rollback_required', 'reconciled' ), true );
 	}
 
 	private function locked( callable $callback, $write = true ) {

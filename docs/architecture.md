@@ -172,6 +172,35 @@ database or file mutation has completed, cancellation is recorded as
 `rollback_required` and the pre-import backup must be restored before the
 target is considered healthy.
 
+## Remote operation heartbeat and reconciliation
+
+From `0.1.36`, `operations/remote-operation.json` is the authoritative
+file-backed control plane for async snapshot/import liveness. Workers update
+`heartbeat_at`, `updated_at`, `stage`, `progress` and `heartbeat_sequence` at
+durable checkpoints and repeatedly while files are added to a snapshot.
+
+Status inspection classifies non-terminal work as `active` or
+`stale_or_orphaned`; it does not auto-complete or auto-fail stale work.
+Reconciliation is an authenticated two-step compare-and-swap procedure:
+
+1. `quarantine` accepts only a stale operation with the exact inspected
+   `updated_at`, changes it to `reconcile_requested`, and makes cooperative
+   cancellation checks stop a worker that resumes.
+2. after the grace period, `close` requires the new exact `updated_at`, verified
+   worker absence, a note, and—for imports—verified target integrity or rollback.
+
+The terminal state is `reconciled`, progress remains below 100, and the record
+contains `declared_success: false`.
+
+## Signed remote bridge update
+
+`remote_update_bridge` runs only from a configured local peer and calls the
+HMAC-authenticated remote update route. The remote service resolves a fixed
+official GitHub release, checks the exact asset name, HTTPS repository path,
+SHA-256, ZIP paths and embedded plugin version, then performs a WordPress
+overwrite install only with direct filesystem access and no unresolved async
+operation.
+
 ## Database Import
 
 `Database_Service::import_from_file()` always prepares SQL before import.

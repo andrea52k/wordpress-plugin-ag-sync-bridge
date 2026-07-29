@@ -18,6 +18,8 @@ namespace AGSyncBridge {
 	function ensure_directory( $path ) { return is_dir( $path ) || mkdir( $path, 0777, true ); }
 	function wp_json_encode( $value, $flags = 0 ) { return json_encode( $value, $flags ); }
 	function array_get( $array, $key, $default = null ) { return is_array( $array ) && array_key_exists( $key, $array ) ? $array[ $key ] : $default; }
+	function sanitize_key( $value ) { return strtolower( preg_replace( '/[^a-z0-9_-]/i', '', (string) $value ) ); }
+	function sanitize_text_field( $value ) { return trim( strip_tags( (string) $value ) ); }
 }
 
 namespace {
@@ -58,5 +60,55 @@ expect_true( 'running' === $runtime->claim( 'three' )['status'], 'claim third op
 $complete = $runtime->finalize( 'three', 'complete', array( 'rollback_required' => true ) );
 expect_true( 'complete' === $complete['status'], 'complete operation remains complete without cancellation' );
 expect_true( ! isset( $complete['rollback_required'] ), 'completed operation does not falsely require rollback' );
+
+$fourth = $runtime->reserve( 'import', array( 'id' => 'four' ) );
+$running = $runtime->claim( 'four' );
+$heartbeat = $runtime->heartbeat( 'four', 'database-import', 55, array( 'checkpoint' => 'after_database_import' ) );
+expect_true( 'database-import' === $heartbeat['stage'] && 55 === $heartbeat['progress'], 'heartbeat updates stage and progress' );
+expect_true( $heartbeat['heartbeat_sequence'] > $running['heartbeat_sequence'], 'heartbeat sequence advances' );
+$inspected = $runtime->inspect( 60 );
+expect_true( 'active' === $inspected['heartbeat']['liveness'] && ! $inspected['heartbeat']['is_stale'], 'fresh heartbeat is active' );
+
+$state_path = $root . '/operations/remote-operation.json';
+$state = json_decode( file_get_contents( $state_path ), true );
+$state['heartbeat_at'] = gmdate( 'c', time() - 120 );
+$state['updated_at'] = $state['heartbeat_at'];
+file_put_contents( $state_path, json_encode( $state ) );
+$stale = $runtime->inspect( 60 );
+expect_true( 'stale_or_orphaned' === $stale['heartbeat']['liveness'] && $stale['heartbeat']['is_stale'], 'expired heartbeat is stale, not successful' );
+
+$quarantined = $runtime->request_reconciliation( 'four', 'import', $state['updated_at'], 'Worker verified absent.', 60 );
+expect_true( 'reconcile_requested' === $quarantined['status'], 'stale operation enters quarantine' );
+expect_true( $runtime->is_cancel_requested( 'four' ), 'quarantine requests cooperative worker stop' );
+$premature = $runtime->close_reconciliation(
+	'four',
+	'import',
+	$quarantined['updated_at'],
+	array( 'worker_absent_verified' => true, 'target_integrity_verified' => true, 'note' => 'Checked.' )
+);
+expect_true( is_wp_error( $premature ), 'grace period blocks immediate closure' );
+
+$state = json_decode( file_get_contents( $state_path ), true );
+$state['reconcile_requested_at'] = gmdate( 'c', time() - 60 );
+file_put_contents( $state_path, json_encode( $state ) );
+$closed = $runtime->close_reconciliation(
+	'four',
+	'import',
+	$state['updated_at'],
+	array( 'worker_absent_verified' => true, 'target_integrity_verified' => true, 'note' => 'Front end, identity and data verified.' )
+);
+expect_true( 'reconciled' === $closed['status'], 'verified orphan closes as reconciled' );
+expect_true( false === $closed['reconciliation']['declared_success'], 'reconciliation never declares sync success' );
+expect_true( $closed['progress'] < 100, 'reconciled operation never reports 100 percent' );
+
+$fifth = $runtime->reserve( 'import', array( 'id' => 'five' ) );
+$runtime->claim( 'five' );
+$state = json_decode( file_get_contents( $state_path ), true );
+$state['heartbeat_at'] = gmdate( 'c', time() - 120 );
+$state['updated_at'] = $state['heartbeat_at'];
+file_put_contents( $state_path, json_encode( $state ) );
+$quarantined = $runtime->request_reconciliation( 'five', 'import', $state['updated_at'], 'Worker verified absent.', 60 );
+$resumed = $runtime->finalize( 'five', 'cancelled', array( 'rollback_required' => true ) );
+expect_true( 'rollback_required' === $resumed['status'], 'quarantined worker finalization preserves rollback requirement' );
 echo "remote operation runtime: ok\n";
 }

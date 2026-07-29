@@ -27,7 +27,7 @@ class Archive_Service {
 		$this->logger = $logger;
 	}
 
-	public function create_package( $package_path, $database_path, array $manifest, array $entries, callable $exclude_callback ) {
+	public function create_package( $package_path, $database_path, array $manifest, array $entries, callable $exclude_callback, $progress_callback = null ) {
 		if ( ! class_exists( 'ZipArchive' ) ) {
 			return new WP_Error( 'ag_sync_bridge_zip_missing', __( 'ZipArchive is not available on this server.', 'ag-sync-bridge' ) );
 		}
@@ -52,10 +52,12 @@ class Archive_Service {
 			);
 		}
 		$manifest['components'] = array();
+		$entry_count            = max( 1, count( $entries ) );
+		$entry_index            = 0;
 
 		foreach ( $entries as $entry ) {
 			if ( 'directory' === $entry['type'] ) {
-				$summary = $this->add_directory( $zip, $entry['source'], $entry['archive'], $entry['component'], $exclude_callback );
+				$summary = $this->add_directory( $zip, $entry['source'], $entry['archive'], $entry['component'], $exclude_callback, $progress_callback );
 			} else {
 				$summary = $this->add_file( $zip, $entry['source'], $entry['archive'], $entry['component'], $exclude_callback );
 			}
@@ -66,6 +68,13 @@ class Archive_Service {
 			}
 
 			$manifest['components'][ $entry['component'] ] = $summary;
+			$entry_index++;
+			$this->report_progress(
+				$progress_callback,
+				'archive-component',
+				(int) round( ( $entry_index / $entry_count ) * 100 ),
+				array( 'component' => $entry['component'], 'components_complete' => $entry_index, 'components_total' => $entry_count )
+			);
 		}
 
 		$manifest['created_with'] = array(
@@ -85,7 +94,7 @@ class Archive_Service {
 		);
 	}
 
-	public function extract_package( $package_path, $target_dir ) {
+	public function extract_package( $package_path, $target_dir, $progress_callback = null ) {
 		if ( ! class_exists( 'ZipArchive' ) ) {
 			return new WP_Error( 'ag_sync_bridge_zip_missing', __( 'ZipArchive is not available on this server.', 'ag-sync-bridge' ) );
 		}
@@ -115,7 +124,7 @@ class Archive_Service {
 			);
 		}
 
-		$result = $this->extract_entries( $zip, $package_path, $target_dir );
+		$result = $this->extract_entries( $zip, $package_path, $target_dir, $progress_callback );
 		$status = $zip->status;
 
 		$zip->close();
@@ -139,7 +148,8 @@ class Archive_Service {
 		return true;
 	}
 
-	private function extract_entries( ZipArchive $zip, $package_path, $target_dir ) {
+	private function extract_entries( ZipArchive $zip, $package_path, $target_dir, $progress_callback = null ) {
+		$last_report = microtime( true );
 		for ( $index = 0; $index < $zip->numFiles; $index++ ) {
 			$stat = $zip->statIndex( $index );
 
@@ -200,6 +210,16 @@ class Archive_Service {
 
 			fclose( $source );
 			fclose( $destination );
+
+			if ( 0 === ( $index + 1 ) % 25 || ( microtime( true ) - $last_report ) >= 5 ) {
+				$this->report_progress(
+					$progress_callback,
+					'package-extract',
+					(int) round( ( ( $index + 1 ) / max( 1, $zip->numFiles ) ) * 100 ),
+					array( 'entries_complete' => $index + 1, 'entries_total' => $zip->numFiles )
+				);
+				$last_report = microtime( true );
+			}
 		}
 
 		return true;
@@ -267,12 +287,13 @@ class Archive_Service {
 		);
 	}
 
-	private function add_directory( ZipArchive $zip, $source_dir, $archive_dir, $component, callable $exclude_callback ) {
+	private function add_directory( ZipArchive $zip, $source_dir, $archive_dir, $component, callable $exclude_callback, $progress_callback = null ) {
 		$summary = array(
 			'archive_root' => $archive_dir,
 			'file_count'   => 0,
 			'size_bytes'   => 0,
 		);
+		$last_report = microtime( true );
 
 		$iterator = new RecursiveIteratorIterator(
 			new RecursiveDirectoryIterator( $source_dir, RecursiveDirectoryIterator::SKIP_DOTS ),
@@ -308,6 +329,16 @@ class Archive_Service {
 
 			$summary['file_count']++;
 			$summary['size_bytes'] += filesize( $source_path );
+
+			if ( 0 === $summary['file_count'] % 100 || ( microtime( true ) - $last_report ) >= 5 ) {
+				$this->report_progress(
+					$progress_callback,
+					'archive-files',
+					null,
+					array( 'component' => $component, 'files_complete' => $summary['file_count'], 'bytes_complete' => $summary['size_bytes'] )
+				);
+				$last_report = microtime( true );
+			}
 		}
 
 		$summary['component'] = $component;
@@ -341,5 +372,11 @@ class Archive_Service {
 			'file_count'   => 1,
 			'size_bytes'   => filesize( $source_path ),
 		);
+	}
+
+	private function report_progress( $callback, $stage, $progress, array $context = array() ) {
+		if ( is_callable( $callback ) ) {
+			call_user_func( $callback, $stage, $progress, $context );
+		}
 	}
 }

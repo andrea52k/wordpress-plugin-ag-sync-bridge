@@ -28,14 +28,15 @@ class Database_Service {
 		$this->logger = $logger;
 	}
 
-	public function export_to_file( $file_path ) {
+	public function export_to_file( $file_path, array $args = array() ) {
 		@set_time_limit( 0 );
 		@ini_set( 'memory_limit', '-1' );
 
 		$file_path = normalize_path( $file_path );
+		$progress_callback = array_get( $args, 'progress_callback', null );
 
 		if ( $this->can_use_cli_tools() ) {
-			$result = $this->export_via_cli( $file_path );
+			$result = $this->export_via_cli( $file_path, $progress_callback );
 			if ( ! is_wp_error( $result ) ) {
 				return array(
 					'method'    => 'mysqldump',
@@ -46,7 +47,7 @@ class Database_Service {
 			$this->logger->warning( 'mysqldump export failed. Falling back to PHP exporter.', array( 'error' => $result->get_error_message() ) );
 		}
 
-		$result = $this->export_via_php( $file_path );
+		$result = $this->export_via_php( $file_path, $progress_callback );
 		if ( is_wp_error( $result ) ) {
 			return $result;
 		}
@@ -68,7 +69,8 @@ class Database_Service {
 
 		$source_prefix = (string) array_get( $args, 'source_prefix', '' );
 		$target_prefix = (string) array_get( $args, 'target_prefix', '' );
-		$prepared      = $this->prepare_sql_for_import( $file_path, $source_prefix, $target_prefix );
+		$progress_callback = array_get( $args, 'progress_callback', null );
+		$prepared      = $this->prepare_sql_for_import( $file_path, $source_prefix, $target_prefix, $progress_callback );
 		if ( is_wp_error( $prepared ) ) {
 			return $prepared;
 		}
@@ -91,7 +93,7 @@ class Database_Service {
 
 		try {
 			if ( $this->can_use_cli_tools() ) {
-				$result = $this->import_via_cli( $import_path );
+				$result = $this->import_via_cli( $import_path, $progress_callback );
 				if ( ! is_wp_error( $result ) ) {
 					return array(
 						'method'        => 'mysql',
@@ -103,7 +105,7 @@ class Database_Service {
 				$this->logger->warning( 'mysql import failed. Falling back to PHP importer.', array( 'error' => $result->get_error_message() ) );
 			}
 
-			$result = $this->import_via_php( $import_path, $target_prefix );
+			$result = $this->import_via_php( $import_path, $target_prefix, $progress_callback );
 			if ( ! is_wp_error( $result ) ) {
 				return array(
 					'method'        => 'php',
@@ -556,7 +558,7 @@ class Database_Service {
 		);
 	}
 
-	private function export_via_cli( $file_path ) {
+	private function export_via_cli( $file_path, $progress_callback = null ) {
 		$binary = $this->locate_binary( 'mysqldump' );
 		if ( ! $binary ) {
 			return new WP_Error( 'ag_sync_bridge_mysqldump_missing', __( 'mysqldump binary not found.', 'ag-sync-bridge' ) );
@@ -591,10 +593,9 @@ class Database_Service {
 			return new WP_Error( 'ag_sync_bridge_mysqldump_process', __( 'Unable to start mysqldump.', 'ag-sync-bridge' ) );
 		}
 
-		$error_output = stream_get_contents( $pipes[2] );
-		fclose( $pipes[2] );
-
-		$exit_code = proc_close( $process );
+		$completed = $this->wait_for_process( $process, $pipes, $progress_callback, 'database-export-cli' );
+		$exit_code = $completed['exit_code'];
+		$error_output = array_get( $completed['output'], 2, '' );
 
 		if ( 0 !== $exit_code ) {
 			return new WP_Error( 'ag_sync_bridge_mysqldump_failed', trim( (string) $error_output ) ?: __( 'mysqldump failed.', 'ag-sync-bridge' ) );
@@ -603,7 +604,7 @@ class Database_Service {
 		return true;
 	}
 
-	private function import_via_cli( $file_path ) {
+	private function import_via_cli( $file_path, $progress_callback = null ) {
 		$binary = $this->locate_binary( 'mysql' );
 		if ( ! $binary ) {
 			return new WP_Error( 'ag_sync_bridge_mysql_missing', __( 'mysql binary not found.', 'ag-sync-bridge' ) );
@@ -640,18 +641,70 @@ class Database_Service {
 			return new WP_Error( 'ag_sync_bridge_mysql_process', __( 'Unable to start mysql import.', 'ag-sync-bridge' ) );
 		}
 
-		$stdout = stream_get_contents( $pipes[1] );
-		$stderr = stream_get_contents( $pipes[2] );
-		fclose( $pipes[1] );
-		fclose( $pipes[2] );
-
-		$exit_code = proc_close( $process );
+		$completed = $this->wait_for_process( $process, $pipes, $progress_callback, 'database-import-cli' );
+		$exit_code = $completed['exit_code'];
+		$stdout = array_get( $completed['output'], 1, '' );
+		$stderr = array_get( $completed['output'], 2, '' );
 
 		if ( 0 !== $exit_code ) {
 			return new WP_Error( 'ag_sync_bridge_mysql_failed', trim( $stderr ?: $stdout ) ?: __( 'mysql import failed.', 'ag-sync-bridge' ) );
 		}
 
 		return true;
+	}
+
+	private function wait_for_process( $process, array $pipes, $progress_callback, $stage ) {
+		$output      = array();
+		$exit_code   = -1;
+		$last_report = 0.0;
+
+		foreach ( $pipes as $index => $pipe ) {
+			if ( is_resource( $pipe ) ) {
+				stream_set_blocking( $pipe, false );
+				$output[ $index ] = '';
+			}
+		}
+
+		while ( true ) {
+			foreach ( $pipes as $index => $pipe ) {
+				if ( is_resource( $pipe ) ) {
+					$chunk = stream_get_contents( $pipe );
+					if ( false !== $chunk && '' !== $chunk ) {
+						$output[ $index ] .= $chunk;
+					}
+				}
+			}
+
+			$status = proc_get_status( $process );
+			if ( ! is_array( $status ) || empty( $status['running'] ) ) {
+				if ( is_array( $status ) && isset( $status['exitcode'] ) && (int) $status['exitcode'] >= 0 ) {
+					$exit_code = (int) $status['exitcode'];
+				}
+				break;
+			}
+
+			if ( is_callable( $progress_callback ) && ( microtime( true ) - $last_report ) >= 5 ) {
+				call_user_func( $progress_callback, $stage, null, array( 'pid' => (int) array_get( $status, 'pid', 0 ) ) );
+				$last_report = microtime( true );
+			}
+			usleep( 250000 );
+		}
+
+		foreach ( $pipes as $index => $pipe ) {
+			if ( is_resource( $pipe ) ) {
+				$chunk = stream_get_contents( $pipe );
+				if ( false !== $chunk && '' !== $chunk ) {
+					$output[ $index ] .= $chunk;
+				}
+				fclose( $pipe );
+			}
+		}
+
+		$closed = proc_close( $process );
+		if ( $exit_code < 0 ) {
+			$exit_code = (int) $closed;
+		}
+		return array( 'exit_code' => $exit_code, 'output' => $output );
 	}
 
 	private function prepare_mysql_import_limits() {
@@ -684,7 +737,7 @@ class Database_Service {
 		return true;
 	}
 
-	private function export_via_php( $file_path ) {
+	private function export_via_php( $file_path, $progress_callback = null ) {
 		global $wpdb;
 
 		$mysqli = $this->connect();
@@ -712,6 +765,9 @@ class Database_Service {
 		$tables = is_array( $tables ) ? $tables : array();
 
 		foreach ( $tables as $table ) {
+			if ( is_callable( $progress_callback ) ) {
+				call_user_func( $progress_callback, 'database-export-php', null, array( 'table' => $table ) );
+			}
 			$create_row = $wpdb->get_row( "SHOW CREATE TABLE `{$table}`", ARRAY_N );
 			if ( empty( $create_row[1] ) ) {
 				continue;
@@ -720,7 +776,7 @@ class Database_Service {
 			fwrite( $handle, "DROP TABLE IF EXISTS `{$table}`;\n" );
 			fwrite( $handle, $create_row[1] . ";\n\n" );
 
-			$result = $this->export_table_rows_via_php( $mysqli, $handle, $table );
+			$result = $this->export_table_rows_via_php( $mysqli, $handle, $table, $progress_callback );
 			if ( is_wp_error( $result ) ) {
 				fclose( $handle );
 				$mysqli->close();
@@ -736,7 +792,7 @@ class Database_Service {
 		return true;
 	}
 
-	private function export_table_rows_via_php( &$mysqli, $handle, $table ) {
+	private function export_table_rows_via_php( &$mysqli, $handle, $table, $progress_callback = null ) {
 		global $wpdb;
 
 		$batch_size  = 100;
@@ -744,8 +800,13 @@ class Database_Service {
 		$order_by    = $this->get_export_order_clause( $table );
 		$table_name  = $this->quote_identifier( $table );
 		$skip_option_transients = isset( $wpdb->options ) && strtolower( $table ) === strtolower( $wpdb->options );
+		$last_report = microtime( true );
 
 		while ( true ) {
+			if ( is_callable( $progress_callback ) && ( microtime( true ) - $last_report ) >= 5 ) {
+				call_user_func( $progress_callback, 'database-export-php', null, array( 'table' => $table, 'rows_processed' => $offset ) );
+				$last_report = microtime( true );
+			}
 			$query  = "SELECT * FROM {$table_name}{$order_by} LIMIT {$batch_size} OFFSET {$offset}";
 			$result = $this->mysqli_query_with_reconnect( $mysqli, $query );
 
@@ -892,7 +953,7 @@ class Database_Service {
 		return ' ORDER BY ' . implode( ',', $quoted );
 	}
 
-	private function import_via_php( $file_path, $target_prefix = '' ) {
+	private function import_via_php( $file_path, $target_prefix = '', $progress_callback = null ) {
 		global $wpdb;
 
 		$charset = $this->get_mysql_charset();
@@ -910,8 +971,13 @@ class Database_Service {
 		$statement = '';
 		$in_string = false;
 		$quote     = '';
+		$last_report = microtime( true );
 
 		while ( false !== ( $line = fgets( $handle ) ) ) {
+			if ( is_callable( $progress_callback ) && ( microtime( true ) - $last_report ) >= 5 ) {
+				call_user_func( $progress_callback, 'database-import-php', null, array( 'bytes_processed' => (int) ftell( $handle ) ) );
+				$last_report = microtime( true );
+			}
 			$trimmed = trim( $line );
 
 			if ( ! $in_string && '' === $trimmed ) {
@@ -976,7 +1042,7 @@ class Database_Service {
 		return true;
 	}
 
-	private function prepare_sql_for_import( $file_path, $source_prefix, $target_prefix ) {
+	private function prepare_sql_for_import( $file_path, $source_prefix, $target_prefix, $progress_callback = null ) {
 		$temp_dir = $this->config->get_data_dir( 'temp' );
 		ensure_directory( $temp_dir );
 
@@ -1000,9 +1066,14 @@ class Database_Service {
 		$statement    = '';
 		$in_string    = false;
 		$quote        = '';
+		$last_report  = microtime( true );
 
 		try {
 			while ( false !== ( $line = fgets( $source ) ) ) {
+				if ( is_callable( $progress_callback ) && ( microtime( true ) - $last_report ) >= 5 ) {
+					call_user_func( $progress_callback, 'database-prepare', null, array( 'bytes_processed' => (int) ftell( $source ) ) );
+					$last_report = microtime( true );
+				}
 				if ( $this->is_mariadb_sandbox_comment( $line ) ) {
 					$removed++;
 					continue;

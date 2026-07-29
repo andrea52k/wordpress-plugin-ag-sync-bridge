@@ -43,6 +43,9 @@ class Export_Service {
 
 	public function create_snapshot( $type = 'snapshot', array $context = array() ) {
 		$started_at = microtime( true );
+		$progress_callback = array_get( $context, 'progress_callback', null );
+		unset( $context['progress_callback'] );
+		$this->report_progress( $progress_callback, 'snapshot-prepare', 5 );
 		$temp_dir   = $this->file_system->create_temp_dir( $type );
 
 		if ( is_wp_error( $temp_dir ) ) {
@@ -51,12 +54,21 @@ class Export_Service {
 
 		$package_data = $this->file_system->get_new_package_path( $type );
 		$database_sql = normalize_path( $temp_dir . '/database.sql' );
-		$result       = $this->database->export_to_file( $database_sql );
+		$this->report_progress( $progress_callback, 'database-export', 10 );
+		$result       = $this->database->export_to_file(
+			$database_sql,
+			array(
+				'progress_callback' => function ( $stage, $progress, array $details = array() ) use ( $progress_callback ) {
+					$this->report_progress( $progress_callback, $stage, null === $progress ? 15 : $progress, $details );
+				},
+			)
+		);
 
 		if ( is_wp_error( $result ) ) {
 			$this->file_system->cleanup_path( $temp_dir );
 			return $result;
 		}
+		$this->report_progress( $progress_callback, 'database-exported', 30 );
 
 		$entries            = $this->file_system->get_export_entries();
 		$snapshot_integrity = $this->file_system->get_snapshot_integrity_for_export( $entries );
@@ -86,7 +98,11 @@ class Export_Service {
 			$database_sql,
 			$manifest,
 			$entries,
-			array( $this->file_system, 'should_exclude' )
+			array( $this->file_system, 'should_exclude' ),
+			function ( $stage, $progress, array $details = array() ) use ( $progress_callback ) {
+				$mapped = null === $progress ? 60 : 35 + (int) round( max( 0, min( 100, (int) $progress ) ) * 0.55 );
+				$this->report_progress( $progress_callback, $stage, $mapped, $details );
+			}
 		);
 
 		$this->file_system->cleanup_path( $temp_dir );
@@ -94,6 +110,7 @@ class Export_Service {
 		if ( is_wp_error( $archive_result ) ) {
 			return $archive_result;
 		}
+		$this->report_progress( $progress_callback, 'snapshot-finalize', 95 );
 
 		$meta = array(
 			'basename'        => $package_data['basename'],
@@ -131,6 +148,8 @@ class Export_Service {
 
 	public function create_partial_snapshot( array $paths, $type = 'partial-push-snapshot', array $context = array() ) {
 		$started_at = microtime( true );
+		$progress_callback = array_get( $context, 'progress_callback', null );
+		unset( $context['progress_callback'] );
 		$entries    = $this->file_system->get_partial_export_entries( $paths );
 
 		if ( is_wp_error( $entries ) ) {
@@ -172,7 +191,8 @@ class Export_Service {
 			'',
 			$manifest,
 			$entries,
-			array( $this->file_system, 'should_exclude' )
+			array( $this->file_system, 'should_exclude' ),
+			$progress_callback
 		);
 
 		if ( is_wp_error( $archive_result ) ) {
@@ -208,6 +228,12 @@ class Export_Service {
 		);
 
 		return $meta;
+	}
+
+	private function report_progress( $callback, $stage, $progress, array $details = array() ) {
+		if ( is_callable( $callback ) ) {
+			call_user_func( $callback, $stage, $progress, $details );
+		}
 	}
 
 	public function get_latest_snapshot() {

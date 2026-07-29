@@ -947,7 +947,7 @@ class File_System_Service {
 		return false;
 	}
 
-	public function replace_directory( $source_dir, $target_dir, array $preserve_root_items = array() ) {
+	public function replace_directory( $source_dir, $target_dir, array $preserve_root_items = array(), $progress_callback = null ) {
 		if ( ! file_exists( $source_dir ) ) {
 			return true;
 		}
@@ -970,10 +970,10 @@ class File_System_Service {
 			$this->cleanup_path( $target_dir . '/' . $item );
 		}
 
-		return $this->copy_directory_contents( $source_dir, $target_dir, $preserve_root_items );
+		return $this->copy_directory_contents( $source_dir, $target_dir, $preserve_root_items, $progress_callback );
 	}
 
-	public function copy_directory_contents( $source_dir, $target_dir, array $preserve_root_items = array() ) {
+	public function copy_directory_contents( $source_dir, $target_dir, array $preserve_root_items = array(), $progress_callback = null ) {
 		$source_dir = normalize_path( $source_dir );
 		$target_dir = normalize_path( $target_dir );
 
@@ -981,6 +981,9 @@ class File_System_Service {
 			new RecursiveDirectoryIterator( $source_dir, RecursiveDirectoryIterator::SKIP_DOTS ),
 			RecursiveIteratorIterator::SELF_FIRST
 		);
+		$files_copied = 0;
+		$bytes_copied = 0;
+		$last_report  = microtime( true );
 
 		/** @var SplFileInfo $item */
 		foreach ( $iterator as $item ) {
@@ -1001,6 +1004,19 @@ class File_System_Service {
 
 			ensure_directory( dirname( $target_path ) );
 			copy( $source_path, $target_path );
+			$files_copied++;
+			$bytes_copied += (int) $item->getSize();
+			if ( is_callable( $progress_callback ) && ( 0 === $files_copied % 100 || ( microtime( true ) - $last_report ) >= 5 ) ) {
+				call_user_func(
+					$progress_callback,
+					array(
+						'files_complete' => $files_copied,
+						'bytes_complete' => $bytes_copied,
+						'target'         => basename( $target_dir ),
+					)
+				);
+				$last_report = microtime( true );
+			}
 		}
 
 		return true;

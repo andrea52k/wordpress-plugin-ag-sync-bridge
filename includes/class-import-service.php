@@ -78,7 +78,7 @@ class Import_Service {
 		@set_time_limit( 0 );
 
 		$started_at = microtime( true );
-		$prepared   = $this->prepare_package( $package_path, array_get( $args, 'expected_sha256', '' ) );
+		$prepared   = $this->prepare_package( $package_path, array_get( $args, 'expected_sha256', '' ), $args );
 
 		if ( is_wp_error( $prepared ) ) {
 			return $prepared;
@@ -119,6 +119,7 @@ class Import_Service {
 					array(
 						'source_prefix' => $source_prefix,
 						'target_prefix' => $target_prefix,
+						'progress_callback' => array_get( $args, 'progress_callback', null ),
 					)
 				);
 				if ( is_wp_error( $import_result ) ) {
@@ -192,7 +193,7 @@ class Import_Service {
 			if ( is_wp_error( $cancelled ) ) {
 				return $cancelled;
 			}
-			$result     = $is_partial ? $this->import_partial_files( $files_root, $manifest, $replacements ) : $this->import_files( $files_root, $replacements );
+			$result     = $is_partial ? $this->import_partial_files( $files_root, $manifest, $replacements, $args ) : $this->import_files( $files_root, $replacements, $args );
 
 			if ( is_wp_error( $result ) ) {
 				return $result;
@@ -301,6 +302,16 @@ class Import_Service {
 	 * @return true|WP_Error
 	 */
 	private function check_cancellation( array $args, $stage, $rollback_required ) {
+		$progress_callback = array_get( $args, 'progress_callback', null );
+		if ( is_callable( $progress_callback ) ) {
+			call_user_func( $progress_callback, $stage, null, array( 'rollback_required_at_checkpoint' => (bool) $rollback_required ) );
+		}
+
+		$checkpoint = array_get( $args, 'checkpoint_callback', null );
+		if ( is_callable( $checkpoint ) ) {
+			call_user_func( $checkpoint, $stage, $rollback_required );
+		}
+
 		$callback = array_get( $args, 'cancellation_check', null );
 		if ( ! is_callable( $callback ) || ! call_user_func( $callback, $stage, $rollback_required ) ) {
 			return true;
@@ -363,7 +374,7 @@ class Import_Service {
 		return normalize_path( ABSPATH . '.maintenance' );
 	}
 
-	private function prepare_package( $package_path, $expected_sha256 = '' ) {
+	private function prepare_package( $package_path, $expected_sha256 = '', array $args = array() ) {
 		$package_path = normalize_path( $package_path );
 
 		if ( ! file_exists( $package_path ) ) {
@@ -381,7 +392,16 @@ class Import_Service {
 			return $temp_dir;
 		}
 
-		$result = $this->archive->extract_package( $package_path, $temp_dir );
+		$result = $this->archive->extract_package(
+			$package_path,
+			$temp_dir,
+			function ( $stage, $progress, array $details = array() ) use ( $args ) {
+				$callback = array_get( $args, 'progress_callback', null );
+				if ( is_callable( $callback ) ) {
+					call_user_func( $callback, $stage, $progress, $details );
+				}
+			}
+		);
 		if ( is_wp_error( $result ) ) {
 			$this->file_system->cleanup_path( $temp_dir );
 			return $result;
@@ -443,7 +463,7 @@ class Import_Service {
 		return 'partial' === $this->file_system->get_snapshot_scope_from_manifest( $manifest );
 	}
 
-	private function import_partial_files( $files_root, array $manifest, array $replacements = array() ) {
+	private function import_partial_files( $files_root, array $manifest, array $replacements = array(), array $args = array() ) {
 		$entries = array_get( $manifest, 'partial_entries', array() );
 		$entries = is_array( $entries ) ? $entries : array();
 
@@ -455,7 +475,7 @@ class Import_Service {
 		);
 
 		foreach ( $entries as $entry ) {
-			$result = $this->import_partial_entry( $files_root, is_array( $entry ) ? $entry : array(), $replacements );
+			$result = $this->import_partial_entry( $files_root, is_array( $entry ) ? $entry : array(), $replacements, $args );
 			if ( is_wp_error( $result ) ) {
 				return $result;
 			}
@@ -471,7 +491,7 @@ class Import_Service {
 		return $summary;
 	}
 
-	private function import_partial_entry( $files_root, array $entry, array $replacements = array() ) {
+	private function import_partial_entry( $files_root, array $entry, array $replacements = array(), array $args = array() ) {
 		$relative = $this->sanitize_partial_entry_path( array_get( $entry, 'path', '' ) );
 		if ( is_wp_error( $relative ) ) {
 			return $relative;
@@ -497,7 +517,7 @@ class Import_Service {
 				return new WP_Error( 'ag_sync_bridge_partial_source_type', __( 'Partial snapshot entry expected a directory but found a file.', 'ag-sync-bridge' ) );
 			}
 
-			$result = $this->file_system->replace_directory( $source_path, $target_path );
+			$result = $this->file_system->replace_directory( $source_path, $target_path, array(), $this->get_file_progress_callback( $args ) );
 			if ( is_wp_error( $result ) ) {
 				return $result;
 			}
@@ -600,19 +620,20 @@ class Import_Service {
 		return 'wp-content/mpg-uploads' === $relative || 0 === strpos( $relative, 'wp-content/mpg-uploads/' );
 	}
 
-	private function import_files( $files_root, array $replacements = array() ) {
+	private function import_files( $files_root, array $replacements = array(), array $args = array() ) {
 		$wp_content_root = normalize_path( $files_root . '/wp-content' );
 		$root_files      = normalize_path( $files_root . '/root' );
+		$file_progress   = $this->get_file_progress_callback( $args );
 
 		if ( is_dir( $wp_content_root . '/uploads' ) ) {
-			$result = $this->file_system->replace_directory( $wp_content_root . '/uploads', WP_CONTENT_DIR . '/uploads' );
+			$result = $this->file_system->replace_directory( $wp_content_root . '/uploads', WP_CONTENT_DIR . '/uploads', array(), $file_progress );
 			if ( is_wp_error( $result ) ) {
 				return $result;
 			}
 		}
 
 		if ( is_dir( $wp_content_root . '/mpg-uploads' ) ) {
-			$result = $this->file_system->replace_directory( $wp_content_root . '/mpg-uploads', WP_CONTENT_DIR . '/mpg-uploads' );
+			$result = $this->file_system->replace_directory( $wp_content_root . '/mpg-uploads', WP_CONTENT_DIR . '/mpg-uploads', array(), $file_progress );
 			if ( is_wp_error( $result ) ) {
 				return $result;
 			}
@@ -624,7 +645,7 @@ class Import_Service {
 		}
 
 		if ( is_dir( $wp_content_root . '/themes' ) ) {
-			$result = $this->file_system->replace_directory( $wp_content_root . '/themes', WP_CONTENT_DIR . '/themes' );
+			$result = $this->file_system->replace_directory( $wp_content_root . '/themes', WP_CONTENT_DIR . '/themes', array(), $file_progress );
 			if ( is_wp_error( $result ) ) {
 				return $result;
 			}
@@ -633,14 +654,14 @@ class Import_Service {
 		if ( is_dir( $wp_content_root . '/plugins' ) ) {
 			$plugin_dir = dirname( $this->config->get_plugin_basename() );
 			$plugin_dir = '.' === $plugin_dir ? 'ag-sync-bridge' : trim( str_replace( '\\', '/', $plugin_dir ), '/' );
-			$result     = $this->file_system->replace_directory( $wp_content_root . '/plugins', WP_CONTENT_DIR . '/plugins', array( $plugin_dir ) );
+			$result     = $this->file_system->replace_directory( $wp_content_root . '/plugins', WP_CONTENT_DIR . '/plugins', array( $plugin_dir ), $file_progress );
 			if ( is_wp_error( $result ) ) {
 				return $result;
 			}
 		}
 
 		if ( is_dir( $wp_content_root . '/mu-plugins' ) ) {
-			$result = $this->file_system->replace_directory( $wp_content_root . '/mu-plugins', WP_CONTENT_DIR . '/mu-plugins' );
+			$result = $this->file_system->replace_directory( $wp_content_root . '/mu-plugins', WP_CONTENT_DIR . '/mu-plugins', array(), $file_progress );
 			if ( is_wp_error( $result ) ) {
 				return $result;
 			}
@@ -660,6 +681,16 @@ class Import_Service {
 		}
 
 		return true;
+	}
+
+	private function get_file_progress_callback( array $args ) {
+		$callback = array_get( $args, 'progress_callback', null );
+		if ( ! is_callable( $callback ) ) {
+			return null;
+		}
+		return static function ( array $details ) use ( $callback ) {
+			call_user_func( $callback, 'files-import', null, $details );
+		};
 	}
 
 	private function clear_target_builder_caches() {

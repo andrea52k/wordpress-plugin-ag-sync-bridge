@@ -360,6 +360,113 @@ if ( defined( 'WP_CLI' ) && WP_CLI ) {
 			\WP_CLI::success( 'Remote operation state: ' . array_get( $operation, 'status', 'unknown' ) . '.' );
 		}
 
+		/**
+		 * Reconciles a stale remote operation without declaring it successful.
+		 *
+		 * ## OPTIONS
+		 *
+		 * --operation-id=<id>
+		 * --kind=<snapshot|import>
+		 * --action=<quarantine|close>
+		 * --expected-updated-at=<timestamp>
+		 * --note=<text>
+		 * --worker-absent-verified
+		 * [--target-integrity-verified]
+		 * [--rollback-verified]
+		 */
+		public function remote_reconcile( $args, $assoc_args ) {
+			unset( $args );
+			self::assert_local_remote_command();
+
+			$payload = array(
+				'operation_id'             => sanitize_text_field( (string) array_get( $assoc_args, 'operation-id', '' ) ),
+				'kind'                     => sanitize_key( (string) array_get( $assoc_args, 'kind', '' ) ),
+				'action'                   => sanitize_key( (string) array_get( $assoc_args, 'action', '' ) ),
+				'expected_updated_at'      => sanitize_text_field( (string) array_get( $assoc_args, 'expected-updated-at', '' ) ),
+				'note'                     => sanitize_text_field( (string) array_get( $assoc_args, 'note', '' ) ),
+				'worker_absent_verified'   => ! empty( $assoc_args['worker-absent-verified'] ),
+				'target_integrity_verified'=> ! empty( $assoc_args['target-integrity-verified'] ),
+				'rollback_verified'        => ! empty( $assoc_args['rollback-verified'] ),
+			);
+			if ( ! $payload['operation_id'] || ! in_array( $payload['kind'], array( 'snapshot', 'import' ), true ) || ! in_array( $payload['action'], array( 'quarantine', 'close' ), true ) || ! $payload['expected_updated_at'] || ! $payload['worker_absent_verified'] || ! $payload['note'] ) {
+				\WP_CLI::error( 'Specify operation ID, kind, action, expected updated_at, note and --worker-absent-verified.' );
+			}
+
+			$result = ( new Http_Client( self::$config, self::$logger ) )->reconcile_remote_operation( $payload );
+			if ( is_wp_error( $result ) ) {
+				\WP_CLI::error( $result->get_error_message() );
+			}
+			$operation = array_get( $result, 'operation', array() );
+			\WP_CLI::warning( 'Remote operation state: ' . array_get( $operation, 'status', 'unknown' ) . '. This is not a successful sync result.' );
+		}
+
+		/**
+		 * Updates AG Sync Bridge on the configured live peer from one verified
+		 * official GitHub release.
+		 *
+		 * ## OPTIONS
+		 *
+		 * --version=<version>
+		 * : Exact release version; must match this local plugin version.
+		 *
+		 * --sha256=<checksum>
+		 * : SHA-256 of the official ag-sync-bridge.zip release asset.
+		 *
+		 * --confirm=<text>
+		 * : Exact confirmation: UPDATE AG SYNC
+		 */
+		public function remote_update_bridge( $args, $assoc_args ) {
+			unset( $args );
+			self::assert_local_remote_command();
+
+			$version = trim( (string) array_get( $assoc_args, 'version', '' ) );
+			$sha256  = strtolower( trim( (string) array_get( $assoc_args, 'sha256', '' ) ) );
+			$confirm = (string) array_get( $assoc_args, 'confirm', '' );
+			if ( AG_SYNC_BRIDGE_VERSION !== $version ) {
+				\WP_CLI::error( 'Target version must exactly match the AG Sync version installed on this local site.' );
+			}
+			if ( ! preg_match( '/^[a-f0-9]{64}$/', $sha256 ) || Remote_Update_Service::CONFIRMATION !== $confirm ) {
+				\WP_CLI::error( 'Specify a valid --sha256 and exact --confirm="UPDATE AG SYNC".' );
+			}
+
+			$client = new Http_Client( self::$config, self::$logger );
+			$status = $client->test_connection();
+			if ( is_wp_error( $status ) ) {
+				\WP_CLI::error( 'Remote preflight failed: ' . $status->get_error_message() );
+			}
+			$current = trim( (string) array_get( $status, 'plugin', '' ) );
+			if ( ! $current || ! version_compare( $version, $current, '>' ) ) {
+				\WP_CLI::error( 'Remote version is missing, equal or newer; reinstall and downgrade are blocked.' );
+			}
+
+			\WP_CLI::log( sprintf( 'Updating remote AG Sync Bridge %s -> %s from verified GitHub asset.', $current, $version ) );
+			$result = $client->update_remote_bridge( $version, $sha256, $current, $confirm );
+			if ( is_wp_error( $result ) ) {
+				\WP_CLI::error( $result->get_error_message() );
+			}
+
+			$verified = null;
+			for ( $attempt = 0; $attempt < 12; $attempt++ ) {
+				if ( $attempt > 0 ) {
+					sleep( 5 );
+				}
+				$verified = $client->test_connection();
+				if ( ! is_wp_error( $verified ) && $version === (string) array_get( $verified, 'plugin', '' ) ) {
+					break;
+				}
+			}
+			if ( is_wp_error( $verified ) || $version !== (string) array_get( $verified, 'plugin', '' ) ) {
+				\WP_CLI::error( 'Remote update returned but post-update version verification failed.' );
+			}
+			\WP_CLI::success( 'Remote AG Sync Bridge updated and version verified: ' . $version );
+		}
+
+		private static function assert_local_remote_command() {
+			if ( 'local' !== self::$config->get_role() || ! self::$config->get_remote_url() || ! self::$config->get_secret() ) {
+				\WP_CLI::error( 'This command requires a configured local peer with remote URL and shared secret.' );
+			}
+		}
+
 		private static function parse_cleanup_options( array $assoc_args ) {
 			return array(
 				'snapshots'  => isset( $assoc_args['snapshots'] ) ? absint( $assoc_args['snapshots'] ) : null,
