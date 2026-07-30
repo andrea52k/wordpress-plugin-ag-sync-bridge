@@ -1523,6 +1523,7 @@ class File_System_Service {
 
 	private function get_allowed_root_text_files() {
 		return array(
+			'.htaccess',
 			'robots.txt',
 			'llms.txt',
 			'llms-full.txt',

@@ -321,6 +321,12 @@ file-only deploys such as `robots.txt`. From `0.1.27`, the same flow also
 supports safe root text files such as `llms.txt`. Update the live plugin first;
 older live versions reject or cannot import unsupported partial packages.
 
+From `0.1.39`, an explicit `--paths=.htaccess` is supported by both exporter
+and importer. Treat it as a high-risk root-file deploy: keep the mandatory
+verified remote backup enabled, inspect the generated plan and immediately
+verify frontend, authenticated bypass, `Authorization`, `no-cache` and 404
+behavior after the import.
+
 From `0.1.28`, fresh pulls create the live snapshot asynchronously through
 `ag_sync_bridge_async_create_snapshot`. If a pull still fails with provider
 messages such as `Request Timeout` or `takes too long to process`, confirm the

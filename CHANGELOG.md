@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.39
+
+- Il push selettivo accetta ora il percorso root esplicito `.htaccess`.
+- Il trasferimento resta file-only, richiede il backup remoto verificato già
+  obbligatorio per ogni push parziale e continua a bloccare `wp-config.php`,
+  core WordPress, runtime AG Sync e percorsi esterni alla root.
+- Exporter e importer applicano la stessa allowlist, evitando pacchetti che
+  il peer live non possa validare.
+- Aggiunto un test dedicato per accettazione di `.htaccess` e rifiuto dei file
+  root non autorizzati.
+
 ## 0.1.38
 
 - Gli snapshot remoti controllano la cancellazione durante export database e

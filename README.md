@@ -170,6 +170,7 @@ Esempi WP-CLI:
 
 ```bash
 wp agsync push --paths=robots.txt
+wp agsync push --paths=.htaccess
 wp agsync push --paths="robots.txt,llms.txt"
 wp agsync push --paths="robots.txt,wp-content/mu-plugins/mio-file.php"
 wp agsync snapshot --type=partial-test --paths=robots.txt
@@ -177,8 +178,9 @@ wp agsync snapshot --type=partial-test --paths=robots.txt
 
 Nella UI admin, lascia vuoto il campo percorsi per un push completo oppure
 inserisci un percorso per riga. Sono supportati percorsi sotto `wp-content/`,
-file root sicuri come `robots.txt`, `llms.txt`, `ads.txt` e XML. `wp-config.php`, core WordPress,
-cache, runtime AG Sync e la cartella del plugin sono bloccati.
+file root espliciti come `.htaccess`, `robots.txt`, `llms.txt`, `ads.txt` e
+XML. Ogni push parziale richiede un backup remoto verificato. `wp-config.php`,
+core WordPress, cache, runtime AG Sync e la cartella del plugin sono bloccati.
 
 ## Auto-pull locale
 
@@ -216,6 +218,7 @@ wp agsync snapshot --type=partial-test --paths=robots.txt
 wp agsync pull
 wp agsync push
 wp agsync push --paths=robots.txt
+wp agsync push --paths=.htaccess
 wp agsync push_plan --paths=robots.txt
 wp agsync remote_cancel --operation-id=<id> --kind=import
 wp agsync cancel
