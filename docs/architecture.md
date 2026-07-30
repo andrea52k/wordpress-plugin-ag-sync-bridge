@@ -23,7 +23,7 @@ The plugin version must be kept in sync in:
 | `includes/class-admin-page.php` | WordPress admin UI under `Strumenti > AG Sync Bridge` |
 | `includes/class-rest-controller.php` | Authenticated REST API used between local and live |
 | `includes/class-sync-service.php` | High-level pull, push, restore orchestration |
-| `includes/class-local-maintenance-service.php` | Local pre-push check and update of plugins, themes and translation packs |
+| `includes/class-local-maintenance-service.php` | Scope-aware local pre-push maintenance; full pushes update packages, explicit partial pushes record the out-of-scope skip |
 | `includes/class-export-service.php` | Snapshot/backup creation |
 | `includes/class-import-service.php` | Snapshot validation/import, file import, cache clearing |
 | `includes/class-database-service.php` | DB export/import, URL replace, prefix remap |
@@ -327,6 +327,21 @@ recorded as tombstones so importing that backup restores their prior absence.
 The remote import endpoint also rejects non-`full` snapshots unless the caller
 passes the explicit partial-snapshot override for a recovery operation or the
 package is an intentional selective push created by `--paths`.
+
+## Scope-aware local maintenance
+
+`Sync_Service` passes the already validated deployment scope and normalized
+paths to `Local_Maintenance_Service`.
+
+- A full push keeps the fail-closed policy: refresh update metadata, update
+  plugins, themes and translations, and stop before any remote call if one
+  update fails.
+- An explicit partial push does not load or invoke WordPress package updaters.
+  Those packages are outside the declared file-only scope. The maintenance
+  result and log record `scope=partial`, the normalized paths, skipped
+  categories and `explicit_partial_push_out_of_scope`.
+- A partial maintenance request without validated paths fails closed. Path
+  allowlist validation remains owned by `Sync_Service` before maintenance.
 
 ## Updater Sequence
 

@@ -397,8 +397,16 @@ class Sync_Service {
 				return $error;
 			}
 
-			$this->update_operation( 'push', 1, 'local-maintenance', __( 'Controllo e aggiornamento locale di plugin, temi e traduzioni...', 'ag-sync-bridge' ) );
-			$maintenance = $this->maintenance->prepare_for_push();
+			$maintenance_message = $is_partial_push
+				? __( 'Controlli essenziali del push parziale; aggiornamenti estranei allo scope esclusi...', 'ag-sync-bridge' )
+				: __( 'Controllo e aggiornamento locale di plugin, temi e traduzioni...', 'ag-sync-bridge' );
+			$this->update_operation( 'push', 1, 'local-maintenance', $maintenance_message );
+			$maintenance = $this->maintenance->prepare_for_push(
+				array(
+					'scope' => $is_partial_push ? 'partial' : 'full',
+					'paths' => $partial_paths,
+				)
+			);
 			if ( is_wp_error( $maintenance ) ) {
 				$this->fail_operation( 'push', $maintenance );
 				return $maintenance;

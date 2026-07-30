@@ -20,7 +20,7 @@ Se devi modificare o gestire il plugin da un agente automatico, leggi prima:
 
 ## Versione
 
-Versione plugin: `0.1.42`
+Versione plugin: `0.1.43`
 
 Slug tecnico WordPress: `ag-sync-bridge`
 
@@ -145,7 +145,7 @@ Il live crea automaticamente lo snapshot settimanale, ma il locale non lo scaric
 Quando premi `Invia il locale al live`:
 
 1. Devi digitare `INVIA LIVE`.
-2. Il locale rileva e aggiorna plugin, temi e traduzioni disponibili. Se uno step fallisce, il push si ferma prima di contattare il live. Un update di AG Sync Bridge stesso va eseguito dal normale updater WordPress e poi il push va ripetuto.
+2. Nei push completi il locale rileva e aggiorna plugin, temi e traduzioni disponibili. Se uno step fallisce, il push si ferma prima di contattare il live. Un update di AG Sync Bridge stesso va eseguito dal normale updater WordPress e poi il push va ripetuto. Nei push parziali espliciti gli updater di plugin, temi e traduzioni vengono saltati e lo skip viene registrato, perche sono estranei ai path file-only dichiarati.
 3. Il locale esegue un preflight remoto su storage, permessi e test scrittura.
 4. Il backup live pre-push viene saltato di default per non consumare quota hosting. Quando la policy lo richiede, entrambi i peer devono usare `0.1.42` o superiore e il push prosegue solo con stato `completed` e prova verificata dell'archivio. Un deploy parziale salva soltanto gli stessi path che verranno sovrascritti; un deploy completo conserva il backup completo.
 5. Il locale crea uno snapshot completo.
@@ -229,7 +229,7 @@ wp agsync remote_reconcile --operation-id=<id> --kind=import --action=quarantine
 wp agsync remote_reconcile --operation-id=<id> --kind=import --action=close --expected-updated-at=<timestamp-quarantena> --note="Identita, pagine e dati verificati" --worker-absent-verified --target-integrity-verified
 wp agsync remote_reconcile --operation-id=<id> --kind=import --action=recover --expected-updated-at=<timestamp> --note="Backup ripristinato e verificato" --rollback-verified
 wp agsync remote_enable_backups --confirm="ENABLE REMOTE BACKUPS"
-wp agsync remote_update_bridge --version=0.1.42 --sha256=<sha256-ag-sync-bridge.zip> --confirm="UPDATE AG SYNC"
+wp agsync remote_update_bridge --version=0.1.43 --sha256=<sha256-ag-sync-bridge.zip> --confirm="UPDATE AG SYNC"
 wp agsync cleanup
 wp agsync remote_cleanup
 wp agsync lock
@@ -315,6 +315,7 @@ Da `0.1.17`, cliccare `Bacheca > Aggiornamenti > Verifica di nuovo` forza anche 
 - Se `ZipArchive` manca, il plugin non puo creare/importare snapshot ZIP.
 - `wp agsync push --use-existing-snapshot` riusa solo snapshot marcati `full`; vecchi pacchetti senza scope vengono bloccati.
 - `wp agsync push --paths=...` crea un pacchetto parziale file-only. Il formato base esiste da `0.1.26`, ma il protocollo sicuro di backup scoped richiede `0.1.42` su entrambi i peer.
+- Da `0.1.43`, un push parziale esplicito non esegue aggiornamenti automatici di plugin, temi o traduzioni estranei allo scope. I push completi mantengono la manutenzione automatica fail-closed.
 - `wp agsync push_plan [--paths=...]` mostra senza modifiche classificazione, trasferimenti, metriche full/partial e stato del rollback. Un push parziale richiede un backup remoto pre-push: senza backup abilitato viene bloccato, perché una cartella selezionata sostituisce il relativo sottoalbero sul live.
 - `wp agsync remote_cancel --operation-id=<id> --kind=snapshot|import` annulla solo l'operazione remota indicata. Un import che ha gia modificato database o file resta `rollback_required` e va ripristinato dal backup.
 - `wp agsync cancel` richiede lo stop cooperativo dell'operazione locale attiva. Il segnale resta nel lock e viene letto durante snapshot, trasferimenti e import.

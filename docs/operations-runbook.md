@@ -102,6 +102,14 @@ replace unrelated directories, and can include safe root text files such as
 `humans.txt`. They cannot update `wp-config.php`, WordPress core, AG Sync
 runtime data, cache paths, or the AG Sync Bridge plugin folder.
 
+From `0.1.43`, explicit selective pushes also skip local automatic updates for
+plugins, themes and translations. The operation log must contain
+`Local pre-push package updates skipped for explicit partial push` with
+`scope=partial`, the normalized `paths` and reason
+`explicit_partial_push_out_of_scope`. This prevents an unrelated package such
+as Click to Chat from blocking a `.htaccess` deploy. Full pushes still run the
+existing fail-closed package maintenance.
+
 From `0.1.42`, the remote pre-push backup for this flow is also file-only and
 covers exactly the normalized deploy paths. Verify the returned result has:
 

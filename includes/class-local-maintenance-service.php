@@ -31,9 +31,21 @@ class Local_Maintenance_Service {
 	 * request: replacing the running plugin is unsafe. Its update must be
 	 * installed normally, then the push can be retried.
 	 *
+	 * An explicit partial push is already constrained by the validated path
+	 * allowlist. Updating unrelated packages before that deploy would expand
+	 * its scope and can block a safe file-only change for an unrelated failure.
+	 * In that case only the indispensable context check is performed and the
+	 * updater skip is recorded.
+	 *
+	 * @param array $context Push scope and normalized partial paths.
 	 * @return array|WP_Error
 	 */
-	public function prepare_for_push() {
+	public function prepare_for_push( array $context = array() ) {
+		$scope = isset( $context['scope'] ) ? (string) $context['scope'] : 'full';
+		if ( 'partial' === $scope ) {
+			return $this->prepare_for_partial_push( $context );
+		}
+
 		$dependencies = $this->load_upgrader_dependencies();
 		if ( is_wp_error( $dependencies ) ) {
 			return $dependencies;
@@ -61,6 +73,7 @@ class Local_Maintenance_Service {
 
 		$summary = array(
 			'checked_at'   => gmdate( 'c' ),
+			'scope'        => 'full',
 			'plugins'      => array( 'available' => count( $plugin_updates ), 'updated' => array() ),
 			'themes'       => array( 'available' => count( $theme_updates ), 'updated' => array() ),
 			'translations' => array( 'available' => count( $translation_updates ), 'updated' => array() ),
@@ -100,6 +113,60 @@ class Local_Maintenance_Service {
 		}
 
 		$this->logger->info( 'Local pre-push maintenance completed.', $summary );
+		return $summary;
+	}
+
+	/**
+	 * Record the deliberately narrow maintenance policy for an explicit
+	 * file-only partial push.
+	 *
+	 * Path normalization and allowlist validation are owned by Sync_Service
+	 * before this method is called. Requiring at least one normalized path here
+	 * prevents a malformed caller from silently obtaining the partial policy.
+	 *
+	 * @param array $context Push scope and normalized partial paths.
+	 * @return array|WP_Error
+	 */
+	private function prepare_for_partial_push( array $context ) {
+		$paths = isset( $context['paths'] ) && is_array( $context['paths'] )
+			? array_values( $context['paths'] )
+			: array();
+		$paths = array_values(
+			array_filter(
+				$paths,
+				static function ( $path ) {
+					return is_string( $path ) && '' !== trim( $path );
+				}
+			)
+		);
+
+		if ( empty( $paths ) ) {
+			return new WP_Error(
+				'ag_sync_bridge_partial_maintenance_paths_missing',
+				__( 'Partial pre-push maintenance requires at least one validated deployment path.', 'ag-sync-bridge' )
+			);
+		}
+
+		$skipped_category = array(
+			'checked' => false,
+			'skipped' => true,
+			'updated' => array(),
+		);
+		$summary          = array(
+			'checked_at'        => gmdate( 'c' ),
+			'scope'             => 'partial',
+			'paths'             => $paths,
+			'plugins'           => $skipped_category,
+			'themes'            => $skipped_category,
+			'translations'      => $skipped_category,
+			'automatic_updates' => array(
+				'status'     => 'skipped',
+				'reason'     => 'explicit_partial_push_out_of_scope',
+				'categories' => array( 'plugins', 'themes', 'translations' ),
+			),
+		);
+
+		$this->logger->info( 'Local pre-push package updates skipped for explicit partial push.', $summary );
 		return $summary;
 	}
 

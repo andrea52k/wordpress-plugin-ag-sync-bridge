@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.43
+
+- I push parziali espliciti non eseguono piu gli aggiornamenti automatici
+  locali di plugin, temi e traduzioni, perche questi componenti sono estranei
+  ai path file-only dichiarati.
+- La manutenzione parziale verifica la presenza dei path gia normalizzati,
+  registra scope, path, categorie saltate e motivazione; una richiesta
+  parziale priva di path fallisce prima di qualsiasi operazione remota.
+- I push completi mantengono la policy esistente: controllo e aggiornamento
+  fail-closed di plugin, temi e traduzioni prima del deploy.
+- Aggiunti test di regressione che simulano il fallimento dell'aggiornamento
+  Click to Chat e verificano che blocchi ancora un push completo ma non un
+  push esplicito `.htaccess`.
+
 ## 0.1.42
 
 - I push parziali creano sul live un backup pre-push limitato esattamente agli
