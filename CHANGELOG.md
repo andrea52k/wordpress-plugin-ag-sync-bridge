@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.41
+
+- Il comando di abilitazione backup interroga ora il control plane file-backed
+  autorevole invece del vecchio `current_operation` nelle opzioni WordPress.
+- Stati importati o rimasti obsoleti nel database non generano più falsi
+  blocchi; operazioni file-backed attive o irrisolte restano bloccanti.
+
 ## 0.1.40
 
 - Aggiunto `wp agsync remote_enable_backups` per attivare la policy di backup

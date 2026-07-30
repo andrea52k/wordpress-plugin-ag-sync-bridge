@@ -1219,8 +1219,18 @@ class Rest_Controller {
 			);
 		}
 
-		$operation = array_get( $this->config->get_state(), 'current_operation', array() );
-		if ( is_array( $operation ) && ! empty( $operation ) && 'running' === array_get( $operation, 'status', '' ) ) {
+		$operation = $this->runtime->inspect();
+		if ( is_wp_error( $operation ) ) {
+			return $operation;
+		}
+		if (
+			! empty( $operation )
+			&& ! in_array(
+				(string) array_get( $operation, 'status', '' ),
+				array( 'complete', 'error', 'failed', 'cancelled', 'reconciled' ),
+				true
+			)
+		) {
 			return new WP_Error(
 				'ag_sync_bridge_backup_policy_operation_running',
 				__( 'Remote backup policy cannot change while an operation is running.' ),
