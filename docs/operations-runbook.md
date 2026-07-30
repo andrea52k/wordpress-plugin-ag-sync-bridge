@@ -327,6 +327,16 @@ verified remote backup enabled, inspect the generated plan and immediately
 verify frontend, authenticated bypass, `Authorization`, `no-cache` and 404
 behavior after the import.
 
+From `0.1.40`, if the authenticated live peer has backups disabled, enable
+them without opening the WordPress settings page:
+
+```bash
+wp agsync remote_enable_backups --confirm="ENABLE REMOTE BACKUPS"
+```
+
+The signed command is remote-only, refuses to run during an active operation
+and fails if a server constant explicitly keeps backups disabled.
+
 From `0.1.28`, fresh pulls create the live snapshot asynchronously through
 `ag_sync_bridge_async_create_snapshot`. If a pull still fails with provider
 messages such as `Request Timeout` or `takes too long to process`, confirm the

@@ -225,6 +225,7 @@ wp agsync cancel
 wp agsync remote_reconcile --operation-id=<id> --kind=import --action=quarantine --expected-updated-at=<timestamp> --note="Worker verificato assente" --worker-absent-verified
 wp agsync remote_reconcile --operation-id=<id> --kind=import --action=close --expected-updated-at=<timestamp-quarantena> --note="Identita, pagine e dati verificati" --worker-absent-verified --target-integrity-verified
 wp agsync remote_reconcile --operation-id=<id> --kind=import --action=recover --expected-updated-at=<timestamp> --note="Backup ripristinato e verificato" --rollback-verified
+wp agsync remote_enable_backups --confirm="ENABLE REMOTE BACKUPS"
 wp agsync remote_update_bridge --version=0.1.38 --sha256=<sha256-ag-sync-bridge.zip> --confirm="UPDATE AG SYNC"
 wp agsync cleanup
 wp agsync remote_cleanup

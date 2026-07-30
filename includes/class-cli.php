@@ -483,6 +483,38 @@ if ( defined( 'WP_CLI' ) && WP_CLI ) {
 			\WP_CLI::success( 'Remote AG Sync Bridge updated and version verified: ' . $version );
 		}
 
+		/**
+		 * Enables verified pre-push backups on the configured live peer.
+		 *
+		 * ## OPTIONS
+		 *
+		 * --confirm=<text>
+		 * : Exact confirmation: ENABLE REMOTE BACKUPS
+		 */
+		public function remote_enable_backups( $args, $assoc_args ) {
+			unset( $args );
+			self::assert_local_remote_command();
+
+			$confirm = (string) array_get( $assoc_args, 'confirm', '' );
+			if ( Rest_Controller::ENABLE_REMOTE_BACKUPS_CONFIRMATION !== $confirm ) {
+				\WP_CLI::error( 'Specify exact --confirm="ENABLE REMOTE BACKUPS".' );
+			}
+
+			$result = ( new Http_Client( self::$config, self::$logger ) )->enable_remote_backups( $confirm );
+			if ( is_wp_error( $result ) ) {
+				\WP_CLI::error( $result->get_error_message() );
+			}
+			if ( empty( $result['enabled'] ) ) {
+				\WP_CLI::error( 'Remote peer did not confirm that pre-push backups are enabled.' );
+			}
+
+			\WP_CLI::success(
+				! empty( $result['previously_enabled'] )
+					? 'Remote pre-push backups were already enabled.'
+					: 'Remote pre-push backups enabled and verified.'
+			);
+		}
+
 		private static function assert_local_remote_command() {
 			if ( 'local' !== self::$config->get_role() || ! self::$config->get_remote_url() || ! self::$config->get_secret() ) {
 				\WP_CLI::error( 'This command requires a configured local peer with remote URL and shared secret.' );

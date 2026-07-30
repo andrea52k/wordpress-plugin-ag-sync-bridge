@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.40
+
+- Aggiunto `wp agsync remote_enable_backups` per attivare la policy di backup
+  sul peer live tramite richiesta HMAC firmata e conferma esatta.
+- Il comando è accettato solo dal peer con ruolo `remote`, viene rifiutato
+  durante operazioni attive e verifica il valore persistito prima del successo.
+- Una costante server che disabilita esplicitamente i backup resta
+  autorevole e impedisce il cambio remoto.
+
 ## 0.1.39
 
 - Il push selettivo accetta ora il percorso root esplicito `.htaccess`.

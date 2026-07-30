@@ -333,6 +333,25 @@ class Config {
 		return $state;
 	}
 
+	public function enable_remote_backups() {
+		if ( defined( 'AG_SYNC_BRIDGE_REMOTE_BACKUPS_ENABLED' ) && ! AG_SYNC_BRIDGE_REMOTE_BACKUPS_ENABLED ) {
+			return new \WP_Error(
+				'ag_sync_bridge_remote_backups_constant_disabled',
+				__( 'Remote backups are disabled by server configuration.' )
+			);
+		}
+
+		$settings                           = $this->get_stored_settings();
+		$previous                           = ! empty( $settings['remote_backups_enabled'] );
+		$settings['remote_backups_enabled'] = true;
+		update_option( self::OPTION_SETTINGS, $settings, false );
+
+		return array(
+			'previously_enabled' => $previous,
+			'enabled'            => (bool) $this->get( 'remote_backups_enabled', false ),
+		);
+	}
+
 	public function get_plugin_basename() {
 		return plugin_basename( AG_SYNC_BRIDGE_PLUGIN_FILE );
 	}

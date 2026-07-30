@@ -10,6 +10,8 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 class Rest_Controller {
+	const ENABLE_REMOTE_BACKUPS_CONFIRMATION = 'ENABLE REMOTE BACKUPS';
+
 	/**
 	 * @var Config
 	 */
@@ -220,6 +222,16 @@ class Rest_Controller {
 			array(
 				'methods'             => 'POST',
 				'callback'            => array( $this, 'update_bridge' ),
+				'permission_callback' => array( $this, 'check_permission' ),
+			)
+		);
+
+		register_rest_route(
+			'ag-sync-bridge/v1',
+			'/maintenance/enable-remote-backups',
+			array(
+				'methods'             => 'POST',
+				'callback'            => array( $this, 'enable_remote_backups' ),
 				'permission_callback' => array( $this, 'check_permission' ),
 			)
 		);
@@ -1188,6 +1200,45 @@ class Rest_Controller {
 			(string) $request->get_param( 'confirmation' )
 		);
 		return is_wp_error( $result ) ? $result : new WP_REST_Response( $result );
+	}
+
+	public function enable_remote_backups( WP_REST_Request $request ) {
+		if ( 'remote' !== $this->config->get_role() ) {
+			return new WP_Error(
+				'ag_sync_bridge_backup_policy_wrong_role',
+				__( 'Remote backup policy can only be enabled on a remote peer.' ),
+				array( 'status' => 409 )
+			);
+		}
+
+		if ( self::ENABLE_REMOTE_BACKUPS_CONFIRMATION !== (string) $request->get_param( 'confirmation' ) ) {
+			return new WP_Error(
+				'ag_sync_bridge_backup_policy_confirmation',
+				__( 'Exact confirmation is required to enable remote backups.' ),
+				array( 'status' => 400 )
+			);
+		}
+
+		$operation = array_get( $this->config->get_state(), 'current_operation', array() );
+		if ( is_array( $operation ) && ! empty( $operation ) && 'running' === array_get( $operation, 'status', '' ) ) {
+			return new WP_Error(
+				'ag_sync_bridge_backup_policy_operation_running',
+				__( 'Remote backup policy cannot change while an operation is running.' ),
+				array( 'status' => 409 )
+			);
+		}
+
+		$result = $this->config->enable_remote_backups();
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+
+		$this->logger->warning(
+			'Remote pre-push backups enabled through authenticated peer command.',
+			array( 'previously_enabled' => ! empty( $result['previously_enabled'] ) )
+		);
+
+		return new WP_REST_Response( $result );
 	}
 
 	public function download_snapshot( WP_REST_Request $request ) {

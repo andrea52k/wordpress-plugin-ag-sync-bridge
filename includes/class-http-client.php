@@ -142,6 +142,16 @@ class Http_Client {
 		);
 	}
 
+	public function enable_remote_backups( $confirmation ) {
+		return $this->request_json(
+			'POST',
+			'/ag-sync-bridge/v1/maintenance/enable-remote-backups',
+			array(
+				'confirmation' => (string) $confirmation,
+			)
+		);
+	}
+
 	public function download_snapshot( $basename, $destination_file, $cancellation_check = null ) {
 		if ( $this->is_cancel_requested( $cancellation_check, 'download-prepare' ) ) {
 			return $this->cancellation_error( 'download-prepare' );
