@@ -381,8 +381,38 @@ class Rest_Controller {
 	}
 
 	public function create_backup( WP_REST_Request $request ) {
-		$type   = sanitize_key( (string) $request->get_param( 'type' ) );
-		$type   = $type ?: 'remote-backup';
+		$type  = sanitize_key( (string) $request->get_param( 'type' ) );
+		$type  = $type ?: 'remote-backup';
+		$scope = sanitize_key( (string) $request->get_param( 'scope' ) );
+		$scope = $scope ?: 'full';
+		$paths = $request->get_param( 'paths' );
+		$paths = is_array( $paths ) ? $paths : array();
+
+		if ( ! in_array( $scope, array( 'full', 'partial' ), true ) ) {
+			return new WP_Error( 'ag_sync_bridge_remote_backup_scope_invalid', __( 'Remote backup scope must be full or partial.', 'ag-sync-bridge' ), array( 'status' => 400 ) );
+		}
+
+		if ( 'full' === $scope && ! empty( $paths ) ) {
+			return new WP_Error( 'ag_sync_bridge_remote_backup_full_paths_forbidden', __( 'A full remote backup cannot declare partial paths.', 'ag-sync-bridge' ), array( 'status' => 400 ) );
+		}
+
+		if ( 'partial' === $scope ) {
+			$paths = $this->file_system->normalize_partial_export_paths( $paths, false );
+			if ( is_wp_error( $paths ) ) {
+				return new WP_Error(
+					$paths->get_error_code(),
+					$paths->get_error_message(),
+					array(
+						'status' => 400,
+						'cause'  => $paths->get_error_data(),
+					)
+				);
+			}
+
+			if ( empty( $paths ) ) {
+				return new WP_Error( 'ag_sync_bridge_remote_backup_partial_paths_required', __( 'A partial remote backup requires at least one validated path.', 'ag-sync-bridge' ), array( 'status' => 400 ) );
+			}
+		}
 
 		if ( ! $this->config->get( 'remote_backups_enabled', false ) ) {
 			$result = Remote_Backup_Result::disabled( $type );
@@ -390,12 +420,14 @@ class Rest_Controller {
 			return new WP_REST_Response( $result );
 		}
 
-		$result = $this->sync->create_backup(
-			$type,
-			array(
-				'trigger' => 'remote-api',
-			)
+		$context = array(
+			'trigger'      => 'remote-api',
+			'backup_scope' => $scope,
+			'backup_paths' => $paths,
 		);
+		$result  = 'partial' === $scope
+			? $this->sync->create_partial_backup( $paths, $type, $context )
+			: $this->sync->create_backup( $type, $context );
 
 		if ( is_wp_error( $result ) ) {
 			$failed = Remote_Backup_Result::failed( $type, $result->get_error_code(), $result->get_error_message() );
@@ -403,7 +435,7 @@ class Rest_Controller {
 			return new WP_REST_Response( $failed, 500 );
 		}
 
-		$verified = Remote_Backup_Result::completed_from_archive( $result );
+		$verified = Remote_Backup_Result::completed_from_archive( $result, $scope, $paths );
 		if ( is_wp_error( $verified ) ) {
 			$failed = Remote_Backup_Result::failed( $type, $verified->get_error_code(), $verified->get_error_message() );
 			$this->logger->error( 'Remote backup verification failed.', $failed );
@@ -417,6 +449,8 @@ class Rest_Controller {
 				'basename'   => array_get( $verified, 'basename', '' ),
 				'size_bytes' => array_get( $verified, 'size_bytes', 0 ),
 				'sha256'     => array_get( $verified, 'sha256', '' ),
+				'scope'      => array_get( $verified, 'scope', '' ),
+				'paths'      => array_get( $verified, 'paths', array() ),
 			)
 		);
 

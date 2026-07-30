@@ -22,11 +22,18 @@ class Remote_Backup_Result {
 	 * @param array $backup Raw backup metadata returned by the exporter.
 	 * @return array|WP_Error
 	 */
-	public static function completed_from_archive( array $backup ) {
+	public static function completed_from_archive( array $backup, $expected_scope = '', array $expected_paths = array() ) {
 		$path              = (string) array_get( $backup, 'path', '' );
 		$basename          = trim( (string) array_get( $backup, 'basename', '' ) );
 		$reported_bytes    = (int) array_get( $backup, 'size_bytes', 0 );
 		$reported_checksum = strtolower( trim( (string) array_get( $backup, 'sha256', '' ) ) );
+		$scope             = self::backup_scope( $backup );
+		$paths             = self::backup_paths( $backup );
+
+		$scope_validation = self::validate_scope( $scope, $paths, $expected_scope, $expected_paths );
+		if ( is_wp_error( $scope_validation ) ) {
+			return $scope_validation;
+		}
 
 		if ( '' === $path || '' === $basename || basename( $path ) !== $basename ) {
 			return self::verification_error( 'archive_identity_missing', __( 'Remote backup did not return a valid archive basename and path.', 'ag-sync-bridge' ) );
@@ -64,6 +71,8 @@ class Remote_Backup_Result {
 		$backup['basename']     = $basename;
 		$backup['size_bytes']   = $actual_bytes;
 		$backup['sha256']       = $actual_checksum;
+		$backup['scope']        = $scope;
+		$backup['paths']        = $paths;
 		$backup['completed_at'] = gmdate( 'c' );
 		$backup['proof']        = array(
 			'archive_exists' => true,
@@ -116,7 +125,7 @@ class Remote_Backup_Result {
 	 * @param mixed $response Decoded remote response.
 	 * @return array|WP_Error
 	 */
-	public static function require_completed( $response ) {
+	public static function require_completed( $response, $expected_scope = 'full', array $expected_paths = array() ) {
 		if ( ! is_array( $response ) || empty( $response ) ) {
 			return new WP_Error(
 				'ag_sync_bridge_remote_backup_empty',
@@ -166,7 +175,99 @@ class Remote_Backup_Result {
 			);
 		}
 
+		$scope_validation = self::validate_scope(
+			strtolower( trim( (string) array_get( $response, 'scope', '' ) ) ),
+			self::normalize_response_paths( array_get( $response, 'paths', array() ) ),
+			$expected_scope,
+			$expected_paths
+		);
+		if ( is_wp_error( $scope_validation ) ) {
+			return $scope_validation;
+		}
+
 		return $response;
+	}
+
+	private static function backup_scope( array $backup ) {
+		$manifest = array_get( $backup, 'manifest', array() );
+		$manifest = is_array( $manifest ) ? $manifest : array();
+		return strtolower(
+			trim(
+				(string) array_get(
+					$backup,
+					'scope',
+					array_get( $backup, 'snapshot_scope', array_get( $manifest, 'snapshot_scope', '' ) )
+				)
+			)
+		);
+	}
+
+	private static function backup_paths( array $backup ) {
+		$manifest = array_get( $backup, 'manifest', array() );
+		$manifest = is_array( $manifest ) ? $manifest : array();
+		return self::normalize_response_paths(
+			array_get(
+				$backup,
+				'paths',
+				array_get( $backup, 'partial_paths', array_get( $manifest, 'partial_paths', array() ) )
+			)
+		);
+	}
+
+	private static function normalize_response_paths( $paths ) {
+		if ( ! is_array( $paths ) ) {
+			return array();
+		}
+
+		return array_values(
+			array_map(
+				static function ( $path ) {
+					return (string) $path;
+				},
+				$paths
+			)
+		);
+	}
+
+	private static function validate_scope( $scope, array $paths, $expected_scope, array $expected_paths ) {
+		$expected_scope = strtolower( trim( (string) $expected_scope ) );
+		$expected_paths = self::normalize_response_paths( $expected_paths );
+
+		if ( ! in_array( $scope, array( 'full', 'partial' ), true ) ) {
+			return self::verification_error( 'backup_scope_invalid', __( 'Remote backup did not attest a valid full or partial scope.', 'ag-sync-bridge' ) );
+		}
+
+		if ( 'full' === $scope && ! empty( $paths ) ) {
+			return self::verification_error( 'full_backup_paths_present', __( 'Remote full backup unexpectedly declared partial paths.', 'ag-sync-bridge' ) );
+		}
+
+		if ( 'partial' === $scope && empty( $paths ) ) {
+			return self::verification_error( 'partial_backup_paths_missing', __( 'Remote partial backup did not attest its protected paths.', 'ag-sync-bridge' ) );
+		}
+
+		if ( '' !== $expected_scope && $scope !== $expected_scope ) {
+			return self::verification_error(
+				'backup_scope_mismatch',
+				__( 'Remote backup scope does not match the deployment plan.', 'ag-sync-bridge' ),
+				array(
+					'expected_scope' => $expected_scope,
+					'actual_scope'   => $scope,
+				)
+			);
+		}
+
+		if ( 'partial' === $expected_scope && $paths !== $expected_paths ) {
+			return self::verification_error(
+				'backup_paths_mismatch',
+				__( 'Remote backup paths do not exactly match the partial deployment plan.', 'ag-sync-bridge' ),
+				array(
+					'expected_paths' => $expected_paths,
+					'actual_paths'   => $paths,
+				)
+			);
+		}
+
+		return true;
 	}
 
 	private static function empty_proof() {

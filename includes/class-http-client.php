@@ -82,12 +82,14 @@ class Http_Client {
 		return $this->request_json( 'GET', '/ag-sync-bridge/v1/snapshot/latest' );
 	}
 
-	public function create_remote_backup() {
+	public function create_remote_backup( $scope = 'full', array $paths = array() ) {
 		$result = $this->request_json(
 			'POST',
 			'/ag-sync-bridge/v1/backup/create',
 			array(
-				'type' => 'pre-push-backup',
+				'type'  => 'pre-push-backup',
+				'scope' => (string) $scope,
+				'paths' => array_values( $paths ),
 			)
 		);
 
@@ -847,7 +849,7 @@ class Http_Client {
 			$result   = $this->decode_json_response( $response );
 		}
 
-		if ( $this->should_retry_with_legacy_signature( $result ) ) {
+		if ( '/ag-sync-bridge/v1/backup/create' !== $route && $this->should_retry_with_legacy_signature( $result ) ) {
 			$this->use_legacy_signatures = true;
 			$this->logger->info(
 				'Remote uses legacy request signatures. Falling back for compatibility.',
@@ -934,34 +936,41 @@ class Http_Client {
 	}
 
 	private function dispatch_json_request( $method, $route, array $body = array() ) {
+		$encoded_body = empty( $body ) ? '' : wp_json_encode( $body, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE );
+
 		return wp_remote_request(
 			$this->build_rest_url( $route ),
 			array(
 				'method'  => strtoupper( $method ),
 				'timeout' => $this->config->get_request_timeout(),
 				'headers' => array_merge(
-					$this->build_headers( $method, $route ),
+					$this->build_headers( $method, $route, $encoded_body ),
 					array(
 						'Content-Type' => 'application/json',
 					)
 				),
-				'body'    => empty( $body ) ? null : wp_json_encode( $body, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE ),
+				'body'    => '' === $encoded_body ? null : $encoded_body,
 			)
 		);
 	}
 
-	private function build_headers( $method, $route ) {
+	private function build_headers( $method, $route, $body = '' ) {
 		$timestamp = $this->get_request_timestamp( $method, $route );
 		$nonce     = $this->use_legacy_signatures ? '' : wp_generate_uuid4();
+		$body_hash = ! $this->use_legacy_signatures && '' !== (string) $body ? hash( 'sha256', (string) $body ) : '';
 		$headers   = array(
 			'X-AGSB-Timestamp' => (string) $timestamp,
-			'X-AGSB-Signature' => $this->sign( $method, $route, $timestamp, $nonce ),
+			'X-AGSB-Signature' => $this->sign( $method, $route, $timestamp, $nonce, $body_hash ),
 			'X-AGSB-Origin'    => home_url(),
 			'Expect'           => '',
 		);
 
 		if ( '' !== $nonce ) {
 			$headers['X-AGSB-Nonce'] = $nonce;
+		}
+
+		if ( '' !== $body_hash ) {
+			$headers['X-AGSB-Body-SHA256'] = $body_hash;
 		}
 
 		return $headers;
@@ -988,10 +997,13 @@ class Http_Client {
 		return $timestamp;
 	}
 
-	private function sign( $method, $route, $timestamp, $nonce = '' ) {
+	private function sign( $method, $route, $timestamp, $nonce = '', $body_hash = '' ) {
 		$payload = strtoupper( $method ) . "\n" . $route . "\n" . (int) $timestamp;
 		if ( '' !== $nonce ) {
 			$payload .= "\n" . $nonce;
+		}
+		if ( '' !== $body_hash ) {
+			$payload .= "\n" . strtolower( (string) $body_hash );
 		}
 
 		return hash_hmac( 'sha256', $payload, $this->config->get_secret() );

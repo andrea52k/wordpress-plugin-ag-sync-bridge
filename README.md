@@ -20,7 +20,7 @@ Se devi modificare o gestire il plugin da un agente automatico, leggi prima:
 
 ## Versione
 
-Versione plugin: `0.1.38`
+Versione plugin: `0.1.42`
 
 Slug tecnico WordPress: `ag-sync-bridge`
 
@@ -147,7 +147,7 @@ Quando premi `Invia il locale al live`:
 1. Devi digitare `INVIA LIVE`.
 2. Il locale rileva e aggiorna plugin, temi e traduzioni disponibili. Se uno step fallisce, il push si ferma prima di contattare il live. Un update di AG Sync Bridge stesso va eseguito dal normale updater WordPress e poi il push va ripetuto.
 3. Il locale esegue un preflight remoto su storage, permessi e test scrittura.
-4. Il backup live pre-push viene saltato di default per non consumare quota hosting. Quando la policy lo richiede, il push prosegue solo con stato `completed` e prova verificata dell'archivio.
+4. Il backup live pre-push viene saltato di default per non consumare quota hosting. Quando la policy lo richiede, entrambi i peer devono usare `0.1.42` o superiore e il push prosegue solo con stato `completed` e prova verificata dell'archivio. Un deploy parziale salva soltanto gli stessi path che verranno sovrascritti; un deploy completo conserva il backup completo.
 5. Il locale crea uno snapshot completo.
 6. Lo snapshot viene validato localmente: ZIP estraibile, manifest `full`, database, componenti e sitemap root coerenti.
 7. Lo snapshot viene caricato sul live.
@@ -179,8 +179,11 @@ wp agsync snapshot --type=partial-test --paths=robots.txt
 Nella UI admin, lascia vuoto il campo percorsi per un push completo oppure
 inserisci un percorso per riga. Sono supportati percorsi sotto `wp-content/`,
 file root espliciti come `.htaccess`, `robots.txt`, `llms.txt`, `ads.txt` e
-XML. Ogni push parziale richiede un backup remoto verificato. `wp-config.php`,
-core WordPress, cache, runtime AG Sync e la cartella del plugin sono bloccati.
+XML. Ogni push parziale richiede un backup remoto verificato con
+`scope=partial` e path identici al piano. Il backup è file-only; se un path non
+esisteva sul live, il pacchetto registra la sua assenza per poterlo eliminare
+durante un rollback. `wp-config.php`, core WordPress, cache, runtime AG Sync e
+la cartella del plugin sono bloccati.
 
 ## Auto-pull locale
 
@@ -226,7 +229,7 @@ wp agsync remote_reconcile --operation-id=<id> --kind=import --action=quarantine
 wp agsync remote_reconcile --operation-id=<id> --kind=import --action=close --expected-updated-at=<timestamp-quarantena> --note="Identita, pagine e dati verificati" --worker-absent-verified --target-integrity-verified
 wp agsync remote_reconcile --operation-id=<id> --kind=import --action=recover --expected-updated-at=<timestamp> --note="Backup ripristinato e verificato" --rollback-verified
 wp agsync remote_enable_backups --confirm="ENABLE REMOTE BACKUPS"
-wp agsync remote_update_bridge --version=0.1.38 --sha256=<sha256-ag-sync-bridge.zip> --confirm="UPDATE AG SYNC"
+wp agsync remote_update_bridge --version=0.1.42 --sha256=<sha256-ag-sync-bridge.zip> --confirm="UPDATE AG SYNC"
 wp agsync cleanup
 wp agsync remote_cleanup
 wp agsync lock
@@ -311,7 +314,7 @@ Da `0.1.17`, cliccare `Bacheca > Aggiornamenti > Verifica di nuovo` forza anche 
 - Da `0.1.29`, l'import via `mysql` rimuove dalla sessione SQL mode i flag incompatibili con dump WordPress legacy (`NO_ZERO_DATE`, `NO_ZERO_IN_DATE`, strict modes) per evitare fallback PHP lenti. Il replace URL usa anche un percorso veloce SQL per `wp_mpg_dataset_rows.row_data`.
 - Se `ZipArchive` manca, il plugin non puo creare/importare snapshot ZIP.
 - `wp agsync push --use-existing-snapshot` riusa solo snapshot marcati `full`; vecchi pacchetti senza scope vengono bloccati.
-- `wp agsync push --paths=...` crea un pacchetto parziale file-only e richiede AG Sync Bridge `0.1.26` o superiore anche sul live; i root text sicuri come `llms.txt` richiedono `0.1.27`.
+- `wp agsync push --paths=...` crea un pacchetto parziale file-only. Il formato base esiste da `0.1.26`, ma il protocollo sicuro di backup scoped richiede `0.1.42` su entrambi i peer.
 - `wp agsync push_plan [--paths=...]` mostra senza modifiche classificazione, trasferimenti, metriche full/partial e stato del rollback. Un push parziale richiede un backup remoto pre-push: senza backup abilitato viene bloccato, perché una cartella selezionata sostituisce il relativo sottoalbero sul live.
 - `wp agsync remote_cancel --operation-id=<id> --kind=snapshot|import` annulla solo l'operazione remota indicata. Un import che ha gia modificato database o file resta `rollback_required` e va ripristinato dal backup.
 - `wp agsync cancel` richiede lo stop cooperativo dell'operazione locale attiva. Il segnale resta nel lock e viene letto durante snapshot, trasferimenti e import.

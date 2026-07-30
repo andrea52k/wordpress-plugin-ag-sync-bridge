@@ -288,15 +288,18 @@ ready. This avoids provider/proxy timeouts while the live exports a large site.
 1. acquire lock
 2. run remote storage doctor/preflight
 3. skip live pre-push backup unless `remote_backups_enabled` is explicitly on;
-   when required, accept only a `completed` response with server-verified
-   basename, archive existence, positive bytes and SHA-256
-4. create local full snapshot or selected-path partial snapshot
-5. validate the local package and expected manifest scope
-6. upload snapshot
-7. trigger remote async import
-8. poll remote import state
-9. save `last_push`
-10. release lock
+   when required, create a full backup for a full deploy or a file-only backup
+   scoped to the exact deployment paths for a partial deploy
+4. require `completed`, server-verified basename, archive existence, positive
+   bytes and SHA-256; a partial deploy also requires `scope=partial` and paths
+   exactly equal to the deployment plan
+5. create local full snapshot or selected-path partial snapshot
+6. validate the local package and expected manifest scope
+7. upload snapshot
+8. trigger remote async import
+9. poll remote import state
+10. save `last_push`
+11. release lock
 
 Remote import is asynchronous through `ag_sync_bridge_async_import_snapshot`.
 This avoids treating SSL/proxy disconnects during long imports as immediate
@@ -313,6 +316,13 @@ validates the returned proof. Empty, legacy or unverified responses fail
 closed whenever the deployment policy requires a backup. Full pushes retain
 the existing optional-backup policy; selective pushes remain blocked without
 a verified remote backup.
+
+From `0.1.42`, the backup request body includes signed `scope` and `paths`.
+The HMAC covers the SHA-256 of the exact JSON body, and the backup route does
+not allow legacy-signature downgrade. The live normalizes partial backup paths
+with the same allowlist used for partial snapshot export. The resulting ZIP
+contains no database and only the selected live paths. Missing paths are
+recorded as tombstones so importing that backup restores their prior absence.
 
 The remote import endpoint also rejects non-`full` snapshots unless the caller
 passes the explicit partial-snapshot override for a recovery operation or the

@@ -82,9 +82,13 @@ non-empty basename, `archive_exists=true`, positive `size_bytes` and a matching
 SHA-256. `disabled`, `skipped`, `failed`, an empty response or missing proof
 must stop a selective push. Both peers must run `0.1.37` or newer before using
 required remote backups; legacy untyped responses are deliberately rejected.
+From `0.1.42`, every enabled pre-push backup also requires `0.1.42` on both
+peers because the request body is signed; preflight blocks older peers before
+backup creation.
 
-Selective file/folder push, available only when both local and live run
-AG Sync Bridge `0.1.26` or newer:
+Selective file/folder package support started in `0.1.26`. Normal selective
+push now requires AG Sync Bridge `0.1.42` on both local and live so the remote
+pre-push backup can be scoped, signed and verified:
 
 ```powershell
 C:\xampp\php\php.exe C:\xampp\wp-cli.phar agsync push --paths=robots.txt --path=C:\xampp\htdocs\<site>
@@ -97,6 +101,18 @@ replace unrelated directories, and can include safe root text files such as
 `robots.txt`, `llms.txt`, `llms-full.txt`, `ads.txt`, `app-ads.txt` and
 `humans.txt`. They cannot update `wp-config.php`, WordPress core, AG Sync
 runtime data, cache paths, or the AG Sync Bridge plugin folder.
+
+From `0.1.42`, the remote pre-push backup for this flow is also file-only and
+covers exactly the normalized deploy paths. Verify the returned result has:
+
+- `status=completed`
+- `scope=partial`
+- `paths` exactly equal to the `push_plan`
+- a non-empty basename, positive size and matching SHA-256 proof
+
+Any missing or mismatched field blocks the push. There is no fallback to a
+skipped or full backup. A path absent before deploy is stored as a tombstone,
+so restoring the partial backup removes a newly created target path.
 
 Safe root text files beyond `robots.txt` are supported from `0.1.27`.
 
@@ -326,6 +342,11 @@ and importer. Treat it as a high-risk root-file deploy: keep the mandatory
 verified remote backup enabled, inspect the generated plan and immediately
 verify frontend, authenticated bypass, `Authorization`, `no-cache` and 404
 behavior after the import.
+
+From `0.1.42`, the `.htaccess` pre-push backup contains only `.htaccess`, not
+the database or the rest of the site. The backup request path is covered by the
+signed JSON body and the local peer verifies exact scope/path correspondence
+before upload starts.
 
 From `0.1.40`, if the authenticated live peer has backups disabled, enable
 them without opening the WordPress settings page:

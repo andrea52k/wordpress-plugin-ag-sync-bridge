@@ -73,6 +73,10 @@ namespace AGSyncBridge {
 			'size_bytes' => $bytes,
 			'sha256'     => $checksum,
 			'type'       => 'pre-push-backup',
+			'manifest'   => array(
+				'snapshot_scope' => 'full',
+				'partial_paths'  => array(),
+			),
 		)
 	);
 
@@ -81,6 +85,8 @@ namespace AGSyncBridge {
 	expect_backup( true === $verified['proof']['archive_exists'], 'Completed response must attest archive existence.' );
 	expect_backup( $bytes === $verified['proof']['size_bytes'], 'Completed response must include verified bytes.' );
 	expect_backup( $checksum === $verified['proof']['sha256'], 'Completed response must include verified SHA-256.' );
+	expect_backup( 'full' === $verified['scope'], 'Verified full backup must attest its scope.' );
+	expect_backup( array() === $verified['paths'], 'Verified full backup must not declare partial paths.' );
 	expect_backup( ! isset( $verified['path'] ), 'Remote filesystem path must not be exposed in the response.' );
 	expect_backup( $verified === Remote_Backup_Result::require_completed( $verified ), 'Concrete verified response must satisfy a required backup.' );
 
@@ -92,7 +98,7 @@ namespace AGSyncBridge {
 	@unlink( $zip_path );
 
 	$sync_source = file_get_contents( dirname( __DIR__ ) . '/includes/class-sync-service.php' );
-	expect_backup( false !== strpos( $sync_source, 'Remote_Backup_Result::require_completed( $remote_backup )' ), 'Push flow must enforce the completed backup contract.' );
+	expect_backup( false !== strpos( $sync_source, 'Remote_Backup_Result::require_completed( $remote_backup,' ), 'Push flow must enforce the completed backup contract.' );
 
 	echo "remote backup safety: ok\n";
 }

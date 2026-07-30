@@ -531,9 +531,29 @@ class Import_Service {
 			return $relative;
 		}
 
+		$existed_in_backup = array_key_exists( 'exists', $entry ) ? (bool) $entry['exists'] : true;
 		$type        = 'directory' === array_get( $entry, 'type', '' ) ? 'directory' : 'file';
 		$source_path = $this->resolve_partial_source_path( $files_root, $relative );
 		$target_path = normalize_path( ABSPATH . $relative );
+
+		if ( ! $existed_in_backup ) {
+			if ( ( file_exists( $target_path ) || is_link( $target_path ) ) && ! $this->file_system->cleanup_path( $target_path ) ) {
+				return new WP_Error(
+					'ag_sync_bridge_partial_tombstone_failed',
+					sprintf(
+						/* translators: %s: relative path */
+						__( 'Unable to restore the previous absence of partial path: %s', 'ag-sync-bridge' ),
+						$relative
+					)
+				);
+			}
+
+			return array(
+				'path'   => $relative,
+				'type'   => 'missing',
+				'action' => 'restore-absence',
+			);
+		}
 
 		if ( ! file_exists( $source_path ) ) {
 			return new WP_Error(

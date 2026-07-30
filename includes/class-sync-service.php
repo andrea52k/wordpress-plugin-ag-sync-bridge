@@ -130,6 +130,16 @@ class Sync_Service {
 		return $result;
 	}
 
+	public function create_partial_backup( array $paths, $type = 'partial-pre-push-backup', array $context = array() ) {
+		$result = $this->exporter->create_partial_backup( $paths, $type, $context );
+
+		if ( ! is_wp_error( $result ) ) {
+			$this->cleanup_local_runtime_storage( 'backup' );
+		}
+
+		return $result;
+	}
+
 	/**
 	 * Build a read-only deployment plan. A partial plan is possible only when
 	 * callers explicitly declare safe file paths; database and unknown changes
@@ -400,7 +410,7 @@ class Sync_Service {
 				: Remote_Backup_Result::disabled( 'pre-push-backup' );
 
 			$this->update_operation( 'push', 3, 'remote-preflight', __( 'Controllo prerequisiti storage sul live...', 'ag-sync-bridge' ) );
-			$remote_preflight = $this->run_remote_preflight( $use_existing_snapshot, $is_partial_push );
+			$remote_preflight = $this->run_remote_preflight( $use_existing_snapshot, $is_partial_push, ! $skip_remote_backup );
 			if ( is_wp_error( $remote_preflight ) ) {
 				$this->fail_operation( 'push', $remote_preflight );
 				return $remote_preflight;
@@ -416,13 +426,15 @@ class Sync_Service {
 
 			if ( ! $skip_remote_backup ) {
 				$this->update_operation( 'push', 5, 'remote-backup', __( 'Creazione backup di sicurezza sul live...', 'ag-sync-bridge' ) );
-				$remote_backup = $this->http_client->create_remote_backup();
+				$backup_scope  = $is_partial_push ? 'partial' : 'full';
+				$backup_paths  = $is_partial_push ? array_get( $deployment_plan, 'paths', array() ) : array();
+				$remote_backup = $this->http_client->create_remote_backup( $backup_scope, $backup_paths );
 				if ( is_wp_error( $remote_backup ) ) {
 					$this->fail_operation( 'push', $remote_backup );
 					return $remote_backup;
 				}
 
-				$remote_backup = Remote_Backup_Result::require_completed( $remote_backup );
+				$remote_backup = Remote_Backup_Result::require_completed( $remote_backup, $backup_scope, $backup_paths );
 				if ( is_wp_error( $remote_backup ) ) {
 					$this->fail_operation( 'push', $remote_backup );
 					return $remote_backup;
@@ -661,7 +673,7 @@ class Sync_Service {
 		return $validation;
 	}
 
-	private function run_remote_preflight( $use_existing_snapshot = false, $requires_partial_push = false ) {
+	private function run_remote_preflight( $use_existing_snapshot = false, $requires_partial_push = false, $requires_signed_backup = false ) {
 		$required_bytes = $this->estimate_remote_required_bytes( $use_existing_snapshot );
 		$result         = $this->http_client->remote_doctor( $required_bytes );
 
@@ -710,14 +722,27 @@ class Sync_Service {
 			);
 		}
 
-		if ( $requires_partial_push && $remote_plugin && version_compare( $remote_plugin, '0.1.26', '<' ) ) {
+		if ( $requires_partial_push && $remote_plugin && version_compare( $remote_plugin, '0.1.42', '<' ) ) {
 			return new WP_Error(
 				'ag_sync_bridge_remote_version_too_old_for_partial',
 				sprintf(
 					/* translators: 1: remote version, 2: required version. */
 					__( 'Il live usa AG Sync Bridge %1$s. Aggiorna il plugin live almeno alla versione %2$s prima di fare push selettivi.', 'ag-sync-bridge' ),
 					$remote_plugin,
-					'0.1.26'
+					'0.1.42'
+				),
+				$result
+			);
+		}
+
+		if ( $requires_signed_backup && $remote_plugin && version_compare( $remote_plugin, '0.1.42', '<' ) ) {
+			return new WP_Error(
+				'ag_sync_bridge_remote_version_too_old_for_signed_backup',
+				sprintf(
+					/* translators: 1: remote version, 2: required version. */
+					__( 'Il live usa AG Sync Bridge %1$s. Aggiorna il plugin live almeno alla versione %2$s prima di usare backup pre-push firmati.', 'ag-sync-bridge' ),
+					$remote_plugin,
+					'0.1.42'
 				),
 				$result
 			);

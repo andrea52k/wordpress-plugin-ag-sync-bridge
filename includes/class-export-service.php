@@ -248,6 +248,89 @@ class Export_Service {
 		return $meta;
 	}
 
+	public function create_partial_backup( array $paths, $type = 'partial-pre-push-backup', array $context = array() ) {
+		$started_at         = microtime( true );
+		$progress_callback  = array_get( $context, 'progress_callback', null );
+		$cancellation_check = array_get( $context, 'cancellation_check', null );
+		unset( $context['progress_callback'], $context['cancellation_check'] );
+
+		$cancelled = $this->check_cancellation( $cancellation_check, 'backup-prepare' );
+		if ( is_wp_error( $cancelled ) ) {
+			return $cancelled;
+		}
+
+		$export_data = $this->file_system->get_partial_backup_export_data( $paths );
+		if ( is_wp_error( $export_data ) ) {
+			return $export_data;
+		}
+
+		$partial_paths   = array_get( $export_data, 'paths', array() );
+		$entries         = array_get( $export_data, 'entries', array() );
+		$partial_entries = array_get( $export_data, 'partial_entries', array() );
+		$package_data    = $this->file_system->get_new_package_path( $type );
+		$manifest        = array(
+			'id'                  => wp_generate_uuid4(),
+			'type'                => sanitize_key( $type ),
+			'snapshot_scope'      => 'partial',
+			'is_full_snapshot'    => false,
+			'created_at'          => gmdate( 'c' ),
+			'source_site_url'     => site_url(),
+			'source_home_url'     => home_url(),
+			'source_host'         => wp_parse_url( home_url(), PHP_URL_HOST ),
+			'source_role'         => $this->config->get_role(),
+			'source_table_prefix' => $this->database->get_table_prefix(),
+			'entries_included'    => wp_list_pluck( $entries, 'component' ),
+			'partial_paths'       => $partial_paths,
+			'partial_entries'     => $partial_entries,
+			'exclude_patterns'    => $this->config->get_exclude_patterns(),
+			'context'             => $context,
+		);
+
+		$archive_result = $this->archive->create_package(
+			$package_data['path'],
+			'',
+			$manifest,
+			$entries,
+			array( $this->file_system, 'should_exclude' ),
+			$progress_callback,
+			$cancellation_check
+		);
+
+		if ( is_wp_error( $archive_result ) ) {
+			return $archive_result;
+		}
+
+		$meta = array(
+			'basename'       => $package_data['basename'],
+			'path'           => $package_data['path'],
+			'type'           => sanitize_key( $type ),
+			'created_at'     => gmdate( 'c' ),
+			'size_bytes'     => array_get( $archive_result, 'size_bytes', 0 ),
+			'sha256'         => array_get( $archive_result, 'sha256', '' ),
+			'duration_ms'    => (int) round( ( microtime( true ) - $started_at ) * 1000 ),
+			'manifest'       => array_get( $archive_result, 'manifest', array() ),
+			'snapshot_scope' => 'partial',
+			'partial_paths'  => $partial_paths,
+		);
+
+		$this->file_system->cleanup_path( $this->file_system->get_meta_path_for_package( $package_data['path'] ) );
+		$this->file_system->cleanup_old_packages( 'backups' );
+		$this->config->set_state_value( 'last_snapshot', $meta );
+		$this->logger->info(
+			'Partial backup created.',
+			array(
+				'type'        => $type,
+				'basename'    => $meta['basename'],
+				'size_bytes'  => $meta['size_bytes'],
+				'sha256'      => $meta['sha256'],
+				'duration_ms' => $meta['duration_ms'],
+				'paths'       => $partial_paths,
+			)
+		);
+
+		return $meta;
+	}
+
 	private function report_progress( $callback, $stage, $progress, array $details = array() ) {
 		if ( is_callable( $callback ) ) {
 			call_user_func( $callback, $stage, $progress, $details );

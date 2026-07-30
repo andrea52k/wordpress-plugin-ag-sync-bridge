@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.1.42
+
+- I push parziali creano sul live un backup pre-push limitato esattamente agli
+  stessi path del piano di deploy; i push completi continuano a usare il backup
+  completo.
+- `scope` e `paths` del backup vengono trasmessi nel body JSON protetto da
+  HMAC con SHA-256 del corpo. Il route backup rifiuta body non firmati,
+  alterati o degradati alla firma legacy.
+- Il live applica ai path del backup la stessa normalizzazione e allowlist dei
+  partial snapshot, rifiutando traversal, core WordPress, `wp-config.php`,
+  runtime AG Sync e path root non autorizzati.
+- I backup parziali sono file-only e non contengono il database. I path assenti
+  sul live vengono registrati come tombstone, così il restore può rimuovere un
+  file o una directory creati dal deploy e ripristinare lo stato precedente.
+- Il push accetta il backup solo con `status=completed`, archivio e SHA-256
+  verificati, `scope=partial` e lista path identica al piano. Mismatch, risposta
+  legacy o backup saltato bloccano il deploy in modalità fail-closed.
+- Aggiunti test per firma del body, tampering dei path, mismatch scope/path,
+  allowlist remota, backup senza database e rollback dei path originariamente
+  assenti.
+
 ## 0.1.41
 
 - Il comando di abilitazione backup interroga ora il control plane file-backed

@@ -173,12 +173,14 @@ Local to live push:
 
 1. UI requires exact confirmation `INVIA LIVE`.
 2. Live pre-push backup is skipped by default unless explicitly enabled.
-3. Local creates complete snapshot.
-4. Local uploads snapshot to live.
-5. Live imports asynchronously through WP-Cron.
-6. Local polls live import state.
-7. URLs are replaced local to live.
-8. Logs and state are updated.
+3. A full deploy creates a full remote backup; a partial deploy creates a
+   file-only remote backup for the exact signed deployment paths.
+4. Local creates a complete snapshot or an intentional partial snapshot.
+5. Local uploads snapshot to live.
+6. Live imports asynchronously through WP-Cron.
+7. Local polls live import state.
+8. URLs are replaced local to live for full imports.
+9. Logs and state are updated.
 
 ## Known Historical Issues
 

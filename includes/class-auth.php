@@ -24,13 +24,15 @@ class Auth {
 		$this->logger = $logger;
 	}
 
-	public function build_headers( $method, $route ) {
+	public function build_headers( $method, $route, $body = '' ) {
 		$timestamp = time();
 		$nonce     = wp_generate_uuid4();
+		$body_hash = '' !== (string) $body ? hash( 'sha256', (string) $body ) : '';
 		return array(
 			'X-AGSB-Timestamp' => (string) $timestamp,
 			'X-AGSB-Nonce'     => $nonce,
-			'X-AGSB-Signature' => $this->sign( $method, $route, $timestamp, $nonce ),
+			'X-AGSB-Body-SHA256' => $body_hash,
+			'X-AGSB-Signature' => $this->sign( $method, $route, $timestamp, $nonce, $body_hash ),
 			'X-AGSB-Origin'    => home_url(),
 		);
 	}
@@ -44,6 +46,7 @@ class Auth {
 		$timestamp = $request->get_header( 'x-agsb-timestamp' );
 		$signature = $request->get_header( 'x-agsb-signature' );
 		$nonce     = sanitize_text_field( (string) $request->get_header( 'x-agsb-nonce' ) );
+		$body_hash = strtolower( sanitize_text_field( (string) $request->get_header( 'x-agsb-body-sha256' ) ) );
 		$route     = $request->get_route();
 		$method    = $request->get_method();
 
@@ -55,8 +58,19 @@ class Auth {
 			return new WP_Error( 'ag_sync_bridge_expired_request', __( 'Request timestamp is outside the allowed window.', 'ag-sync-bridge' ), array( 'status' => 403 ) );
 		}
 
+		if ( '/ag-sync-bridge/v1/backup/create' === $route && ( '' === $body_hash || '' === $nonce ) ) {
+			return new WP_Error( 'ag_sync_bridge_body_signature_required', __( 'Backup requests must include a signed body hash.', 'ag-sync-bridge' ), array( 'status' => 403 ) );
+		}
+
+		if ( '' !== $body_hash ) {
+			$actual_body_hash = hash( 'sha256', (string) $request->get_body() );
+			if ( ! preg_match( '/^[a-f0-9]{64}$/', $body_hash ) || ! hash_equals( $body_hash, $actual_body_hash ) ) {
+				return new WP_Error( 'ag_sync_bridge_body_hash_mismatch', __( 'Signed request body verification failed.', 'ag-sync-bridge' ), array( 'status' => 403 ) );
+			}
+		}
+
 		$signature_mode = '';
-		$expected       = $nonce ? $this->sign( $method, $route, (int) $timestamp, $nonce ) : '';
+		$expected       = $nonce ? $this->sign( $method, $route, (int) $timestamp, $nonce, $body_hash ) : '';
 		$legacy         = $this->sign( $method, $route, (int) $timestamp );
 
 		if ( $expected && hash_equals( $expected, $signature ) ) {
@@ -88,10 +102,13 @@ class Auth {
 		return true;
 	}
 
-	private function sign( $method, $route, $timestamp, $nonce = '' ) {
+	private function sign( $method, $route, $timestamp, $nonce = '', $body_hash = '' ) {
 		$payload = strtoupper( $method ) . "\n" . $route . "\n" . (int) $timestamp;
 		if ( '' !== $nonce ) {
 			$payload .= "\n" . $nonce;
+		}
+		if ( '' !== $body_hash ) {
+			$payload .= "\n" . strtolower( (string) $body_hash );
 		}
 		return hash_hmac( 'sha256', $payload, $this->config->get_secret() );
 	}

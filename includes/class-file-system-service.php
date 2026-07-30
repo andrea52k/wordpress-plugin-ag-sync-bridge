@@ -398,7 +398,7 @@ class File_System_Service {
 	public function cleanup_path( $path ) {
 		$path = normalize_path( $path );
 
-		if ( ! file_exists( $path ) ) {
+		if ( ! file_exists( $path ) && ! is_link( $path ) ) {
 			return true;
 		}
 
@@ -725,11 +725,11 @@ class File_System_Service {
 		);
 	}
 
-	public function normalize_partial_export_paths( array $paths ) {
+	public function normalize_partial_export_paths( array $paths, $require_existing = true ) {
 		$normalized = array();
 
 		foreach ( $paths as $path ) {
-			$relative = $this->normalize_partial_export_path( $path );
+			$relative = $this->normalize_partial_export_path( $path, $require_existing );
 			if ( is_wp_error( $relative ) ) {
 				return $relative;
 			}
@@ -743,7 +743,8 @@ class File_System_Service {
 		usort(
 			$normalized,
 			static function ( $left, $right ) {
-				return strlen( $left ) <=> strlen( $right );
+				$length = strlen( $left ) <=> strlen( $right );
+				return 0 !== $length ? $length : strcmp( $left, $right );
 			}
 		);
 
@@ -758,6 +759,53 @@ class File_System_Service {
 		}
 
 		return $collapsed;
+	}
+
+	public function get_partial_backup_export_data( array $paths ) {
+		$relative_paths = $this->normalize_partial_export_paths( $paths, false );
+		if ( is_wp_error( $relative_paths ) ) {
+			return $relative_paths;
+		}
+
+		if ( empty( $relative_paths ) ) {
+			return new \WP_Error( 'ag_sync_bridge_partial_backup_paths_empty', __( 'No valid partial backup paths were provided.', 'ag-sync-bridge' ) );
+		}
+
+		$entries         = array();
+		$partial_entries = array();
+
+		foreach ( $relative_paths as $relative ) {
+			$source  = normalize_path( ABSPATH . $relative );
+			$exists  = file_exists( $source ) || is_link( $source );
+			$type    = $exists && is_dir( $source ) ? 'directory' : ( $exists ? 'file' : 'missing' );
+			$archive = $this->get_partial_archive_path( $relative );
+
+			$partial_entries[] = array(
+				'path'    => $relative,
+				'type'    => $type,
+				'archive' => $archive,
+				'exists'  => $exists,
+			);
+
+			if ( ! $exists ) {
+				continue;
+			}
+
+			$entries[] = array(
+				'component'    => 'partial:' . $relative,
+				'source'       => $source,
+				'archive'      => $archive,
+				'type'         => $type,
+				'partial_path' => $relative,
+				'partial_type' => $type,
+			);
+		}
+
+		return array(
+			'paths'           => $relative_paths,
+			'entries'         => $entries,
+			'partial_entries' => $partial_entries,
+		);
 	}
 
 	public function get_partial_export_entries( array $paths ) {
@@ -1424,7 +1472,14 @@ class File_System_Service {
 		return $files;
 	}
 
-	private function normalize_partial_export_path( $path ) {
+	private function normalize_partial_export_path( $path, $require_existing = true ) {
+		if ( ! is_string( $path ) ) {
+			return new \WP_Error(
+				'ag_sync_bridge_partial_path_invalid_type',
+				__( 'Partial push paths must be strings.', 'ag-sync-bridge' )
+			);
+		}
+
 		$relative = trim( str_replace( '\\', '/', (string) $path ) );
 		$relative = preg_replace( '#/+#', '/', $relative );
 		$relative = ltrim( $relative, '/' );
@@ -1447,7 +1502,7 @@ class File_System_Service {
 
 		$relative_lc = strtolower( $relative );
 
-		if ( 'wp-config.php' === $relative_lc || 0 === strpos( $relative_lc, 'wp-admin/' ) || 0 === strpos( $relative_lc, 'wp-includes/' ) ) {
+		if ( 'wp-config.php' === $relative_lc || 0 === strpos( $relative_lc, 'wp-admin/' ) || 0 === strpos( $relative_lc, 'wp-includes/' ) || 'wp-content/ag-sync-bridge-data' === $relative_lc || 0 === strpos( $relative_lc, 'wp-content/ag-sync-bridge-data/' ) ) {
 			return new \WP_Error(
 				'ag_sync_bridge_partial_path_forbidden',
 				sprintf(
@@ -1487,7 +1542,7 @@ class File_System_Service {
 			return new \WP_Error( 'ag_sync_bridge_partial_path_outside_root', __( 'Partial push path resolves outside the WordPress root.', 'ag-sync-bridge' ) );
 		}
 
-		if ( ! file_exists( $absolute ) ) {
+		if ( $require_existing && ! file_exists( $absolute ) && ! is_link( $absolute ) ) {
 			return new \WP_Error(
 				'ag_sync_bridge_partial_path_missing',
 				sprintf(
@@ -1498,7 +1553,7 @@ class File_System_Service {
 			);
 		}
 
-		if ( $this->should_exclude( $absolute ) ) {
+		if ( ( file_exists( $absolute ) || is_link( $absolute ) ) && $this->should_exclude( $absolute ) ) {
 			return new \WP_Error(
 				'ag_sync_bridge_partial_path_excluded',
 				sprintf(
