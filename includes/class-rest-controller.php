@@ -373,12 +373,7 @@ class Rest_Controller {
 		$type   = $type ?: 'remote-backup';
 
 		if ( ! $this->config->get( 'remote_backups_enabled', false ) ) {
-			$result = array(
-				'skipped'    => true,
-				'reason'     => 'remote_backups_disabled',
-				'type'       => $type,
-				'skipped_at' => gmdate( 'c' ),
-			);
+			$result = Remote_Backup_Result::disabled( $type );
 			$this->logger->info( 'Remote backup request skipped because remote backups are disabled.', $result );
 			return new WP_REST_Response( $result );
 		}
@@ -390,7 +385,30 @@ class Rest_Controller {
 			)
 		);
 
-		return is_wp_error( $result ) ? $result : new WP_REST_Response( $result );
+		if ( is_wp_error( $result ) ) {
+			$failed = Remote_Backup_Result::failed( $type, $result->get_error_code(), $result->get_error_message() );
+			$this->logger->error( 'Remote backup creation failed.', $failed );
+			return new WP_REST_Response( $failed, 500 );
+		}
+
+		$verified = Remote_Backup_Result::completed_from_archive( $result );
+		if ( is_wp_error( $verified ) ) {
+			$failed = Remote_Backup_Result::failed( $type, $verified->get_error_code(), $verified->get_error_message() );
+			$this->logger->error( 'Remote backup verification failed.', $failed );
+			return new WP_REST_Response( $failed, 500 );
+		}
+
+		$this->logger->info(
+			'Remote backup archive verified.',
+			array(
+				'status'     => array_get( $verified, 'status', '' ),
+				'basename'   => array_get( $verified, 'basename', '' ),
+				'size_bytes' => array_get( $verified, 'size_bytes', 0 ),
+				'sha256'     => array_get( $verified, 'sha256', '' ),
+			)
+		);
+
+		return new WP_REST_Response( $verified );
 	}
 
 	public function run_async_create_snapshot( $operation_id, $type ) {

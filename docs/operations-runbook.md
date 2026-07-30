@@ -76,6 +76,13 @@ From `0.1.28`, live pre-push backups are disabled by default. Enable the
 `Backup live prima dei push` setting or `AG_SYNC_BRIDGE_REMOTE_BACKUPS_ENABLED`
 only when the live hosting quota can safely hold those backups.
 
+From `0.1.37`, never infer backup success from an HTTP 2xx response or from a
+log line alone. A valid required backup has `status=completed` and proof with a
+non-empty basename, `archive_exists=true`, positive `size_bytes` and a matching
+SHA-256. `disabled`, `skipped`, `failed`, an empty response or missing proof
+must stop a selective push. Both peers must run `0.1.37` or newer before using
+required remote backups; legacy untyped responses are deliberately rejected.
+
 Selective file/folder push, available only when both local and live run
 AG Sync Bridge `0.1.26` or newer:
 

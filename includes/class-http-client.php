@@ -79,13 +79,31 @@ class Http_Client {
 	}
 
 	public function create_remote_backup() {
-		return $this->request_json(
+		$result = $this->request_json(
 			'POST',
 			'/ag-sync-bridge/v1/backup/create',
 			array(
 				'type' => 'pre-push-backup',
 			)
 		);
+
+		if ( ! is_wp_error( $result ) ) {
+			return $result;
+		}
+
+		$error_data = $result->get_error_data();
+		$body       = is_array( $error_data ) ? (string) array_get( $error_data, 'body', '' ) : '';
+		$decoded    = json_decode( $body, true );
+
+		if ( is_array( $decoded ) && Remote_Backup_Result::STATUS_FAILED === array_get( $decoded, 'status', '' ) ) {
+			return new WP_Error(
+				'ag_sync_bridge_remote_backup_failed',
+				(string) array_get( $decoded, 'message', __( 'Remote pre-push backup failed.', 'ag-sync-bridge' ) ),
+				array( 'remote_backup' => $decoded )
+			);
+		}
+
+		return $result;
 	}
 
 	public function cleanup_remote_storage( array $args = array() ) {

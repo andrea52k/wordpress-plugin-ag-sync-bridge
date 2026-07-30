@@ -385,10 +385,9 @@ class Sync_Service {
 			}
 
 			$this->logger->info( 'Push started.', array( 'remote_url' => $this->config->get_remote_url(), 'use_existing_snapshot' => $use_existing_snapshot, 'remote_backups_enabled' => $remote_backups_enabled, 'skip_remote_backup' => $skip_remote_backup, 'allow_partial_snapshot' => $allow_partial_snapshot, 'partial_paths' => $partial_paths, 'deployment_plan' => $deployment_plan, 'local_maintenance' => $maintenance ) );
-			$remote_backup = array(
-				'skipped' => true,
-				'reason'  => $remote_backups_enabled ? 'skip_remote_backup' : 'remote_backups_disabled',
-			);
+			$remote_backup = $remote_backups_enabled
+				? Remote_Backup_Result::skipped( 'pre-push-backup' )
+				: Remote_Backup_Result::disabled( 'pre-push-backup' );
 
 			$this->update_operation( 'push', 3, 'remote-preflight', __( 'Controllo prerequisiti storage sul live...', 'ag-sync-bridge' ) );
 			$remote_preflight = $this->run_remote_preflight( $use_existing_snapshot, $is_partial_push );
@@ -413,7 +412,21 @@ class Sync_Service {
 					return $remote_backup;
 				}
 
-				$this->logger->info( 'Remote pre-push backup completed.', array( 'backup' => array_get( $remote_backup, 'basename', '' ) ) );
+				$remote_backup = Remote_Backup_Result::require_completed( $remote_backup );
+				if ( is_wp_error( $remote_backup ) ) {
+					$this->fail_operation( 'push', $remote_backup );
+					return $remote_backup;
+				}
+
+				$this->logger->info(
+					'Remote pre-push backup completed and verified.',
+					array(
+						'status'     => array_get( $remote_backup, 'status', '' ),
+						'backup'     => array_get( $remote_backup, 'basename', '' ),
+						'size_bytes' => array_get( $remote_backup, 'size_bytes', 0 ),
+						'sha256'     => array_get( $remote_backup, 'sha256', '' ),
+					)
+				);
 			} else {
 				$this->logger->info( 'Remote pre-push backup skipped.', $remote_backup );
 			}

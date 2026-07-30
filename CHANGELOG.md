@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.37
+
+- Il backup remoto pre-push restituisce ora uno stato esplicito:
+  `completed`, `skipped`, `disabled` oppure `failed`.
+- Un backup richiesto viene considerato completato soltanto dopo la verifica
+  sul live di basename, esistenza dell'archivio, dimensione positiva e
+  checksum SHA-256.
+- Il push si interrompe in modalita fail-closed davanti a risposte vuote,
+  legacy, saltate, disabilitate, fallite o prive di prova concreta.
+- Il backup esplicitamente disabilitato resta compatibile con la policy
+  esistente: e registrato come `disabled` nei push completi, mentre i push
+  parziali continuano a richiedere un backup remoto verificato.
+- Aggiunti test di regressione per backup disabilitato, saltato, fallito,
+  risposta vuota, prova incompleta e successo reale.
+
 ## 0.1.36
 
 - Aggiunto heartbeat persistente nel control plane file-backed delle operazioni

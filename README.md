@@ -20,7 +20,7 @@ Se devi modificare o gestire il plugin da un agente automatico, leggi prima:
 
 ## Versione
 
-Versione plugin: `0.1.36`
+Versione plugin: `0.1.37`
 
 Slug tecnico WordPress: `ag-sync-bridge`
 
@@ -145,7 +145,7 @@ Quando premi `Invia il locale al live`:
 1. Devi digitare `INVIA LIVE`.
 2. Il locale rileva e aggiorna plugin, temi e traduzioni disponibili. Se uno step fallisce, il push si ferma prima di contattare il live. Un update di AG Sync Bridge stesso va eseguito dal normale updater WordPress e poi il push va ripetuto.
 3. Il locale esegue un preflight remoto su storage, permessi e test scrittura.
-4. Il backup live pre-push viene saltato di default per non consumare quota hosting.
+4. Il backup live pre-push viene saltato di default per non consumare quota hosting. Quando la policy lo richiede, il push prosegue solo con stato `completed` e prova verificata dell'archivio.
 5. Il locale crea uno snapshot completo.
 6. Lo snapshot viene validato localmente: ZIP estraibile, manifest `full`, database, componenti e sitemap root coerenti.
 7. Lo snapshot viene caricato sul live.
@@ -194,6 +194,7 @@ cache, runtime AG Sync e la cartella del plugin sono bloccati.
 - Restore locale disponibile dalla UI admin
 - Restore da ZIP/cartella esterna configurabile nelle impostazioni
 - I backup live prima dei push sono disattivati di default; se servono, abilita `Backup live prima dei push` consapevolmente.
+- Da `0.1.37`, il risultato distingue `completed`, `skipped`, `disabled` e `failed`. `completed` richiede basename, archivio esistente e non vuoto e SHA-256 verificato sul live; una risposta vuota o senza prova blocca qualsiasi push che richieda quel backup.
 
 ## Cron
 
@@ -217,7 +218,7 @@ wp agsync push_plan --paths=robots.txt
 wp agsync remote_cancel --operation-id=<id> --kind=import
 wp agsync remote_reconcile --operation-id=<id> --kind=import --action=quarantine --expected-updated-at=<timestamp> --note="Worker verificato assente" --worker-absent-verified
 wp agsync remote_reconcile --operation-id=<id> --kind=import --action=close --expected-updated-at=<timestamp-quarantena> --note="Identita, pagine e dati verificati" --worker-absent-verified --target-integrity-verified
-wp agsync remote_update_bridge --version=0.1.36 --sha256=<sha256-ag-sync-bridge.zip> --confirm="UPDATE AG SYNC"
+wp agsync remote_update_bridge --version=0.1.37 --sha256=<sha256-ag-sync-bridge.zip> --confirm="UPDATE AG SYNC"
 wp agsync cleanup
 wp agsync remote_cleanup
 wp agsync lock

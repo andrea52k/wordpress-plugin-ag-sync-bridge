@@ -274,7 +274,9 @@ ready. This avoids provider/proxy timeouts while the live exports a large site.
 
 1. acquire lock
 2. run remote storage doctor/preflight
-3. skip live pre-push backup unless `remote_backups_enabled` is explicitly on
+3. skip live pre-push backup unless `remote_backups_enabled` is explicitly on;
+   when required, accept only a `completed` response with server-verified
+   basename, archive existence, positive bytes and SHA-256
 4. create local full snapshot or selected-path partial snapshot
 5. validate the local package and expected manifest scope
 6. upload snapshot
@@ -290,6 +292,14 @@ push failures.
 Live pre-push backups are disabled by default from `0.1.28` to avoid consuming
 hosting quota. They can be enabled from the admin setting or the
 `AG_SYNC_BRIDGE_REMOTE_BACKUPS_ENABLED` constant.
+
+From `0.1.37`, the backup endpoint always distinguishes `completed`, `skipped`,
+`disabled` and `failed`. The remote verifies the archive against its own
+filesystem before returning `completed`, and the local peer independently
+validates the returned proof. Empty, legacy or unverified responses fail
+closed whenever the deployment policy requires a backup. Full pushes retain
+the existing optional-backup policy; selective pushes remain blocked without
+a verified remote backup.
 
 The remote import endpoint also rejects non-`full` snapshots unless the caller
 passes the explicit partial-snapshot override for a recovery operation or the
