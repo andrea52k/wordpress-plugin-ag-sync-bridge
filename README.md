@@ -20,7 +20,7 @@ Se devi modificare o gestire il plugin da un agente automatico, leggi prima:
 
 ## Versione
 
-Versione plugin: `0.1.37`
+Versione plugin: `0.1.38`
 
 Slug tecnico WordPress: `ag-sync-bridge`
 
@@ -57,6 +57,8 @@ Il plugin esclude la propria cartella dal full overwrite per non interrompere op
 - Upload snapshot diretto o a chunk form-encoded, compatibile con hosting che svuotano il raw body REST
 - Import remoto asincrono con polling dello stato remoto
 - Stop autenticato di un job remoto: annulla subito i job in coda; durante un import segnala `rollback_required` se il target e gia stato modificato
+- Stop cooperativo durante export database e creazione ZIP, con rimozione del pacchetto parziale
+- Errori dopo una mutazione classificati `rollback_required`; nuovi job bloccati fino a verifica esplicita del recupero
 - Heartbeat file-backed per snapshot/import asincroni con fase, avanzamento, sequenza e classificazione `active`/`stale_or_orphaned`
 - Riconciliazione autenticata a due fasi dei job stale, senza dichiarare il sync riuscito
 - Aggiornamento AG Sync sul live da WP-CLI locale tramite richiesta firmata, release GitHub ufficiale, versione e SHA-256 obbligatori
@@ -216,9 +218,11 @@ wp agsync push
 wp agsync push --paths=robots.txt
 wp agsync push_plan --paths=robots.txt
 wp agsync remote_cancel --operation-id=<id> --kind=import
+wp agsync cancel
 wp agsync remote_reconcile --operation-id=<id> --kind=import --action=quarantine --expected-updated-at=<timestamp> --note="Worker verificato assente" --worker-absent-verified
 wp agsync remote_reconcile --operation-id=<id> --kind=import --action=close --expected-updated-at=<timestamp-quarantena> --note="Identita, pagine e dati verificati" --worker-absent-verified --target-integrity-verified
-wp agsync remote_update_bridge --version=0.1.37 --sha256=<sha256-ag-sync-bridge.zip> --confirm="UPDATE AG SYNC"
+wp agsync remote_reconcile --operation-id=<id> --kind=import --action=recover --expected-updated-at=<timestamp> --note="Backup ripristinato e verificato" --rollback-verified
+wp agsync remote_update_bridge --version=0.1.38 --sha256=<sha256-ag-sync-bridge.zip> --confirm="UPDATE AG SYNC"
 wp agsync cleanup
 wp agsync remote_cleanup
 wp agsync lock
@@ -306,6 +310,7 @@ Da `0.1.17`, cliccare `Bacheca > Aggiornamenti > Verifica di nuovo` forza anche 
 - `wp agsync push --paths=...` crea un pacchetto parziale file-only e richiede AG Sync Bridge `0.1.26` o superiore anche sul live; i root text sicuri come `llms.txt` richiedono `0.1.27`.
 - `wp agsync push_plan [--paths=...]` mostra senza modifiche classificazione, trasferimenti, metriche full/partial e stato del rollback. Un push parziale richiede un backup remoto pre-push: senza backup abilitato viene bloccato, perché una cartella selezionata sostituisce il relativo sottoalbero sul live.
 - `wp agsync remote_cancel --operation-id=<id> --kind=snapshot|import` annulla solo l'operazione remota indicata. Un import che ha gia modificato database o file resta `rollback_required` e va ripristinato dal backup.
+- `wp agsync cancel` richiede lo stop cooperativo dell'operazione locale attiva. Il segnale resta nel lock e viene letto durante snapshot, trasferimenti e import.
 - Uno stato `stale_or_orphaned` non equivale a errore certo e non equivale mai a successo. `remote_reconcile` richiede quarantena, attesa, nuova lettura dello stato e verifiche esplicite; la chiusura produce `reconciled`, mantiene l'avanzamento sotto 100 e registra `declared_success: false`.
 - `--allow-partial-snapshot` esiste solo per recovery deliberate e puo omettere file dal live.
 - Il fallback PHP per import/export DB e piu lento di `mysqldump/mysql`.

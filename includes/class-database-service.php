@@ -34,9 +34,10 @@ class Database_Service {
 
 		$file_path = normalize_path( $file_path );
 		$progress_callback = array_get( $args, 'progress_callback', null );
+		$cancellation_check = array_get( $args, 'cancellation_check', null );
 
 		if ( $this->can_use_cli_tools() ) {
-			$result = $this->export_via_cli( $file_path, $progress_callback );
+			$result = $this->export_via_cli( $file_path, $progress_callback, $cancellation_check );
 			if ( ! is_wp_error( $result ) ) {
 				return array(
 					'method'    => 'mysqldump',
@@ -47,7 +48,7 @@ class Database_Service {
 			$this->logger->warning( 'mysqldump export failed. Falling back to PHP exporter.', array( 'error' => $result->get_error_message() ) );
 		}
 
-		$result = $this->export_via_php( $file_path, $progress_callback );
+		$result = $this->export_via_php( $file_path, $progress_callback, $cancellation_check );
 		if ( is_wp_error( $result ) ) {
 			return $result;
 		}
@@ -558,7 +559,7 @@ class Database_Service {
 		);
 	}
 
-	private function export_via_cli( $file_path, $progress_callback = null ) {
+	private function export_via_cli( $file_path, $progress_callback = null, $cancellation_check = null ) {
 		$binary = $this->locate_binary( 'mysqldump' );
 		if ( ! $binary ) {
 			return new WP_Error( 'ag_sync_bridge_mysqldump_missing', __( 'mysqldump binary not found.', 'ag-sync-bridge' ) );
@@ -593,7 +594,10 @@ class Database_Service {
 			return new WP_Error( 'ag_sync_bridge_mysqldump_process', __( 'Unable to start mysqldump.', 'ag-sync-bridge' ) );
 		}
 
-		$completed = $this->wait_for_process( $process, $pipes, $progress_callback, 'database-export-cli' );
+		$completed = $this->wait_for_process( $process, $pipes, $progress_callback, 'database-export-cli', $cancellation_check );
+		if ( is_wp_error( $completed ) ) {
+			return $completed;
+		}
 		$exit_code = $completed['exit_code'];
 		$error_output = array_get( $completed['output'], 2, '' );
 
@@ -653,10 +657,11 @@ class Database_Service {
 		return true;
 	}
 
-	private function wait_for_process( $process, array $pipes, $progress_callback, $stage ) {
+	private function wait_for_process( $process, array $pipes, $progress_callback, $stage, $cancellation_check = null ) {
 		$output      = array();
 		$exit_code   = -1;
 		$last_report = 0.0;
+		$cancelled   = false;
 
 		foreach ( $pipes as $index => $pipe ) {
 			if ( is_resource( $pipe ) ) {
@@ -666,6 +671,12 @@ class Database_Service {
 		}
 
 		while ( true ) {
+			if ( is_callable( $cancellation_check ) && call_user_func( $cancellation_check, $stage, false ) ) {
+				$cancelled = true;
+				proc_terminate( $process );
+				break;
+			}
+
 			foreach ( $pipes as $index => $pipe ) {
 				if ( is_resource( $pipe ) ) {
 					$chunk = stream_get_contents( $pipe );
@@ -704,6 +715,13 @@ class Database_Service {
 		if ( $exit_code < 0 ) {
 			$exit_code = (int) $closed;
 		}
+		if ( $cancelled ) {
+			return new WP_Error(
+				'ag_sync_bridge_operation_cancelled',
+				__( 'Database export was cancelled before the target changed.', 'ag-sync-bridge' ),
+				array( 'cancelled' => true, 'rollback_required' => false, 'stage' => sanitize_key( $stage ) )
+			);
+		}
 		return array( 'exit_code' => $exit_code, 'output' => $output );
 	}
 
@@ -737,7 +755,7 @@ class Database_Service {
 		return true;
 	}
 
-	private function export_via_php( $file_path, $progress_callback = null ) {
+	private function export_via_php( $file_path, $progress_callback = null, $cancellation_check = null ) {
 		global $wpdb;
 
 		$mysqli = $this->connect();
@@ -765,6 +783,11 @@ class Database_Service {
 		$tables = is_array( $tables ) ? $tables : array();
 
 		foreach ( $tables as $table ) {
+			if ( is_callable( $cancellation_check ) && call_user_func( $cancellation_check, 'database-export-php', false ) ) {
+				fclose( $handle );
+				$mysqli->close();
+				return new WP_Error( 'ag_sync_bridge_operation_cancelled', __( 'Database export was cancelled before the target changed.', 'ag-sync-bridge' ), array( 'cancelled' => true, 'rollback_required' => false, 'stage' => 'database-export-php' ) );
+			}
 			if ( is_callable( $progress_callback ) ) {
 				call_user_func( $progress_callback, 'database-export-php', null, array( 'table' => $table ) );
 			}
@@ -776,7 +799,7 @@ class Database_Service {
 			fwrite( $handle, "DROP TABLE IF EXISTS `{$table}`;\n" );
 			fwrite( $handle, $create_row[1] . ";\n\n" );
 
-			$result = $this->export_table_rows_via_php( $mysqli, $handle, $table, $progress_callback );
+			$result = $this->export_table_rows_via_php( $mysqli, $handle, $table, $progress_callback, $cancellation_check );
 			if ( is_wp_error( $result ) ) {
 				fclose( $handle );
 				$mysqli->close();
@@ -792,7 +815,7 @@ class Database_Service {
 		return true;
 	}
 
-	private function export_table_rows_via_php( &$mysqli, $handle, $table, $progress_callback = null ) {
+	private function export_table_rows_via_php( &$mysqli, $handle, $table, $progress_callback = null, $cancellation_check = null ) {
 		global $wpdb;
 
 		$batch_size  = 100;
@@ -803,6 +826,9 @@ class Database_Service {
 		$last_report = microtime( true );
 
 		while ( true ) {
+			if ( is_callable( $cancellation_check ) && call_user_func( $cancellation_check, 'database-export-php', false ) ) {
+				return new WP_Error( 'ag_sync_bridge_operation_cancelled', __( 'Database export was cancelled before the target changed.', 'ag-sync-bridge' ), array( 'cancelled' => true, 'rollback_required' => false, 'stage' => 'database-export-php' ) );
+			}
 			if ( is_callable( $progress_callback ) && ( microtime( true ) - $last_report ) >= 5 ) {
 				call_user_func( $progress_callback, 'database-export-php', null, array( 'table' => $table, 'rows_processed' => $offset ) );
 				$last_report = microtime( true );

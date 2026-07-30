@@ -27,9 +27,12 @@ class Archive_Service {
 		$this->logger = $logger;
 	}
 
-	public function create_package( $package_path, $database_path, array $manifest, array $entries, callable $exclude_callback, $progress_callback = null ) {
+	public function create_package( $package_path, $database_path, array $manifest, array $entries, callable $exclude_callback, $progress_callback = null, $cancellation_check = null ) {
 		if ( ! class_exists( 'ZipArchive' ) ) {
 			return new WP_Error( 'ag_sync_bridge_zip_missing', __( 'ZipArchive is not available on this server.', 'ag-sync-bridge' ) );
+		}
+		if ( $this->is_cancel_requested( $cancellation_check, 'archive-prepare' ) ) {
+			return $this->cancellation_error( 'archive-prepare' );
 		}
 
 		$zip = new ZipArchive();
@@ -56,14 +59,20 @@ class Archive_Service {
 		$entry_index            = 0;
 
 		foreach ( $entries as $entry ) {
+			if ( $this->is_cancel_requested( $cancellation_check, 'archive-component' ) ) {
+				$zip->close();
+				@unlink( $package_path );
+				return $this->cancellation_error( 'archive-component' );
+			}
 			if ( 'directory' === $entry['type'] ) {
-				$summary = $this->add_directory( $zip, $entry['source'], $entry['archive'], $entry['component'], $exclude_callback, $progress_callback );
+				$summary = $this->add_directory( $zip, $entry['source'], $entry['archive'], $entry['component'], $exclude_callback, $progress_callback, $cancellation_check );
 			} else {
 				$summary = $this->add_file( $zip, $entry['source'], $entry['archive'], $entry['component'], $exclude_callback );
 			}
 
 			if ( is_wp_error( $summary ) ) {
 				$zip->close();
+				@unlink( $package_path );
 				return $summary;
 			}
 
@@ -75,6 +84,12 @@ class Archive_Service {
 				(int) round( ( $entry_index / $entry_count ) * 100 ),
 				array( 'component' => $entry['component'], 'components_complete' => $entry_index, 'components_total' => $entry_count )
 			);
+		}
+
+		if ( $this->is_cancel_requested( $cancellation_check, 'archive-finalize' ) ) {
+			$zip->close();
+			@unlink( $package_path );
+			return $this->cancellation_error( 'archive-finalize' );
 		}
 
 		$manifest['created_with'] = array(
@@ -287,7 +302,7 @@ class Archive_Service {
 		);
 	}
 
-	private function add_directory( ZipArchive $zip, $source_dir, $archive_dir, $component, callable $exclude_callback, $progress_callback = null ) {
+	private function add_directory( ZipArchive $zip, $source_dir, $archive_dir, $component, callable $exclude_callback, $progress_callback = null, $cancellation_check = null ) {
 		$summary = array(
 			'archive_root' => $archive_dir,
 			'file_count'   => 0,
@@ -302,6 +317,9 @@ class Archive_Service {
 
 		/** @var SplFileInfo $item */
 		foreach ( $iterator as $item ) {
+			if ( $this->is_cancel_requested( $cancellation_check, 'archive-files' ) ) {
+				return $this->cancellation_error( 'archive-files' );
+			}
 			$source_path = normalize_path( $item->getPathname() );
 
 			if ( $exclude_callback( $source_path ) ) {
@@ -378,5 +396,21 @@ class Archive_Service {
 		if ( is_callable( $callback ) ) {
 			call_user_func( $callback, $stage, $progress, $context );
 		}
+	}
+
+	private function is_cancel_requested( $callback, $stage ) {
+		return is_callable( $callback ) && (bool) call_user_func( $callback, $stage, false );
+	}
+
+	private function cancellation_error( $stage ) {
+		return new WP_Error(
+			'ag_sync_bridge_operation_cancelled',
+			__( 'Snapshot creation was cancelled before the target changed.', 'ag-sync-bridge' ),
+			array(
+				'cancelled'         => true,
+				'rollback_required' => false,
+				'stage'             => sanitize_key( $stage ),
+			)
+		);
 	}
 }

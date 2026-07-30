@@ -44,7 +44,12 @@ class Export_Service {
 	public function create_snapshot( $type = 'snapshot', array $context = array() ) {
 		$started_at = microtime( true );
 		$progress_callback = array_get( $context, 'progress_callback', null );
-		unset( $context['progress_callback'] );
+		$cancellation_check = array_get( $context, 'cancellation_check', null );
+		unset( $context['progress_callback'], $context['cancellation_check'] );
+		$cancelled = $this->check_cancellation( $cancellation_check, 'snapshot-prepare' );
+		if ( is_wp_error( $cancelled ) ) {
+			return $cancelled;
+		}
 		$this->report_progress( $progress_callback, 'snapshot-prepare', 5 );
 		$temp_dir   = $this->file_system->create_temp_dir( $type );
 
@@ -61,6 +66,7 @@ class Export_Service {
 				'progress_callback' => function ( $stage, $progress, array $details = array() ) use ( $progress_callback ) {
 					$this->report_progress( $progress_callback, $stage, null === $progress ? 15 : $progress, $details );
 				},
+				'cancellation_check' => $cancellation_check,
 			)
 		);
 
@@ -69,6 +75,11 @@ class Export_Service {
 			return $result;
 		}
 		$this->report_progress( $progress_callback, 'database-exported', 30 );
+		$cancelled = $this->check_cancellation( $cancellation_check, 'database-exported' );
+		if ( is_wp_error( $cancelled ) ) {
+			$this->file_system->cleanup_path( $temp_dir );
+			return $cancelled;
+		}
 
 		$entries            = $this->file_system->get_export_entries();
 		$snapshot_integrity = $this->file_system->get_snapshot_integrity_for_export( $entries );
@@ -102,7 +113,8 @@ class Export_Service {
 			function ( $stage, $progress, array $details = array() ) use ( $progress_callback ) {
 				$mapped = null === $progress ? 60 : 35 + (int) round( max( 0, min( 100, (int) $progress ) ) * 0.55 );
 				$this->report_progress( $progress_callback, $stage, $mapped, $details );
-			}
+			},
+			$cancellation_check
 		);
 
 		$this->file_system->cleanup_path( $temp_dir );
@@ -149,7 +161,12 @@ class Export_Service {
 	public function create_partial_snapshot( array $paths, $type = 'partial-push-snapshot', array $context = array() ) {
 		$started_at = microtime( true );
 		$progress_callback = array_get( $context, 'progress_callback', null );
-		unset( $context['progress_callback'] );
+		$cancellation_check = array_get( $context, 'cancellation_check', null );
+		unset( $context['progress_callback'], $context['cancellation_check'] );
+		$cancelled = $this->check_cancellation( $cancellation_check, 'snapshot-prepare' );
+		if ( is_wp_error( $cancelled ) ) {
+			return $cancelled;
+		}
 		$entries    = $this->file_system->get_partial_export_entries( $paths );
 
 		if ( is_wp_error( $entries ) ) {
@@ -192,7 +209,8 @@ class Export_Service {
 			$manifest,
 			$entries,
 			array( $this->file_system, 'should_exclude' ),
-			$progress_callback
+			$progress_callback,
+			$cancellation_check
 		);
 
 		if ( is_wp_error( $archive_result ) ) {
@@ -234,6 +252,22 @@ class Export_Service {
 		if ( is_callable( $callback ) ) {
 			call_user_func( $callback, $stage, $progress, $details );
 		}
+	}
+
+	private function check_cancellation( $callback, $stage ) {
+		if ( ! is_callable( $callback ) || ! call_user_func( $callback, $stage, false ) ) {
+			return true;
+		}
+
+		return new WP_Error(
+			'ag_sync_bridge_operation_cancelled',
+			__( 'Snapshot creation was cancelled before the target changed.', 'ag-sync-bridge' ),
+			array(
+				'cancelled'         => true,
+				'rollback_required' => false,
+				'stage'             => sanitize_key( $stage ),
+			)
+		);
 	}
 
 	public function get_latest_snapshot() {

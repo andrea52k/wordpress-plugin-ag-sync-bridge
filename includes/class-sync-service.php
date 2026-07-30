@@ -241,13 +241,18 @@ class Sync_Service {
 		try {
 			$trigger              = sanitize_key( (string) array_get( $args, 'trigger', 'manual' ) );
 			$use_existing_snapshot = ! empty( $args['use_existing_snapshot'] );
+			$cancellation_check   = function ( $stage = '', $rollback_required = false ) {
+				unset( $stage );
+				return ! $rollback_required && $this->lock_manager->is_cancel_requested();
+			};
 
 			$this->logger->info( 'Pull started.', array( 'remote_url' => $this->config->get_remote_url(), 'trigger' => $trigger, 'use_existing_snapshot' => $use_existing_snapshot ) );
 			$this->update_operation( 'pull', 5, 'local-backup', __( 'Creazione backup locale di sicurezza...', 'ag-sync-bridge' ) );
 			$local_backup = $this->create_backup(
 				'pre-pull-backup',
 				array(
-					'trigger' => $trigger ? $trigger . '-pull' : 'pull',
+					'trigger'            => $trigger ? $trigger . '-pull' : 'pull',
+					'cancellation_check' => $cancellation_check,
 				)
 			);
 			if ( is_wp_error( $local_backup ) ) {
@@ -257,11 +262,11 @@ class Sync_Service {
 
 			$this->logger->info( 'Local pre-pull backup completed.', array( 'backup' => array_get( $local_backup, 'basename', '' ) ) );
 			$this->update_operation( 'pull', 20, 'remote-snapshot', $use_existing_snapshot ? __( 'Recupero snapshot disponibile dal live...', 'ag-sync-bridge' ) : __( 'Richiesta snapshot dal live...', 'ag-sync-bridge' ) );
-			$remote_snapshot = $use_existing_snapshot ? $this->http_client->get_latest_snapshot() : $this->http_client->create_remote_snapshot( 'manual-pull-snapshot' );
+			$remote_snapshot = $use_existing_snapshot ? $this->http_client->get_latest_snapshot() : $this->http_client->create_remote_snapshot( 'manual-pull-snapshot', $cancellation_check );
 
 			if ( $use_existing_snapshot && ( is_wp_error( $remote_snapshot ) || empty( $remote_snapshot ) ) ) {
 				$this->logger->warning( 'No reusable remote snapshot was available. Falling back to fresh remote snapshot creation.', array( 'trigger' => $trigger ) );
-				$remote_snapshot = $this->http_client->create_remote_snapshot( 'auto-pull-snapshot' );
+				$remote_snapshot = $this->http_client->create_remote_snapshot( 'auto-pull-snapshot', $cancellation_check );
 			}
 
 			if ( is_wp_error( $remote_snapshot ) ) {
@@ -278,7 +283,7 @@ class Sync_Service {
 			}
 
 			$download_path = normalize_path( $temp_dir . '/' . basename( array_get( $remote_snapshot, 'basename', 'snapshot.zip' ) ) );
-			$downloaded    = $this->http_client->download_snapshot( array_get( $remote_snapshot, 'basename', '' ), $download_path );
+			$downloaded    = $this->http_client->download_snapshot( array_get( $remote_snapshot, 'basename', '' ), $download_path, $cancellation_check );
 			if ( is_wp_error( $downloaded ) ) {
 				$this->file_system->cleanup_path( $temp_dir );
 				$this->fail_operation( 'pull', $downloaded );
@@ -293,6 +298,7 @@ class Sync_Service {
 					'expected_sha256' => array_get( $remote_snapshot, 'sha256', '' ),
 					'target_site_url' => site_url(),
 					'target_home_url' => home_url(),
+					'cancellation_check' => $cancellation_check,
 				)
 			);
 
@@ -348,6 +354,10 @@ class Sync_Service {
 		}
 
 		try {
+			$cancellation_check = function ( $stage = '', $rollback_required = false ) {
+				unset( $stage );
+				return ! $rollback_required && $this->lock_manager->is_cancel_requested();
+			};
 			$use_existing_snapshot = ! empty( $args['use_existing_snapshot'] );
 			$remote_backups_enabled = ! empty( $this->config->get( 'remote_backups_enabled', false ) );
 			$skip_remote_backup_arg = ! empty( $args['skip_remote_backup'] );
@@ -443,12 +453,14 @@ class Sync_Service {
 						array(
 							'trigger'       => 'push',
 							'partial_paths' => $partial_paths,
+							'cancellation_check' => $cancellation_check,
 						)
 					)
 					: $this->create_snapshot(
 						'manual-push-snapshot',
 						array(
 							'trigger' => 'push',
+							'cancellation_check' => $cancellation_check,
 						)
 					);
 			}
@@ -475,7 +487,8 @@ class Sync_Service {
 					$current  = max( 0, min( (int) $current, $total ) );
 					$progress = 40 + (int) round( ( $current / $total ) * 40 );
 					$this->update_operation( 'push', $progress, 'upload', $message );
-				}
+				},
+				$cancellation_check
 			);
 			if ( is_wp_error( $upload ) ) {
 				$this->fail_operation( 'push', $upload );
@@ -484,7 +497,7 @@ class Sync_Service {
 
 			$this->logger->info( 'Snapshot uploaded to live.', array( 'snapshot' => array_get( $upload, 'snapshot', '' ) ) );
 			$this->update_operation( 'push', 85, 'remote-import', __( 'Import snapshot sul live e replace URL...', 'ag-sync-bridge' ) );
-			$remote_import = $this->http_client->trigger_remote_import( array_get( $upload, 'snapshot', '' ), array_get( $upload, 'sha256', '' ), $allow_partial_snapshot || $is_partial_push );
+			$remote_import = $this->http_client->trigger_remote_import( array_get( $upload, 'snapshot', '' ), array_get( $upload, 'sha256', '' ), $allow_partial_snapshot || $is_partial_push, $cancellation_check );
 			if ( is_wp_error( $remote_import ) ) {
 				$this->fail_operation( 'push', $remote_import );
 				return $remote_import;
@@ -745,6 +758,10 @@ class Sync_Service {
 		}
 
 		try {
+			$cancellation_check = function ( $stage = '', $rollback_required = false ) {
+				unset( $stage );
+				return ! $rollback_required && $this->lock_manager->is_cancel_requested();
+			};
 			$this->update_operation( 'restore', 10, 'resolve-backup', __( 'Ricerca backup da ripristinare...', 'ag-sync-bridge' ) );
 			$backup_path = $this->file_system->resolve_restore_package( $reference, $custom_path );
 			if ( ! $backup_path ) {
@@ -757,7 +774,8 @@ class Sync_Service {
 			$pre_restore = $this->create_backup(
 				'pre-restore-backup',
 				array(
-					'trigger' => 'restore',
+					'trigger'            => 'restore',
+					'cancellation_check' => $cancellation_check,
 				)
 			);
 			if ( is_wp_error( $pre_restore ) ) {
@@ -771,6 +789,7 @@ class Sync_Service {
 				array(
 					'target_site_url' => site_url(),
 					'target_home_url' => home_url(),
+					'cancellation_check' => $cancellation_check,
 				)
 			);
 
@@ -829,14 +848,26 @@ class Sync_Service {
 	}
 
 	private function fail_operation( $operation, WP_Error $error ) {
+		$error_data        = $error->get_error_data();
+		$rollback_required = is_array( $error_data )
+			&& ( ! empty( $error_data['rollback_required'] )
+				|| 'rollback_required' === (string) array_get( $error_data, 'status', '' ) );
 		$this->logger->error(
 			ucfirst( sanitize_key( $operation ) ) . ' failed.',
 			array(
 				'message' => $error->get_error_message(),
-				'data'    => $error->get_error_data(),
+				'data'    => $error_data,
+				'rollback_required' => $rollback_required,
 			)
 		);
 		$this->update_operation( $operation, (int) array_get( array_get( $this->config->get_state(), 'current_operation', array() ), 'progress', 0 ), 'error', $error->get_error_message(), 'failed' );
+		if ( $rollback_required ) {
+			$this->logger->warning(
+				'Runtime cleanup skipped because target recovery is required.',
+				array( 'operation' => sanitize_key( $operation ) )
+			);
+			return;
+		}
 		$this->cleanup_local_runtime_storage( 'failed-' . sanitize_key( $operation ) );
 
 		if ( 'push' === sanitize_key( $operation ) ) {

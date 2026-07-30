@@ -134,6 +134,41 @@ class Lock_Manager {
 		return true;
 	}
 
+	public function request_cancel( $expected_token = '' ) {
+		$lock = $this->get_lock();
+		if ( empty( $lock ) ) {
+			return new \WP_Error(
+				'ag_sync_bridge_no_active_operation',
+				__( 'No local AG Sync operation is active.', 'ag-sync-bridge' )
+			);
+		}
+		if ( $expected_token && ( empty( $lock['token'] ) || ! hash_equals( (string) $lock['token'], (string) $expected_token ) ) ) {
+			return new \WP_Error(
+				'ag_sync_bridge_cancel_operation_mismatch',
+				__( 'The local AG Sync operation changed before cancellation.', 'ag-sync-bridge' )
+			);
+		}
+
+		$now                         = gmdate( 'c' );
+		$lock['cancel_requested']    = true;
+		$lock['cancel_requested_at'] = array_get( $lock, 'cancel_requested_at', $now );
+		$lock['updated_at']          = $now;
+		$this->write_lock( $lock );
+		$this->logger->warning( 'Local cancellation requested.', array( 'operation' => array_get( $lock, 'operation', '' ), 'token' => array_get( $lock, 'token', '' ) ) );
+		return $lock;
+	}
+
+	public function is_cancel_requested() {
+		$lock = $this->get_lock();
+		if ( empty( $lock ) || empty( $lock['cancel_requested'] ) ) {
+			return false;
+		}
+		if ( $this->active_token && ! empty( $lock['token'] ) ) {
+			return hash_equals( (string) $this->active_token, (string) $lock['token'] );
+		}
+		return true;
+	}
+
 	public function get_lock() {
 		$file = $this->get_lock_file();
 

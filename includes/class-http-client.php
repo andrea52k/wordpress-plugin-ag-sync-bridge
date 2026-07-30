@@ -53,7 +53,7 @@ class Http_Client {
 		);
 	}
 
-	public function create_remote_snapshot( $type = 'manual-remote-snapshot' ) {
+	public function create_remote_snapshot( $type = 'manual-remote-snapshot', $cancellation_check = null, $operation_callback = null ) {
 		$result = $this->request_json(
 			'POST',
 			'/ag-sync-bridge/v1/snapshot/create',
@@ -68,7 +68,11 @@ class Http_Client {
 		}
 
 		if ( ! empty( $result['accepted'] ) && ! empty( $result['operation_id'] ) ) {
-			return $this->wait_for_remote_snapshot( (string) $result['operation_id'] );
+			$operation_id = (string) $result['operation_id'];
+			if ( is_callable( $operation_callback ) ) {
+				call_user_func( $operation_callback, $operation_id, 'snapshot' );
+			}
+			return $this->wait_for_remote_snapshot( $operation_id, $cancellation_check );
 		}
 
 		return $result;
@@ -138,9 +142,12 @@ class Http_Client {
 		);
 	}
 
-	public function download_snapshot( $basename, $destination_file ) {
+	public function download_snapshot( $basename, $destination_file, $cancellation_check = null ) {
+		if ( $this->is_cancel_requested( $cancellation_check, 'download-prepare' ) ) {
+			return $this->cancellation_error( 'download-prepare' );
+		}
 		$this->logger->info( 'Using raw chunked snapshot download.', array( 'snapshot' => $basename ) );
-		$raw_chunked = $this->download_snapshot_in_raw_chunks( $basename, $destination_file );
+		$raw_chunked = $this->download_snapshot_in_raw_chunks( $basename, $destination_file, $cancellation_check );
 
 		if ( ! is_wp_error( $raw_chunked ) ) {
 			return $raw_chunked;
@@ -149,7 +156,7 @@ class Http_Client {
 		$this->logger->warning( 'Raw chunked snapshot download failed. Falling back to JSON chunked download.', array( 'error' => $raw_chunked->get_error_message(), 'snapshot' => $basename ) );
 
 		$this->logger->info( 'Using JSON chunked snapshot download.', array( 'snapshot' => $basename ) );
-		$chunked = $this->download_snapshot_in_chunks( $basename, $destination_file );
+		$chunked = $this->download_snapshot_in_chunks( $basename, $destination_file, $cancellation_check );
 
 		if ( ! is_wp_error( $chunked ) ) {
 			return $chunked;
@@ -174,7 +181,7 @@ class Http_Client {
 		if ( is_wp_error( $response ) ) {
 			if ( $this->should_fallback_to_chunked_download( $response ) ) {
 				$this->logger->warning( 'Streamed snapshot download failed. Falling back to chunked download.', array( 'error' => $response->get_error_message(), 'snapshot' => $basename ) );
-				return $this->download_snapshot_in_chunks( $basename, $destination_file );
+				return $this->download_snapshot_in_chunks( $basename, $destination_file, $cancellation_check );
 			}
 			return $response;
 		}
@@ -188,7 +195,7 @@ class Http_Client {
 			);
 			if ( $this->should_fallback_to_chunked_download( $error, $code ) ) {
 				$this->logger->warning( 'Streamed snapshot download returned HTTP error. Falling back to chunked download.', array( 'status' => $code, 'snapshot' => $basename ) );
-				return $this->download_snapshot_in_chunks( $basename, $destination_file );
+				return $this->download_snapshot_in_chunks( $basename, $destination_file, $cancellation_check );
 			}
 			return $error;
 		}
@@ -198,7 +205,7 @@ class Http_Client {
 		);
 	}
 
-	private function download_snapshot_in_raw_chunks( $basename, $destination_file ) {
+	private function download_snapshot_in_raw_chunks( $basename, $destination_file, $cancellation_check = null ) {
 		$route  = '/ag-sync-bridge/v1/snapshot/download-raw-chunk';
 		$offset = 0;
 		$sha256 = '';
@@ -210,6 +217,9 @@ class Http_Client {
 
 		try {
 			while ( true ) {
+				if ( $this->is_cancel_requested( $cancellation_check, 'download-chunk' ) ) {
+					return $this->cancellation_error( 'download-chunk' );
+				}
 				$url = $this->build_rest_url( $route ) . '?snapshot=' . rawurlencode( $basename ) . '&offset=' . rawurlencode( (string) $offset ) . '&length=' . rawurlencode( (string) self::DOWNLOAD_CHUNK_SIZE_BYTES );
 				$this->logger->info( 'Downloading raw snapshot chunk.', array( 'snapshot' => $basename, 'offset' => $offset, 'length' => self::DOWNLOAD_CHUNK_SIZE_BYTES ) );
 				$result = function_exists( 'curl_init' )
@@ -246,7 +256,7 @@ class Http_Client {
 		);
 	}
 
-	private function download_snapshot_in_chunks( $basename, $destination_file ) {
+	private function download_snapshot_in_chunks( $basename, $destination_file, $cancellation_check = null ) {
 		$route  = '/ag-sync-bridge/v1/snapshot/download-chunk';
 		$offset = 0;
 		$sha256 = '';
@@ -258,6 +268,9 @@ class Http_Client {
 
 		try {
 			while ( true ) {
+				if ( $this->is_cancel_requested( $cancellation_check, 'download-chunk' ) ) {
+					return $this->cancellation_error( 'download-chunk' );
+				}
 				$url      = $this->build_rest_url( $route ) . '?snapshot=' . rawurlencode( $basename ) . '&offset=' . rawurlencode( (string) $offset ) . '&length=' . rawurlencode( (string) self::DOWNLOAD_CHUNK_SIZE_BYTES );
 				$this->logger->info( 'Downloading snapshot chunk.', array( 'snapshot' => $basename, 'offset' => $offset, 'length' => self::DOWNLOAD_CHUNK_SIZE_BYTES ) );
 				$result   = function_exists( 'curl_init' )
@@ -488,10 +501,14 @@ class Http_Client {
 			|| false !== stripos( $message, 'cURL error 56' );
 	}
 
-	public function upload_snapshot( $file_path, array $meta, callable $progress_callback = null ) {
+	public function upload_snapshot( $file_path, array $meta, callable $progress_callback = null, $cancellation_check = null ) {
 		$route = '/ag-sync-bridge/v1/snapshot/upload';
 		$url   = $this->build_rest_url( $route );
 		$size  = file_exists( $file_path ) ? (int) filesize( $file_path ) : 0;
+
+		if ( $this->is_cancel_requested( $cancellation_check, 'upload-prepare' ) ) {
+			return $this->cancellation_error( 'upload-prepare' );
+		}
 
 		if ( $progress_callback ) {
 			call_user_func( $progress_callback, 0, 1, __( 'Preparazione upload snapshot...', 'ag-sync-bridge' ) );
@@ -506,10 +523,13 @@ class Http_Client {
 				)
 			);
 
-			return $this->upload_in_chunks( $file_path, $meta, $progress_callback );
+			return $this->upload_in_chunks( $file_path, $meta, $progress_callback, $cancellation_check );
 		}
 
 		if ( function_exists( 'curl_init' ) ) {
+			if ( $this->is_cancel_requested( $cancellation_check, 'upload-request' ) ) {
+				return $this->cancellation_error( 'upload-request' );
+			}
 			$result = $this->upload_via_curl( $url, $route, $file_path, $meta );
 			if ( ! is_wp_error( $result ) ) {
 				if ( $progress_callback ) {
@@ -540,7 +560,7 @@ class Http_Client {
 
 		if ( is_wp_error( $result ) ) {
 			$this->logger->warning( 'Raw snapshot upload failed. Falling back to chunked upload.', array( 'error' => $result->get_error_message() ) );
-			return $this->upload_in_chunks( $file_path, $meta, $progress_callback );
+			return $this->upload_in_chunks( $file_path, $meta, $progress_callback, $cancellation_check );
 		}
 
 		if ( $progress_callback ) {
@@ -550,7 +570,7 @@ class Http_Client {
 		return $result;
 	}
 
-	public function trigger_remote_import( $snapshot_basename, $expected_sha256, $allow_partial_snapshot = false ) {
+	public function trigger_remote_import( $snapshot_basename, $expected_sha256, $allow_partial_snapshot = false, $cancellation_check = null, $operation_callback = null ) {
 		$result = $this->request_json(
 			'POST',
 			'/ag-sync-bridge/v1/snapshot/import',
@@ -566,15 +586,27 @@ class Http_Client {
 			return $result;
 		}
 
-		return $this->wait_for_remote_import( (string) $result['operation_id'] );
+		$operation_id = (string) $result['operation_id'];
+		if ( is_callable( $operation_callback ) ) {
+			call_user_func( $operation_callback, $operation_id, 'import' );
+		}
+		return $this->wait_for_remote_import( $operation_id, $cancellation_check );
 	}
 
-	private function wait_for_remote_snapshot( $operation_id ) {
+	private function wait_for_remote_snapshot( $operation_id, $cancellation_check = null ) {
 		$started_at       = time();
 		$timeout          = max( 60, $this->config->get_request_timeout() );
 		$transient_errors = 0;
+		$cancel_sent      = false;
 
 		while ( ( time() - $started_at ) < $timeout ) {
+			if ( ! $cancel_sent && $this->is_cancel_requested( $cancellation_check, 'remote-snapshot' ) ) {
+				$cancel_sent = true;
+				$cancel      = $this->cancel_remote_operation( $operation_id, 'snapshot' );
+				if ( is_wp_error( $cancel ) ) {
+					return $cancel;
+				}
+			}
 			sleep( 5 );
 
 			$status = $this->request_json( 'GET', '/ag-sync-bridge/v1/operation/status' );
@@ -656,14 +688,22 @@ class Http_Client {
 		return $error;
 	}
 
-	private function wait_for_remote_import( $operation_id ) {
+	private function wait_for_remote_import( $operation_id, $cancellation_check = null ) {
 		$started_at       = time();
 		$timeout          = max( 60, $this->config->get_request_timeout() );
 		$transient_errors = 0;
 		$queued_at        = null;
 		$recovery_sent    = false;
+		$cancel_sent      = false;
 
 		while ( ( time() - $started_at ) < $timeout ) {
+			if ( ! $cancel_sent && $this->is_cancel_requested( $cancellation_check, 'remote-import' ) ) {
+				$cancel_sent = true;
+				$cancel      = $this->cancel_remote_operation( $operation_id, 'import' );
+				if ( is_wp_error( $cancel ) ) {
+					return $cancel;
+				}
+			}
 			sleep( 5 );
 
 			$status = $this->request_json( 'GET', '/ag-sync-bridge/v1/operation/status' );
@@ -963,7 +1003,7 @@ class Http_Client {
 		return is_array( $decoded ) && 'ag_sync_bridge_bad_signature' === array_get( $decoded, 'code', '' );
 	}
 
-	private function upload_in_chunks( $file_path, array $meta, callable $progress_callback = null ) {
+	private function upload_in_chunks( $file_path, array $meta, callable $progress_callback = null, $cancellation_check = null ) {
 		$route_chunk  = '/ag-sync-bridge/v1/snapshot/upload-chunk';
 		$route_finish = '/ag-sync-bridge/v1/snapshot/upload-finish';
 		$url_chunk    = $this->build_rest_url( $route_chunk );
@@ -979,6 +1019,10 @@ class Http_Client {
 
 		try {
 			for ( $index = 0; $index < $total_chunks; $index++ ) {
+				if ( $this->is_cancel_requested( $cancellation_check, 'upload-chunk' ) ) {
+					$this->abort_chunked_upload( $upload_id );
+					return $this->cancellation_error( 'upload-chunk' );
+				}
 				$chunk = fread( $handle, self::UPLOAD_CHUNK_SIZE_BYTES );
 
 				if ( false === $chunk ) {
@@ -1020,6 +1064,11 @@ class Http_Client {
 			}
 		} finally {
 			fclose( $handle );
+		}
+
+		if ( $this->is_cancel_requested( $cancellation_check, 'upload-finish' ) ) {
+			$this->abort_chunked_upload( $upload_id );
+			return $this->cancellation_error( 'upload-finish' );
 		}
 
 		$finish = $this->request_json(
@@ -1068,6 +1117,22 @@ class Http_Client {
 				)
 			);
 		}
+	}
+
+	private function is_cancel_requested( $callback, $stage ) {
+		return is_callable( $callback ) && (bool) call_user_func( $callback, $stage, false );
+	}
+
+	private function cancellation_error( $stage ) {
+		return new WP_Error(
+			'ag_sync_bridge_operation_cancelled',
+			__( 'Transfer was cancelled before the target import started.', 'ag-sync-bridge' ),
+			array(
+				'cancelled'         => true,
+				'rollback_required' => false,
+				'stage'             => sanitize_key( $stage ),
+			)
+		);
 	}
 
 	private function upload_chunk_with_retry( $url, array $headers, $chunk, $index, $total_chunks ) {

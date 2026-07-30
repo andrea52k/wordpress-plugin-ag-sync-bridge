@@ -437,6 +437,10 @@ class Rest_Controller {
 			$type,
 			array(
 				'trigger'           => 'remote-api-async',
+				'cancellation_check'=> function ( $stage, $rollback_required ) use ( $operation_id ) {
+					unset( $stage, $rollback_required );
+					return $this->runtime->is_cancel_requested( $operation_id );
+				},
 				'progress_callback' => function ( $stage, $progress, array $details = array() ) use ( $operation_id ) {
 					$current  = $this->runtime->get();
 					$fallback = is_array( $current ) ? (int) array_get( $current, 'progress', 2 ) : 2;
@@ -803,10 +807,14 @@ class Rest_Controller {
 
 			$scheduled = wp_schedule_single_event( time() + 1, Scheduler::HOOK_ASYNC_IMPORT, array( $operation_id, $path, $sha256 ) );
 			if ( false === $scheduled ) {
-				$operation['status']      = 'error';
-				$operation['message']     = __( 'Unable to schedule remote async import.', 'ag-sync-bridge' );
-				$operation['updated_at']  = gmdate( 'c' );
-				$operation['finished_at'] = gmdate( 'c' );
+				$operation = $this->runtime->finalize(
+					$operation_id,
+					'error',
+					array(
+						'stage'   => 'schedule-failed',
+						'message' => __( 'Unable to schedule remote async import.', 'ag-sync-bridge' ),
+					)
+				);
 				$this->config->set_state_value( 'remote_import_operation', $operation );
 				return new WP_Error(
 					'ag_sync_bridge_remote_import_schedule_failed',
@@ -888,7 +896,10 @@ class Rest_Controller {
 						$operation_id,
 						'import-' . sanitize_key( $stage ),
 						$progress,
-						array( 'rollback_required_at_checkpoint' => (bool) $rollback_required )
+						array(
+							'rollback_required_at_checkpoint' => (bool) $rollback_required,
+							'target_mutated'                  => (bool) $rollback_required,
+						)
 					);
 				},
 				'progress_callback' => function ( $stage, $progress, array $details = array() ) use ( $operation_id, $checkpoint_progress ) {
@@ -907,22 +918,55 @@ class Rest_Controller {
 
 		if ( is_wp_error( $result ) ) {
 			if ( 'ag_sync_bridge_operation_cancelled' === $result->get_error_code() ) {
-				$data = $result->get_error_data();
-				$operation = $this->runtime->finalize( $operation_id, 'cancelled', array( 'rollback_required' => is_array( $data ) && ! empty( $data['rollback_required'] ), 'message' => $result->get_error_message() ) );
+				$data              = $result->get_error_data();
+				$rollback_required = is_array( $data ) && ! empty( $data['rollback_required'] );
+				$changes           = array(
+					'rollback_required' => $rollback_required,
+					'target_mutated'    => $rollback_required,
+					'message'           => $result->get_error_message(),
+				);
+				if ( $rollback_required ) {
+					$changes['recovery_artifacts'] = array(
+						'snapshot'  => basename( $path ),
+						'sha256'    => $sha256,
+						'preserved' => file_exists( $path ),
+					);
+				}
+				$operation = $this->runtime->finalize( $operation_id, 'cancelled', $changes );
 				$this->config->set_state_value( 'remote_import_operation', $operation );
-				$this->file_system->cleanup_path( $path );
-				$this->file_system->cleanup_runtime_storage( null, null, 0 );
+				if ( ! $rollback_required ) {
+					$this->file_system->cleanup_path( $path );
+					$this->file_system->cleanup_runtime_storage( null, null, 0 );
+				}
 				return;
 			}
-			$operation['status']     = 'error';
-			$operation['updated_at'] = gmdate( 'c' );
-			$operation['finished_at'] = gmdate( 'c' );
-			$operation['message']    = $result->get_error_message();
-			$operation['data']       = $result->get_error_data();
-			$operation = $this->runtime->finalize( $operation_id, 'error', $operation );
+			$error_data        = $result->get_error_data();
+			$current_operation = $this->runtime->get();
+			$rollback_required = ( is_array( $error_data ) && ! empty( $error_data['rollback_required'] ) )
+				|| ( is_array( $current_operation ) && ! empty( $current_operation['target_mutated'] ) );
+			$changes = array(
+				'rollback_required' => $rollback_required,
+				'target_mutated'    => $rollback_required,
+				'message'           => $result->get_error_message(),
+				'data'              => $error_data,
+			);
+			if ( $rollback_required ) {
+				$changes['recovery_artifacts'] = array(
+					'snapshot'  => basename( $path ),
+					'sha256'    => $sha256,
+					'preserved' => file_exists( $path ),
+				);
+			}
+			$operation = $this->runtime->finalize(
+				$operation_id,
+				'error',
+				$changes
+			);
 			$this->config->set_state_value( 'remote_import_operation', $operation );
-			$this->file_system->cleanup_path( $path );
-			$this->file_system->cleanup_runtime_storage( null, null, 0 );
+			if ( ! $rollback_required ) {
+				$this->file_system->cleanup_path( $path );
+				$this->file_system->cleanup_runtime_storage( null, null, 0 );
+			}
 			$this->logger->error( 'Remote async import failed.', $operation );
 			return;
 		}
@@ -1004,11 +1048,22 @@ class Rest_Controller {
 		$expected     = sanitize_text_field( (string) $request->get_param( 'expected_updated_at' ) );
 		$note         = sanitize_text_field( (string) $request->get_param( 'note' ) );
 
-		if ( ! $operation_id || ! in_array( $kind, array( 'snapshot', 'import' ), true ) || ! in_array( $action, array( 'quarantine', 'close' ), true ) || ! $expected ) {
+		if ( ! $operation_id || ! in_array( $kind, array( 'snapshot', 'import' ), true ) || ! in_array( $action, array( 'quarantine', 'close', 'recover' ), true ) || ! $expected ) {
 			return new WP_Error( 'ag_sync_bridge_reconcile_invalid_request', __( 'Operation ID, kind, action and expected updated_at are required.', 'ag-sync-bridge' ), array( 'status' => 400 ) );
 		}
 
-		if ( 'quarantine' === $action ) {
+		if ( 'recover' === $action ) {
+			$operation = $this->runtime->resolve_recovery(
+				$operation_id,
+				$kind,
+				$expected,
+				array(
+					'target_integrity_verified' => (bool) $request->get_param( 'target_integrity_verified' ),
+					'rollback_verified'         => (bool) $request->get_param( 'rollback_verified' ),
+					'note'                      => $note,
+				)
+			);
+		} elseif ( 'quarantine' === $action ) {
 			if ( ! $request->get_param( 'worker_absent_verified' ) || '' === trim( $note ) ) {
 				return new WP_Error( 'ag_sync_bridge_reconcile_verification_incomplete', __( 'Quarantine requires explicit worker absence verification and a note.', 'ag-sync-bridge' ), array( 'status' => 400 ) );
 			}

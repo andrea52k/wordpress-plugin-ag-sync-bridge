@@ -361,13 +361,33 @@ if ( defined( 'WP_CLI' ) && WP_CLI ) {
 		}
 
 		/**
+		 * Requests cooperative cancellation of the active local operation.
+		 *
+		 * ## OPTIONS
+		 *
+		 * [--token=<token>]
+		 * : Optional lock token used to reject cancellation of a replaced operation.
+		 */
+		public function cancel( $args, $assoc_args ) {
+			unset( $args );
+
+			$token  = sanitize_text_field( (string) array_get( $assoc_args, 'token', '' ) );
+			$result = self::$lock_manager->request_cancel( $token );
+			if ( is_wp_error( $result ) ) {
+				\WP_CLI::error( $result->get_error_message() );
+			}
+
+			\WP_CLI::success( 'Local cancellation requested for operation: ' . array_get( $result, 'operation', 'unknown' ) . '.' );
+		}
+
+		/**
 		 * Reconciles a stale remote operation without declaring it successful.
 		 *
 		 * ## OPTIONS
 		 *
 		 * --operation-id=<id>
 		 * --kind=<snapshot|import>
-		 * --action=<quarantine|close>
+		 * --action=<quarantine|close|recover>
 		 * --expected-updated-at=<timestamp>
 		 * --note=<text>
 		 * --worker-absent-verified
@@ -388,8 +408,10 @@ if ( defined( 'WP_CLI' ) && WP_CLI ) {
 				'target_integrity_verified'=> ! empty( $assoc_args['target-integrity-verified'] ),
 				'rollback_verified'        => ! empty( $assoc_args['rollback-verified'] ),
 			);
-			if ( ! $payload['operation_id'] || ! in_array( $payload['kind'], array( 'snapshot', 'import' ), true ) || ! in_array( $payload['action'], array( 'quarantine', 'close' ), true ) || ! $payload['expected_updated_at'] || ! $payload['worker_absent_verified'] || ! $payload['note'] ) {
-				\WP_CLI::error( 'Specify operation ID, kind, action, expected updated_at, note and --worker-absent-verified.' );
+			$worker_check_required = in_array( $payload['action'], array( 'quarantine', 'close' ), true );
+			$recovery_proof        = ! empty( $payload['target_integrity_verified'] ) || ! empty( $payload['rollback_verified'] );
+			if ( ! $payload['operation_id'] || ! in_array( $payload['kind'], array( 'snapshot', 'import' ), true ) || ! in_array( $payload['action'], array( 'quarantine', 'close', 'recover' ), true ) || ! $payload['expected_updated_at'] || ! $payload['note'] || ( $worker_check_required && ! $payload['worker_absent_verified'] ) || ( 'recover' === $payload['action'] && ! $recovery_proof ) ) {
+				\WP_CLI::error( 'Specify operation ID, kind, action, expected updated_at and note. Quarantine/close require --worker-absent-verified; recover requires --target-integrity-verified or --rollback-verified.' );
 			}
 
 			$result = ( new Http_Client( self::$config, self::$logger ) )->reconcile_remote_operation( $payload );

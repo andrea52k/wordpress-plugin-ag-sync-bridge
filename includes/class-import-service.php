@@ -93,6 +93,7 @@ class Import_Service {
 		$target_prefix = $this->database->get_table_prefix();
 		$source_active_plugins = array();
 		$sync_active_plugins   = false;
+		$rollback_required     = false;
 
 		try {
 			$cancelled = $this->check_cancellation( $args, 'prepared', false );
@@ -114,6 +115,8 @@ class Import_Service {
 					return $cancelled;
 				}
 
+				$rollback_required = true;
+				$this->report_mutation_started( $args, 'database_import_started' );
 				$import_result = $this->database->import_from_file(
 					$prepared['database_sql'],
 					array(
@@ -123,7 +126,7 @@ class Import_Service {
 					)
 				);
 				if ( is_wp_error( $import_result ) ) {
-					return $import_result;
+					return $this->with_failure_context( $import_result, 'database_import', true );
 				}
 
 				$cancelled = $this->check_cancellation( $args, 'after_database_import', true );
@@ -154,7 +157,7 @@ class Import_Service {
 
 				$prefix_remap = $this->database->remap_site_prefix_keys( $source_prefix, $target_prefix );
 				if ( is_wp_error( $prefix_remap ) ) {
-					return $prefix_remap;
+					return $this->with_failure_context( $prefix_remap, 'prefix_remap', true );
 				}
 			}
 
@@ -178,7 +181,7 @@ class Import_Service {
 			if ( ! $is_partial ) {
 				$replace_result = $this->database->replace_urls( $replacements, $target_prefix );
 				if ( is_wp_error( $replace_result ) ) {
-					return $replace_result;
+					return $this->with_failure_context( $replace_result, 'url_replace', true );
 				}
 
 				$cancelled = $this->check_cancellation( $args, 'after_url_replace', true );
@@ -193,10 +196,12 @@ class Import_Service {
 			if ( is_wp_error( $cancelled ) ) {
 				return $cancelled;
 			}
+			$rollback_required = true;
+			$this->report_mutation_started( $args, 'files_import_started' );
 			$result     = $is_partial ? $this->import_partial_files( $files_root, $manifest, $replacements, $args ) : $this->import_files( $files_root, $replacements, $args );
 
 			if ( is_wp_error( $result ) ) {
-				return $result;
+				return $this->with_failure_context( $result, 'files_import', true );
 			}
 
 			$cancelled = $this->check_cancellation( $args, 'after_files_import', true );
@@ -263,7 +268,11 @@ class Import_Service {
 
 			return new WP_Error(
 				'ag_sync_bridge_import_runtime_error',
-				__( 'Snapshot import failed because the target site hit a runtime error during URL replacement.', 'ag-sync-bridge' )
+				__( 'Snapshot import failed because the target site hit a runtime error during URL replacement.', 'ag-sync-bridge' ),
+				array(
+					'rollback_required' => (bool) $rollback_required,
+					'stage'             => 'runtime-error',
+				)
 			);
 		} finally {
 			if ( ! $is_partial ) {
@@ -282,7 +291,7 @@ class Import_Service {
 					);
 					$this->file_system->cleanup_path( $prepared['temp_dir'] );
 					$this->disable_maintenance_mode();
-					return $plugin_sync;
+					return $this->with_failure_context( $plugin_sync, 'plugin_sync', true );
 				}
 			}
 
@@ -327,6 +336,31 @@ class Import_Service {
 				'rollback_required' => (bool) $rollback_required,
 				'stage'             => sanitize_key( $stage ),
 			)
+		);
+	}
+
+	private function report_mutation_started( array $args, $stage ) {
+		$progress_callback = array_get( $args, 'progress_callback', null );
+		if ( is_callable( $progress_callback ) ) {
+			call_user_func( $progress_callback, $stage, null, array( 'rollback_required_at_checkpoint' => true, 'target_mutated' => true ) );
+		}
+
+		$checkpoint = array_get( $args, 'checkpoint_callback', null );
+		if ( is_callable( $checkpoint ) ) {
+			call_user_func( $checkpoint, $stage, true );
+		}
+	}
+
+	private function with_failure_context( WP_Error $error, $stage, $rollback_required ) {
+		$data = $error->get_error_data();
+		$data = is_array( $data ) ? $data : array( 'original_data' => $data );
+		$data['rollback_required'] = (bool) $rollback_required;
+		$data['stage']             = sanitize_key( $stage );
+
+		return new WP_Error(
+			$error->get_error_code(),
+			$error->get_error_message(),
+			$data
 		);
 	}
 

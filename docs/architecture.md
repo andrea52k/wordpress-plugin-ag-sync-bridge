@@ -172,6 +172,19 @@ database or file mutation has completed, cancellation is recorded as
 `rollback_required` and the pre-import backup must be restored before the
 target is considered healthy.
 
+From `0.1.38`, database export and ZIP creation also stop cooperatively and
+remove partial packages. Any error after database or filesystem mutation is
+classified as `rollback_required`, which blocks new remote work. The block can
+be cleared only with an authenticated `recover` reconciliation containing a
+verification note plus either verified target integrity or verified rollback;
+this never declares the interrupted sync successful.
+
+Local orchestration uses the same contract. `wp agsync cancel` records a
+cancellation request in `temp/operation.lock`; snapshot, download, upload and
+import phases read that durable marker and stop at a safe checkpoint. If the
+target may already have changed, recovery artifacts remain available while the
+operation stays blocked as `rollback_required`.
+
 ## Remote operation heartbeat and reconciliation
 
 From `0.1.36`, `operations/remote-operation.json` is the authoritative

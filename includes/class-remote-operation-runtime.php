@@ -25,6 +25,13 @@ class Remote_Operation_Runtime {
 
 	public function reserve( $kind, array $operation ) {
 		return $this->locked( function ( array $current ) use ( $kind, $operation ) {
+			if ( 'rollback_required' === (string) array_get( $current, 'status', '' ) ) {
+				return new WP_Error(
+					'ag_sync_bridge_remote_recovery_required',
+					__( 'The previous remote operation requires verified recovery before another operation can start.', 'ag-sync-bridge' ),
+					array( 'status' => 409, 'operation' => $current )
+				);
+			}
 			if ( ! empty( $current ) && ! $this->is_terminal( $current ) ) {
 				return new WP_Error( 'ag_sync_bridge_remote_operation_busy', __( 'A remote AG Sync operation is already active.', 'ag-sync-bridge' ), array( 'status' => 409, 'operation' => $current ) );
 			}
@@ -86,9 +93,19 @@ class Remote_Operation_Runtime {
 			if ( $this->is_terminal( $current ) ) {
 				return $current;
 			}
-			$current['status'] = 'queued' === (string) array_get( $current, 'status', '' ) ? 'cancelled' : 'cancel_requested';
-			$current['updated_at'] = gmdate( 'c' );
-			$current['cancel_requested_at'] = gmdate( 'c' );
+			$now                     = gmdate( 'c' );
+			$queued                  = 'queued' === (string) array_get( $current, 'status', '' );
+			$current['status']       = $queued ? 'cancelled' : 'cancel_requested';
+			$current['stage']        = $queued ? 'cancelled' : 'cancel_requested';
+			$current['message']      = $queued
+				? __( 'Queued operation cancelled before the worker started.', 'ag-sync-bridge' )
+				: __( 'Cancellation requested. The worker will stop at the next safe checkpoint.', 'ag-sync-bridge' );
+			$current['updated_at']   = $now;
+			$current['cancel_requested_at'] = array_get( $current, 'cancel_requested_at', $now );
+			if ( $queued ) {
+				$current['finished_at'] = $now;
+				$current['cleanup_verified'] = true;
+			}
 			return $current;
 		} );
 	}
@@ -99,12 +116,58 @@ class Remote_Operation_Runtime {
 				return new WP_Error( 'ag_sync_bridge_remote_operation_mismatch', __( 'Remote operation changed before finalization.', 'ag-sync-bridge' ), array( 'status' => 409 ) );
 			}
 			$cancel_requested = in_array( (string) array_get( $current, 'status', '' ), array( 'cancel_requested', 'reconcile_requested' ), true );
+			$rollback_required = ! empty( $changes['rollback_required'] ) || ! empty( $changes['target_mutated'] ) || ! empty( $current['target_mutated'] );
 			if ( $cancel_requested ) {
-				$status = ! empty( $changes['rollback_required'] ) ? 'rollback_required' : 'cancelled';
+				$status = $rollback_required ? 'rollback_required' : 'cancelled';
+			} elseif ( in_array( $status, array( 'error', 'failed' ), true ) && $rollback_required ) {
+				$status = 'rollback_required';
 			} elseif ( 'complete' === $status ) {
 				unset( $changes['rollback_required'] );
+				unset( $changes['target_mutated'] );
 			}
 			$current = array_merge( $current, $changes, array( 'status' => $status, 'updated_at' => gmdate( 'c' ), 'finished_at' => gmdate( 'c' ) ) );
+			return $current;
+		} );
+	}
+
+	/**
+	 * Clears a blocking rollback_required state only after explicit, audited
+	 * verification of either the target integrity or a completed rollback.
+	 */
+	public function resolve_recovery( $operation_id, $kind, $expected_updated_at, array $verification ) {
+		return $this->locked( function ( array $current ) use ( $operation_id, $kind, $expected_updated_at, $verification ) {
+			if ( (string) array_get( $current, 'id', '' ) !== (string) $operation_id || (string) array_get( $current, 'kind', '' ) !== (string) $kind ) {
+				return new WP_Error( 'ag_sync_bridge_recovery_operation_mismatch', __( 'The requested recovery does not match the blocked remote operation.', 'ag-sync-bridge' ), array( 'status' => 409 ) );
+			}
+			if ( 'rollback_required' !== (string) array_get( $current, 'status', '' ) ) {
+				return new WP_Error( 'ag_sync_bridge_recovery_not_required', __( 'The remote operation is not waiting for recovery verification.', 'ag-sync-bridge' ), array( 'status' => 409, 'operation' => $current ) );
+			}
+			if ( (string) array_get( $current, 'updated_at', '' ) !== (string) $expected_updated_at ) {
+				return new WP_Error( 'ag_sync_bridge_recovery_state_changed', __( 'Remote recovery state changed. Read status again before confirming recovery.', 'ag-sync-bridge' ), array( 'status' => 409, 'operation' => $current ) );
+			}
+
+			$note             = trim( (string) array_get( $verification, 'note', '' ) );
+			$target_verified  = ! empty( $verification['target_integrity_verified'] );
+			$rollback_verified = ! empty( $verification['rollback_verified'] );
+			if ( '' === $note || ( ! $target_verified && ! $rollback_verified ) ) {
+				return new WP_Error( 'ag_sync_bridge_recovery_verification_incomplete', __( 'Recovery confirmation requires a note and verified target integrity or rollback.', 'ag-sync-bridge' ), array( 'status' => 400 ) );
+			}
+
+			$now                       = gmdate( 'c' );
+			$current['status']         = 'reconciled';
+			$current['stage']          = 'recovery-verified';
+			$current['updated_at']     = $now;
+			$current['finished_at']    = $now;
+			$current['rollback_required'] = false;
+			$current['target_mutated'] = false;
+			$current['recovery']       = array(
+				'verified_at'               => $now,
+				'target_integrity_verified' => $target_verified,
+				'rollback_verified'         => $rollback_verified,
+				'note'                      => sanitize_text_field( $note ),
+				'declared_success'          => false,
+			);
+			$current['message'] = __( 'Recovery verified. The blocked operation was closed without declaring the sync successful.', 'ag-sync-bridge' );
 			return $current;
 		} );
 	}
@@ -219,7 +282,7 @@ class Remote_Operation_Runtime {
 	}
 
 	private function is_terminal( array $operation ) {
-		return in_array( (string) array_get( $operation, 'status', '' ), array( 'complete', 'error', 'cancelled', 'rollback_required', 'reconciled' ), true );
+		return in_array( (string) array_get( $operation, 'status', '' ), array( 'complete', 'error', 'failed', 'cancelled', 'reconciled' ), true );
 	}
 
 	private function locked( callable $callback, $write = true ) {

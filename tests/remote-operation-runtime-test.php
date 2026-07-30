@@ -43,6 +43,7 @@ expect_true( ! is_wp_error( $first ) && 'queued' === $first['status'], 'reserve 
 expect_true( is_wp_error( $runtime->reserve( 'snapshot', array( 'id' => 'two' ) ) ), 'reject concurrent operation' );
 $cancelled = $runtime->request_cancel( 'one', 'import' );
 expect_true( 'cancelled' === $cancelled['status'], 'cancel queued operation' );
+expect_true( 'cancelled' === $cancelled['stage'] && ! empty( $cancelled['finished_at'] ), 'queued cancellation is durably terminal' );
 expect_true( is_wp_error( $runtime->claim( 'one' ) ), 'cancelled operation cannot claim' );
 
 $second = $runtime->reserve( 'import', array( 'id' => 'two' ) );
@@ -53,6 +54,15 @@ $requested = $runtime->request_cancel( 'two', 'import' );
 expect_true( 'cancel_requested' === $requested['status'], 'request cancel running operation' );
 $final = $runtime->finalize( 'two', 'complete', array( 'rollback_required' => true ) );
 expect_true( 'rollback_required' === $final['status'], 'cancelled mutation requires rollback' );
+expect_true( is_wp_error( $runtime->reserve( 'snapshot', array( 'id' => 'blocked' ) ) ), 'rollback-required operation blocks new work' );
+$recovery = $runtime->resolve_recovery(
+	'two',
+	'import',
+	$final['updated_at'],
+	array( 'rollback_verified' => true, 'note' => 'Pre-import backup restored and checked.' )
+);
+expect_true( 'reconciled' === $recovery['status'], 'verified recovery unblocks the runtime' );
+expect_true( false === $recovery['recovery']['declared_success'], 'recovery does not declare sync success' );
 
 $third = $runtime->reserve( 'import', array( 'id' => 'three' ) );
 expect_true( 'queued' === $third['status'], 'reserve after rollback-required operation' );
@@ -60,6 +70,18 @@ expect_true( 'running' === $runtime->claim( 'three' )['status'], 'claim third op
 $complete = $runtime->finalize( 'three', 'complete', array( 'rollback_required' => true ) );
 expect_true( 'complete' === $complete['status'], 'complete operation remains complete without cancellation' );
 expect_true( ! isset( $complete['rollback_required'] ), 'completed operation does not falsely require rollback' );
+
+$dirty_error = $runtime->reserve( 'import', array( 'id' => 'dirty-error' ) );
+$runtime->claim( 'dirty-error' );
+$runtime->heartbeat( 'dirty-error', 'database-import', 45, array( 'target_mutated' => true ) );
+$dirty_error = $runtime->finalize( 'dirty-error', 'error', array( 'message' => 'Database import failed.' ) );
+expect_true( 'rollback_required' === $dirty_error['status'], 'error after target mutation requires rollback' );
+$runtime->resolve_recovery(
+	'dirty-error',
+	'import',
+	$dirty_error['updated_at'],
+	array( 'target_integrity_verified' => true, 'note' => 'Target checked against the pre-import manifest.' )
+);
 
 $fourth = $runtime->reserve( 'import', array( 'id' => 'four' ) );
 $running = $runtime->claim( 'four' );

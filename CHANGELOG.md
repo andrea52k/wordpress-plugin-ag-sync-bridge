@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.1.38
+
+- Gli snapshot remoti controllano la cancellazione durante export database e
+  creazione ZIP, eliminando gli archivi parziali prima della pubblicazione.
+- Gli errori avvenuti dopo l'avvio di una mutazione database o filesystem
+  diventano `rollback_required` invece di un generico errore terminale.
+- `rollback_required` blocca nuove operazioni finché integrità del target o
+  rollback non vengono verificati esplicitamente con `remote_reconcile
+  --action=recover`.
+- La cancellazione di un job ancora in coda salva nel control plane stato,
+  fase, messaggio, timestamp finale e conferma di cleanup coerenti.
+- Un fallimento di `wp_schedule_single_event()` finalizza anche il runtime
+  file-backed e non lascia più un job fantasma in stato `queued`.
+- Download e upload a chunk accettano checkpoint cooperativi; un upload
+  cancellato invia l'abort e non completa il pacchetto remoto.
+- `wp agsync cancel` scrive una richiesta persistente nel lock locale:
+  snapshot, download, upload, pull, push e restore si fermano al checkpoint
+  sicuro senza affidarsi alla terminazione forzata del processo.
+- Se un import già mutato fallisce o viene annullato, il pacchetto e il suo
+  checksum vengono conservati come artefatti di recupero fino alla verifica.
+- Aggiunti test per recovery bloccante, errore dopo mutazione e cleanup degli
+  ZIP cancellati, oltre al segnale di stop locale persistente.
+
 ## 0.1.37
 
 - Il backup remoto pre-push restituisce ora uno stato esplicito:
