@@ -123,6 +123,13 @@ namespace AGSyncBridge {
 	expect_partial_backup( '' === $archive_service->database_path, 'Partial backup archive must be created without database.sql.' );
 	expect_partial_backup( false === $archive_service->manifest['database']['included'], 'Partial backup manifest must attest that the database is excluded.' );
 	expect_partial_backup( 'partial' === $backup['snapshot_scope'], 'Partial backup metadata must expose scope=partial.' );
+	$manifest_validation = $file_system->validate_partial_snapshot_manifest(
+		$archive_service->manifest,
+		array( '.htaccess', 'wp-content/mu-plugins/missing.php' )
+	);
+	expect_partial_backup( ! empty( $manifest_validation['ok'] ), 'Canonical partial manifest with database excluded must validate.' );
+	$mismatched_validation = $file_system->validate_partial_snapshot_manifest( $archive_service->manifest, array( '.htaccess' ) );
+	expect_partial_backup( empty( $mismatched_validation['ok'] ) && in_array( 'partial_paths_mismatch', $mismatched_validation['errors'], true ), 'Expected path mismatch must fail closed.' );
 
 	$deployed_after_backup = ABSPATH . 'wp-content/mu-plugins/missing.php';
 	file_put_contents( $deployed_after_backup, "<?php\n// deployed after backup\n" );

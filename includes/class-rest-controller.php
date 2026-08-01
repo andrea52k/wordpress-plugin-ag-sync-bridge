@@ -118,6 +118,16 @@ class Rest_Controller {
 
 		register_rest_route(
 			'ag-sync-bridge/v1',
+			'/snapshot/delete-exact',
+			array(
+				'methods'             => 'POST',
+				'callback'            => array( $this, 'delete_exact_snapshot' ),
+				'permission_callback' => array( $this, 'check_permission' ),
+			)
+		);
+
+		register_rest_route(
+			'ag-sync-bridge/v1',
 			'/snapshot/upload',
 			array(
 				'methods'             => 'POST',
@@ -317,10 +327,47 @@ class Rest_Controller {
 		return new WP_REST_Response( $latest );
 	}
 
+	public function delete_exact_snapshot( WP_REST_Request $request ) {
+		if ( 'remote' !== $this->config->get_role() ) { return new WP_Error( 'ag_sync_bridge_snapshot_delete_role', __( 'Exact snapshot cleanup is remote-only.', 'ag-sync-bridge' ), array( 'status'=>403 ) ); }
+		$basename=(string)$request->get_param('basename');$operation_id=(string)$request->get_param('operation_id');$sha256=strtolower((string)$request->get_param('sha256'));$manifest_id=(string)$request->get_param('manifest_id');$manifest_sha256=strtolower((string)$request->get_param('manifest_sha256'));
+		$operation=$this->runtime->inspect();
+		if(is_wp_error($operation)){return $operation;}
+		if(is_array($operation)&&!empty($operation)&&!in_array((string)array_get($operation,'status',''),array('complete','failed','cancelled','reconciled','rolled-back'),true)){return new WP_Error('ag_sync_bridge_snapshot_delete_busy',__('Snapshot is still referenced by an active operation.','ag-sync-bridge'),array('status'=>409));}
+		if(is_array($operation)&&!empty($operation)&&(string)array_get($operation,'id','')!==$operation_id){return new WP_Error('ag_sync_bridge_snapshot_delete_operation_mismatch',__('Snapshot cleanup operation identity mismatch.','ag-sync-bridge'),array('status'=>409));}
+		try{return new WP_REST_Response($this->file_system->delete_exact_snapshot($basename,$sha256,$manifest_id,$manifest_sha256));}catch(\Throwable $error){return new WP_Error('ag_sync_bridge_snapshot_delete_blocked',$error->getMessage(),array('status'=>409));}
+	}
+
 	public function create_snapshot( WP_REST_Request $request ) {
 		$type   = sanitize_key( (string) $request->get_param( 'type' ) );
 		$type   = $type ?: 'manual-remote-snapshot';
 		$async  = (bool) $request->get_param( 'async' );
+		$scope  = sanitize_key( (string) $request->get_param( 'scope' ) );
+		$scope  = $scope ?: 'full';
+		$paths  = $request->get_param( 'paths' );
+		$paths  = is_array( $paths ) ? $paths : array();
+
+		if ( ! in_array( $scope, array( 'full', 'partial' ), true ) ) {
+			return new WP_Error( 'ag_sync_bridge_remote_snapshot_scope_invalid', __( 'Remote snapshot scope must be full or partial.', 'ag-sync-bridge' ), array( 'status' => 400 ) );
+		}
+		if ( 'full' === $scope && ! empty( $paths ) ) {
+			return new WP_Error( 'ag_sync_bridge_remote_snapshot_full_paths_forbidden', __( 'A full remote snapshot cannot declare partial paths.', 'ag-sync-bridge' ), array( 'status' => 400 ) );
+		}
+		if ( 'partial' === $scope ) {
+			$paths = $this->file_system->normalize_partial_export_paths( $paths, false );
+			if ( is_wp_error( $paths ) ) {
+				return new WP_Error(
+					$paths->get_error_code(),
+					$paths->get_error_message(),
+					array(
+						'status' => 400,
+						'cause'  => $paths->get_error_data(),
+					)
+				);
+			}
+			if ( empty( $paths ) ) {
+				return new WP_Error( 'ag_sync_bridge_remote_snapshot_partial_paths_required', __( 'A partial remote snapshot requires at least one validated path.', 'ag-sync-bridge' ), array( 'status' => 400 ) );
+			}
+		}
 
 		if ( $async ) {
 			$operation_id = function_exists( 'wp_generate_uuid4' ) ? wp_generate_uuid4() : md5( uniqid( (string) wp_rand(), true ) );
@@ -329,9 +376,11 @@ class Rest_Controller {
 				'type'       => $type,
 				'status'     => 'queued',
 				'stage'      => 'remote-snapshot',
+				'scope'      => $scope,
+				'paths'      => $paths,
 				'started_at' => gmdate( 'c' ),
 				'updated_at' => gmdate( 'c' ),
-				'schedule_args' => array( $operation_id, $type ),
+				'schedule_args' => array( $operation_id, $type, $scope, $paths ),
 			);
 
 			$operation = $this->runtime->reserve( 'snapshot', $operation );
@@ -341,7 +390,7 @@ class Rest_Controller {
 			$this->config->set_state_value( 'remote_snapshot_operation', $operation );
 			$this->logger->info( 'Remote async snapshot queued.', $operation );
 
-			$scheduled = wp_schedule_single_event( time() + 1, Scheduler::HOOK_ASYNC_SNAPSHOT, array( $operation_id, $type ) );
+			$scheduled = wp_schedule_single_event( time() + 1, Scheduler::HOOK_ASYNC_SNAPSHOT, array( $operation_id, $type, $scope, $paths ) );
 			if ( false === $scheduled ) {
 				$operation['status']      = 'error';
 				$operation['message']     = __( 'Unable to schedule remote async snapshot.', 'ag-sync-bridge' );
@@ -365,17 +414,29 @@ class Rest_Controller {
 					'accepted'     => true,
 					'operation_id' => $operation_id,
 					'type'         => $type,
+					'scope'        => $scope,
+					'paths'        => $paths,
 				),
 				202
 			);
 		}
 
-		$result = $this->sync->create_snapshot(
-			$type,
-			array(
-				'trigger' => 'remote-api',
+		$result = 'partial' === $scope
+			? $this->sync->create_partial_snapshot(
+				$paths,
+				$type,
+				array(
+					'trigger'             => 'remote-api',
+					'partial_paths'       => $paths,
+					'allow_missing_paths' => true,
+				)
 			)
-		);
+			: $this->sync->create_snapshot(
+				$type,
+				array(
+					'trigger' => 'remote-api',
+				)
+			);
 
 		return is_wp_error( $result ) ? $result : new WP_REST_Response( $result );
 	}
@@ -457,15 +518,50 @@ class Rest_Controller {
 		return new WP_REST_Response( $verified );
 	}
 
-	public function run_async_create_snapshot( $operation_id, $type ) {
+	public function run_async_create_snapshot( $operation_id, $type, $scope = 'full', $paths = array() ) {
 		@set_time_limit( 0 );
 		@ini_set( 'memory_limit', '-1' );
 
 		$type      = sanitize_key( (string) $type );
 		$type      = $type ?: 'manual-remote-snapshot';
+		$scope     = sanitize_key( (string) $scope );
+		$scope     = $scope ?: 'full';
+		$paths     = is_array( $paths ) ? $paths : array();
 		$operation = $this->runtime->claim( $operation_id );
 		if ( is_wp_error( $operation ) ) {
 			return;
+		}
+
+		if ( ! in_array( $scope, array( 'full', 'partial' ), true ) || ( 'full' === $scope && ! empty( $paths ) ) ) {
+			$error = new WP_Error( 'ag_sync_bridge_async_snapshot_contract_invalid', __( 'Queued snapshot scope is invalid.', 'ag-sync-bridge' ) );
+			$operation = $this->runtime->finalize(
+				$operation_id,
+				'error',
+				array(
+					'stage'   => 'snapshot-contract',
+					'message' => $error->get_error_message(),
+				)
+			);
+			$this->config->set_state_value( 'remote_snapshot_operation', $operation );
+			return;
+		}
+		if ( 'partial' === $scope ) {
+			$normalized_paths = $this->file_system->normalize_partial_export_paths( $paths, false );
+			if ( is_wp_error( $normalized_paths ) || empty( $normalized_paths ) || $normalized_paths !== $paths ) {
+				$error = is_wp_error( $normalized_paths )
+					? $normalized_paths
+					: new WP_Error( 'ag_sync_bridge_async_snapshot_paths_invalid', __( 'Queued partial snapshot paths are missing or not canonical.', 'ag-sync-bridge' ) );
+				$operation = $this->runtime->finalize(
+					$operation_id,
+					'error',
+					array(
+						'stage'   => 'snapshot-contract',
+						'message' => $error->get_error_message(),
+					)
+				);
+				$this->config->set_state_value( 'remote_snapshot_operation', $operation );
+				return;
+			}
 		}
 
 		$operation = array_merge( $operation, array(
@@ -473,27 +569,39 @@ class Rest_Controller {
 			'type'       => $type,
 			'status'     => 'running',
 			'stage'      => 'remote-snapshot',
+			'scope'      => $scope,
+			'paths'      => $paths,
 			'started_at' => gmdate( 'c' ),
 			'updated_at' => gmdate( 'c' ),
 		) );
 		$this->runtime->heartbeat( $operation_id, 'snapshot-start', 2 );
 		$this->config->set_state_value( 'remote_snapshot_operation', $operation );
 
-		$result = $this->sync->create_snapshot(
-			$type,
-			array(
-				'trigger'           => 'remote-api-async',
-				'cancellation_check'=> function ( $stage, $rollback_required ) use ( $operation_id ) {
-					unset( $stage, $rollback_required );
-					return $this->runtime->is_cancel_requested( $operation_id );
-				},
-				'progress_callback' => function ( $stage, $progress, array $details = array() ) use ( $operation_id ) {
-					$current  = $this->runtime->get();
-					$fallback = is_array( $current ) ? (int) array_get( $current, 'progress', 2 ) : 2;
-					$this->runtime->heartbeat( $operation_id, $stage, null === $progress ? $fallback : $progress, $details );
-				},
-			)
+		$context = array(
+			'trigger'           => 'remote-api-async',
+			'cancellation_check'=> function ( $stage, $rollback_required ) use ( $operation_id ) {
+				unset( $stage, $rollback_required );
+				return $this->runtime->is_cancel_requested( $operation_id );
+			},
+			'progress_callback' => function ( $stage, $progress, array $details = array() ) use ( $operation_id ) {
+				$current  = $this->runtime->get();
+				$fallback = is_array( $current ) ? (int) array_get( $current, 'progress', 2 ) : 2;
+				$this->runtime->heartbeat( $operation_id, $stage, null === $progress ? $fallback : $progress, $details );
+			},
 		);
+		$result = 'partial' === $scope
+			? $this->sync->create_partial_snapshot(
+				$paths,
+				$type,
+				array_merge(
+					$context,
+					array(
+						'partial_paths'       => $paths,
+						'allow_missing_paths' => true,
+					)
+				)
+			)
+			: $this->sync->create_snapshot( $type, $context );
 
 		if ( $this->runtime->is_cancel_requested( $operation_id ) ) {
 			$operation = $this->runtime->finalize( $operation_id, 'cancelled' );
@@ -806,12 +914,17 @@ class Rest_Controller {
 		$path     = normalize_path( $this->file_system->get_incoming_dir() . '/' . $snapshot );
 		$async    = (bool) $request->get_param( 'async' );
 		$allow_partial_snapshot = (bool) $request->get_param( 'allow_partial_snapshot' );
+		$expected_partial_paths = $request->get_param( 'expected_partial_paths' );
+		$expected_partial_paths = is_array( $expected_partial_paths ) ? $expected_partial_paths : array();
 
 		if ( ! file_exists( $path ) ) {
 			return new WP_Error( 'ag_sync_bridge_remote_import_missing', __( 'Uploaded snapshot file is missing.', 'ag-sync-bridge' ), array( 'status' => 404 ) );
 		}
 
 		if ( ! $allow_partial_snapshot ) {
+			if ( ! empty( $expected_partial_paths ) ) {
+				return new WP_Error( 'ag_sync_bridge_full_import_partial_paths_forbidden', __( 'A full import cannot declare expected partial paths.', 'ag-sync-bridge' ), array( 'status' => 400 ) );
+			}
 			$validation = $this->file_system->validate_full_snapshot_package( $path );
 			if ( is_wp_error( $validation ) ) {
 				return new WP_Error(
@@ -824,13 +937,51 @@ class Rest_Controller {
 				);
 			}
 		} else {
+			$expected_partial_paths = $this->file_system->normalize_partial_export_paths( $expected_partial_paths, false );
+			if ( is_wp_error( $expected_partial_paths ) ) {
+				return new WP_Error(
+					$expected_partial_paths->get_error_code(),
+					$expected_partial_paths->get_error_message(),
+					array(
+						'status' => 400,
+						'cause'  => $expected_partial_paths->get_error_data(),
+					)
+				);
+			}
+			if ( empty( $expected_partial_paths ) ) {
+				return new WP_Error( 'ag_sync_bridge_partial_import_paths_required', __( 'A partial import requires the exact expected path list.', 'ag-sync-bridge' ), array( 'status' => 400 ) );
+			}
+			$validation = $this->importer->validate_package(
+				$path,
+				$sha256,
+				array(
+					'allow_partial_package'   => true,
+					'expected_partial_paths' => $expected_partial_paths,
+				)
+			);
+			if ( is_wp_error( $validation ) ) {
+				return new WP_Error(
+					$validation->get_error_code(),
+					$validation->get_error_message(),
+					array(
+						'status'     => 400,
+						'validation' => $validation->get_error_data(),
+					)
+				);
+			}
 			$this->logger->warning(
-				'Remote import accepted with partial snapshot override.',
+				'Remote import accepted with an exact partial snapshot contract.',
 				array(
 					'snapshot' => $snapshot,
+					'paths'    => $expected_partial_paths,
 				)
 			);
 		}
+
+		$import_contract = array(
+			'allow_partial_import'   => $allow_partial_snapshot,
+			'expected_partial_paths' => $allow_partial_snapshot ? $expected_partial_paths : array(),
+		);
 
 		if ( $async ) {
 			$operation_id = function_exists( 'wp_generate_uuid4' ) ? wp_generate_uuid4() : md5( uniqid( (string) wp_rand(), true ) );
@@ -839,9 +990,11 @@ class Rest_Controller {
 				'snapshot'   => $snapshot,
 				'status'     => 'queued',
 				'stage'      => 'remote-import',
+				'scope'      => $allow_partial_snapshot ? 'partial' : 'full',
+				'paths'      => $allow_partial_snapshot ? $expected_partial_paths : array(),
 				'started_at' => gmdate( 'c' ),
 				'updated_at' => gmdate( 'c' ),
-				'schedule_args' => array( $operation_id, $path, $sha256 ),
+				'schedule_args' => array( $operation_id, $path, $sha256, $import_contract ),
 			);
 
 			$operation = $this->runtime->reserve( 'import', $operation );
@@ -851,7 +1004,7 @@ class Rest_Controller {
 			$this->config->set_state_value( 'remote_import_operation', $operation );
 			$this->logger->info( 'Remote async import queued.', $operation );
 
-			$scheduled = wp_schedule_single_event( time() + 1, Scheduler::HOOK_ASYNC_IMPORT, array( $operation_id, $path, $sha256 ) );
+			$scheduled = wp_schedule_single_event( time() + 1, Scheduler::HOOK_ASYNC_IMPORT, array( $operation_id, $path, $sha256, $import_contract ) );
 			if ( false === $scheduled ) {
 				$operation = $this->runtime->finalize(
 					$operation_id,
@@ -878,6 +1031,8 @@ class Rest_Controller {
 					'accepted'     => true,
 					'operation_id' => $operation_id,
 					'snapshot'     => $snapshot,
+					'scope'        => $allow_partial_snapshot ? 'partial' : 'full',
+					'paths'        => $allow_partial_snapshot ? $expected_partial_paths : array(),
 				),
 				202
 			);
@@ -889,6 +1044,8 @@ class Rest_Controller {
 				'expected_sha256' => $sha256,
 				'target_site_url' => site_url(),
 				'target_home_url' => home_url(),
+				'allow_partial_import'   => $allow_partial_snapshot,
+				'expected_partial_paths'=> $allow_partial_snapshot ? $expected_partial_paths : array(),
 			)
 		);
 
@@ -899,10 +1056,14 @@ class Rest_Controller {
 		return is_wp_error( $result ) ? $result : new WP_REST_Response( $result );
 	}
 
-	public function run_async_import_snapshot( $operation_id, $path, $sha256 ) {
+	public function run_async_import_snapshot( $operation_id, $path, $sha256, $import_contract = array() ) {
 		@set_time_limit( 0 );
 		@ini_set( 'memory_limit', '-1' );
 
+		$import_contract = is_array( $import_contract ) ? $import_contract : array();
+		$allow_partial_import = ! empty( $import_contract['allow_partial_import'] );
+		$expected_partial_paths = array_get( $import_contract, 'expected_partial_paths', array() );
+		$expected_partial_paths = is_array( $expected_partial_paths ) ? $expected_partial_paths : array();
 		$operation = $this->runtime->claim( $operation_id );
 		if ( is_wp_error( $operation ) ) {
 			return;
@@ -913,6 +1074,8 @@ class Rest_Controller {
 			'snapshot'   => basename( $path ),
 			'status'     => 'running',
 			'stage'      => 'remote-import',
+			'scope'      => $allow_partial_import ? 'partial' : 'full',
+			'paths'      => $allow_partial_import ? $expected_partial_paths : array(),
 			'started_at' => gmdate( 'c' ),
 			'updated_at' => gmdate( 'c' ),
 		) );
@@ -933,6 +1096,8 @@ class Rest_Controller {
 				'expected_sha256' => $sha256,
 				'target_site_url' => site_url(),
 				'target_home_url' => home_url(),
+				'allow_partial_import'   => $allow_partial_import,
+				'expected_partial_paths'=> $allow_partial_import ? $expected_partial_paths : array(),
 				'cancellation_check' => function ( $stage, $rollback_required ) use ( $operation_id ) {
 					return $this->runtime->is_cancel_requested( $operation_id );
 				},
@@ -1198,14 +1363,18 @@ class Rest_Controller {
 		}
 
 		$sha256 = hash_file( 'sha256', $path );
-		$args   = array( $operation_id, $path, $sha256 );
+		$import_contract = array(
+			'allow_partial_import'   => 'partial' === (string) array_get( $operation, 'scope', 'full' ),
+			'expected_partial_paths' => array_get( $operation, 'paths', array() ),
+		);
+		$args   = array( $operation_id, $path, $sha256, $import_contract );
 		$next   = wp_next_scheduled( Scheduler::HOOK_ASYNC_IMPORT, $args );
 		if ( $next ) {
 			wp_unschedule_event( $next, Scheduler::HOOK_ASYNC_IMPORT, $args );
 		}
 
 		$this->logger->warning( 'Running queued remote import through authenticated recovery.', array( 'operation_id' => $operation_id, 'snapshot' => $snapshot ) );
-		$this->run_async_import_snapshot( $operation_id, $path, $sha256 );
+		$this->run_async_import_snapshot( $operation_id, $path, $sha256, $import_contract );
 
 		return new WP_REST_Response(
 			array(

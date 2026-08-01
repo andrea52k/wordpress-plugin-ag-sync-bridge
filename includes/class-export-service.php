@@ -167,23 +167,16 @@ class Export_Service {
 		if ( is_wp_error( $cancelled ) ) {
 			return $cancelled;
 		}
-		$entries    = $this->file_system->get_partial_export_entries( $paths );
+		$export_data = $this->file_system->get_partial_backup_export_data( $paths );
 
-		if ( is_wp_error( $entries ) ) {
-			return $entries;
+		if ( is_wp_error( $export_data ) ) {
+			return $export_data;
 		}
 
 		$package_data   = $this->file_system->get_new_package_path( $type );
-		$partial_paths  = array_values( array_map( static function ( $entry ) {
-			return (string) array_get( $entry, 'partial_path', '' );
-		}, $entries ) );
-		$partial_entries = array_values( array_map( static function ( $entry ) {
-			return array(
-				'path'    => (string) array_get( $entry, 'partial_path', '' ),
-				'type'    => (string) array_get( $entry, 'partial_type', array_get( $entry, 'type', '' ) ),
-				'archive' => (string) array_get( $entry, 'archive', '' ),
-			);
-		}, $entries ) );
+		$partial_paths   = array_get( $export_data, 'paths', array() );
+		$entries         = array_get( $export_data, 'entries', array() );
+		$partial_entries = array_get( $export_data, 'partial_entries', array() );
 
 		$manifest = array(
 			'id'                  => wp_generate_uuid4(),

@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.1.45
+
+- Aggiunge il protocollo candidato V4MPG table-scoped `wp agsync v4mpg`: piano, backup paginato conservato e verificato sul peer locale, deploy delta content-only, verifica e rollback stale-safe. Il live accetta soltanto target presenti nella allowlist esplicita, corpi HMAC nonce-bound e release checksum-bound; gli ID versione vengono sempre creati sul server.
+- Aggiunge il backup full live download-only: il pacchetto viene validato e conservato fuori dalla web root sul peer locale, quindi lo ZIP temporaneo remoto e il relativo sidecar vengono eliminati anche sui percorsi di errore tramite una richiesta firmata vincolata a operation ID, basename, SHA, manifest ID e manifest SHA. Un cleanup non verificato lascia un journal locale associato all'host; ogni deploy successivo scandisce la backup root e resta bloccato finche il journal non viene riconciliato.
+- Il deploy V4MPG richiede la barriera cache esclusiva `di_cache_epoch_barrier_begin/bump/end`; se manca o fallisce, ogni mutazione resta bloccata. La barriera viene acquisita solo dopo la verifica dello staging e copre pre-purge, switch atomico, COMMIT, post-purge e verifica. Journal pre-commit e control-plane condiviso rendono visibili le finestre di crash senza introdurre un secondo lock file orfanabile.
+- Il CLI esegue il preflight completo degli argomenti, del backup semantico e del percorso ricevuta prima della richiesta mutante; persiste inoltre un journal pending durevole per recuperare un esito remoto se la scrittura finale fallisce. Le sessioni di backup paginato non sigillate possono essere abortite con una richiesta firmata.
+- Aggiunge `v4mpg status/recover` per gli esiti ambigui prima/dopo COMMIT: il recovery richiede operation ID, SHA esatto del journal e scelta esplicita, ma accetta la scelta solo dopo aver ricalcolato puntatori e digest completi di ogni dataset. Stati misti restano in quarantena.
+- Il doctor filesystem usa un probe runtime-like `.json` e riporta la fase esatta (`open`, `flock`, `write`, `flush`, `verify`, `cleanup`) con l'errore di sistema, senza mascherare quota o cleanup falliti.
+
+## 0.1.44
+
+- Aggiunto `wp agsync pull --paths=...` con `pull_plan --paths`: snapshot
+  live e backup locale sono file-only e limitati alla stessa allowlist del push
+  parziale.
+- Creazione snapshot e import partial firmano il body JSON con nonce e HMAC,
+  senza downgrade legacy sulle route protette.
+- Il pull parziale verifica in modo fail-closed versione peer, scope, path,
+  manifest e SHA-256; database e replace URL globale restano esclusi.
+- Il backup locale partial è verificato prima del download e conserva tombstone;
+  il restore importa esplicitamente backup partial con gli stessi path.
+- Il doctor mostra la validazione partial e indica che quella full non è
+  applicabile, evitando falsi allarmi.
+
 ## 0.1.43
 
 - I push parziali espliciti non eseguono piu gli aggiornamenti automatici

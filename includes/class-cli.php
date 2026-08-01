@@ -189,11 +189,19 @@ if ( defined( 'WP_CLI' ) && WP_CLI ) {
 		 *
 		 * [--use-existing-snapshot]
 		 * : Reuse the latest live snapshot instead of creating a fresh one.
+		 *
+		 * [--paths=<paths>]
+		 * : Comma/newline separated relative paths for a fresh file-only partial pull. Cannot be combined with --use-existing-snapshot.
 		 */
 		public function pull( $args, $assoc_args ) {
+			$paths = self::parse_path_list_arg( array_get( $assoc_args, 'paths', '' ) );
+			if ( ! empty( $paths ) ) {
+				\WP_CLI::log( 'Partial pull paths: ' . implode( ', ', $paths ) );
+			}
 			$result = self::$sync->pull_from_remote(
 				array(
 					'use_existing_snapshot' => ! empty( $assoc_args['use-existing-snapshot'] ),
+					'partial_paths'         => $paths,
 				)
 			);
 
@@ -202,6 +210,34 @@ if ( defined( 'WP_CLI' ) && WP_CLI ) {
 			}
 
 			\WP_CLI::success( 'Pull completed.' );
+		}
+
+		/**
+		 * Shows the non-mutating plan for a full or explicit partial pull.
+		 *
+		 * ## OPTIONS
+		 *
+		 * [--paths=<paths>]
+		 * : Comma/newline separated paths. Without it the plan remains full.
+		 *
+		 * [--format=<format>]
+		 * : Use json for a machine-readable, non-mutating plan.
+		 */
+		public function pull_plan( $args, $assoc_args ) {
+			unset( $args );
+			$paths = self::parse_path_list_arg( array_get( $assoc_args, 'paths', '' ) );
+			$plan  = self::$sync->plan_pull( $paths );
+			if ( is_wp_error( $plan ) ) {
+				\WP_CLI::error( $plan->get_error_message() );
+			}
+
+			if ( 'json' === strtolower( (string) array_get( $assoc_args, 'format', '' ) ) ) {
+				\WP_CLI::line( wp_json_encode( $plan, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE ) );
+				return;
+			}
+
+			\WP_CLI::log( wp_json_encode( $plan, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE ) );
+			\WP_CLI::success( 'Pull plan generated without changes.' );
 		}
 
 		/**
@@ -601,10 +637,22 @@ if ( defined( 'WP_CLI' ) && WP_CLI ) {
 
 			$latest_snapshot = array_get( $result, 'latest_snapshot', array() );
 			if ( is_array( $latest_snapshot ) && ! empty( $latest_snapshot ) ) {
-				$validation = array_get( $latest_snapshot, 'full_snapshot_validation', array() );
-				\WP_CLI::log( 'Latest snapshot scope: ' . array_get( $latest_snapshot, 'snapshot_scope', 'unknown' ) );
-				if ( is_array( $validation ) && ! empty( $validation ) ) {
-					\WP_CLI::log( 'Latest snapshot full validation: ' . ( ! empty( $validation['ok'] ) ? 'ok' : 'failed' ) );
+				$scope = array_get( $latest_snapshot, 'snapshot_scope', 'unknown' );
+				\WP_CLI::log( 'Latest snapshot scope: ' . $scope );
+				if ( 'partial' === $scope ) {
+					$validation = array_get( $latest_snapshot, 'partial_snapshot_validation', array() );
+					\WP_CLI::log( 'Latest snapshot full validation: not applicable' );
+					if ( is_array( $validation ) && ! empty( $validation ) ) {
+						\WP_CLI::log( 'Latest snapshot partial validation: ' . ( ! empty( $validation['ok'] ) ? 'ok' : 'failed' ) );
+						\WP_CLI::log( '    partial paths: ' . implode( ', ', array_get( $validation, 'partial_paths', array() ) ) );
+					}
+				} else {
+					$validation = array_get( $latest_snapshot, 'full_snapshot_validation', array() );
+					if ( is_array( $validation ) && ! empty( $validation ) ) {
+						\WP_CLI::log( 'Latest snapshot full validation: ' . ( ! empty( $validation['ok'] ) ? 'ok' : 'failed' ) );
+					}
+				}
+				if ( isset( $validation ) && is_array( $validation ) && ! empty( $validation ) ) {
 					$errors = array_get( $validation, 'errors', array() );
 					if ( is_array( $errors ) && ! empty( $errors ) ) {
 						\WP_CLI::log( '    validation errors: ' . implode( ', ', $errors ) );

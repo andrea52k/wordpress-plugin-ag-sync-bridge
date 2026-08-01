@@ -115,7 +115,7 @@ namespace AGSyncBridge {
 
 	$client_source = file_get_contents( dirname( __DIR__ ) . '/includes/class-http-client.php' );
 	expect_signed_backup( false !== strpos( $client_source, "'X-AGSB-Body-SHA256'" ), 'HTTP client must transmit the body hash header.' );
-	expect_signed_backup( false !== strpos( $client_source, "'/ag-sync-bridge/v1/backup/create' !== \$route" ), 'Backup creation must not silently downgrade to a legacy unsigned signature.' );
+	expect_signed_backup( false !== strpos( $client_source, 'requires_signed_body_route( $route )' ), 'Protected body routes must not silently downgrade to a legacy unsigned signature.' );
 
 	echo "signed backup request: ok\n";
 }

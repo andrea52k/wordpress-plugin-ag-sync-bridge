@@ -1,0 +1,18 @@
+<?php
+declare(strict_types=1);
+namespace { define('ABSPATH',__DIR__.'/');define('ARRAY_A','ARRAY_A');function __($v){return $v;}function normalize_path($p){return str_replace('\\','/',$p);}function trailingslashit($p){return rtrim($p,'/\\').'/';}function sanitize_file_name($v){return basename((string)$v);}function sanitize_key($v){return preg_replace('/[^a-z0-9_-]/','',strtolower((string)$v));}function wp_generate_password(){return 'probe123';}function ensure_directory($p){return is_dir($p)||mkdir($p,0777,true);}function array_get($a,$k,$d=null){return is_array($a)&&array_key_exists($k,$a)?$a[$k]:$d;}function wp_json_encode($v,$flags=0){return json_encode($v,$flags|JSON_THROW_ON_ERROR);}function format_bytes($v){return (string)$v;}function wp_parse_url($u,$c=-1){return parse_url($u,$c);}function untrailingslashit($v){return rtrim($v,'/');}}
+namespace AGSyncBridge {
+	class Config{private $root;public function __construct($r){$this->root=$r;}public function get_data_dir($kind){return $this->root.'/'.$kind;}public function get_storage_dir(){return $this->root;}}
+	class Logger{}
+	require_once dirname(__DIR__).'/includes/class-v4mpg-table-deploy-service.php';
+	require_once dirname(__DIR__).'/includes/class-file-system-service.php';
+	function expect_backup($c,$m){if(!$c){throw new \RuntimeException($m);}}
+	$root=sys_get_temp_dir().'/agsb-backup-test-'.bin2hex(random_bytes(4));mkdir($root.'/snapshots',0777,true);$service=new File_System_Service(new Config($root),new Logger());
+	$probe=(new \ReflectionClass($service))->getMethod('diagnose_directory');$probe->setAccessible(true);$probe_result=$probe->invoke($service,'snapshots',$root.'/snapshots',0);expect_backup(true===$probe_result['ok']&&true===$probe_result['write_test']&&'complete'===$probe_result['write_test_detail']['stage'],'Doctor probe did not complete create/lock/write/flush/verify/cleanup.');expect_backup(empty(glob($root.'/snapshots/.agsb-probe-*')),'Doctor probe left a temporary file.');
+	$zip_path=$root.'/snapshots/fresh-full.zip';$manifest=array('id'=>'manifest-1','snapshot_scope'=>'full','source_role'=>'remote');$zip=new \ZipArchive();expect_backup(true===$zip->open($zip_path,\ZipArchive::CREATE),'Unable to create fixture ZIP.');$zip->addFromString('manifest.json',json_encode($manifest));$zip->close();file_put_contents($root.'/snapshots/fresh-full.meta.json','{}');$sha=hash_file('sha256',$zip_path);$manifest_sha=V4MPG_Table_Deploy_Service::sha256($manifest);
+	expect_backup(0===strpos(realpath($zip_path),realpath($root.'/snapshots')),'Fixture path escaped root.');
+	try{$service->delete_exact_snapshot('fresh-full.zip',$sha,'wrong-manifest',$manifest_sha);throw new \RuntimeException('Manifest identity mismatch was accepted.');}catch(\Throwable $error){expect_backup(is_file($zip_path)&&is_file($root.'/snapshots/fresh-full.meta.json'),'Manifest identity mismatch deleted the snapshot or sidecar.');}
+	try{$service->delete_exact_snapshot('fresh-full.zip',str_repeat('0',64),'manifest-1',$manifest_sha);throw new \RuntimeException('Checksum mismatch was accepted.');}catch(\Throwable $error){expect_backup(is_file($zip_path),'Mismatch deleted the snapshot.');}
+	$deleted=$service->delete_exact_snapshot('fresh-full.zip',$sha,'manifest-1',$manifest_sha);expect_backup(false===$deleted['exists_after']&&!is_file($zip_path)&&!is_file($root.'/snapshots/fresh-full.meta.json'),'Exact snapshot cleanup did not remove ZIP and sidecar.');
+	rmdir($root.'/snapshots');rmdir($root);echo "full local backup cleanup and doctor probe: ok\n";
+}
