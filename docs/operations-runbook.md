@@ -493,3 +493,17 @@ C:\xampp\php\php.exe C:\xampp\wp-cli.phar cache flush --path=C:\xampp\htdocs\<si
 ```
 
 Then verify `agsync status`.
+
+## Partial pull (0.1.44+)
+
+```powershell
+wp agsync pull_plan --paths=.htaccess,wp-content/mu-plugins/example.php --format=json
+wp agsync pull --paths=.htaccess,wp-content/mu-plugins/example.php
+```
+
+Both peers must run `0.1.44` or newer. The live creates a fresh file-only
+snapshot and the local first creates a verified partial backup with tombstones.
+Scope, normalized paths, manifest and SHA-256 must match exactly.
+`--use-existing-snapshot` is rejected; database import and global URL
+replacement do not run. The returned local backup remains usable by the normal
+restore workflow.

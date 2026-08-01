@@ -58,8 +58,9 @@ class Auth {
 			return new WP_Error( 'ag_sync_bridge_expired_request', __( 'Request timestamp is outside the allowed window.', 'ag-sync-bridge' ), array( 'status' => 403 ) );
 		}
 
-		if ( '/ag-sync-bridge/v1/backup/create' === $route && ( '' === $body_hash || '' === $nonce ) ) {
-			return new WP_Error( 'ag_sync_bridge_body_signature_required', __( 'Backup requests must include a signed body hash.', 'ag-sync-bridge' ), array( 'status' => 403 ) );
+		$requires_body_signature = $this->requires_body_signature( $route );
+		if ( $requires_body_signature && ( '' === $body_hash || '' === $nonce ) ) {
+			return new WP_Error( 'ag_sync_bridge_body_signature_required', __( 'This operation requires a nonce signature bound to the exact JSON body.', 'ag-sync-bridge' ), array( 'status' => 403 ) );
 		}
 
 		if ( '' !== $body_hash ) {
@@ -75,7 +76,7 @@ class Auth {
 
 		if ( $expected && hash_equals( $expected, $signature ) ) {
 			$signature_mode = 'nonce';
-		} elseif ( hash_equals( $legacy, $signature ) ) {
+		} elseif ( ! $requires_body_signature && hash_equals( $legacy, $signature ) ) {
 			$signature_mode = 'legacy';
 			$nonce          = '';
 		} else {
@@ -100,6 +101,29 @@ class Auth {
 			)
 		);
 		return true;
+	}
+
+	private function requires_body_signature( $route ) {
+		return in_array(
+			(string) $route,
+			array(
+				'/ag-sync-bridge/v1/backup/create',
+				'/ag-sync-bridge/v1/snapshot/create',
+				'/ag-sync-bridge/v1/snapshot/import',
+				'/ag-sync-bridge/v1/snapshot/delete-exact',
+				'/ag-sync-bridge/v1/v4mpg-table/plan',
+				'/ag-sync-bridge/v1/v4mpg-table/backup',
+				'/ag-sync-bridge/v1/v4mpg-table/backup-page',
+				'/ag-sync-bridge/v1/v4mpg-table/backup-seal',
+				'/ag-sync-bridge/v1/v4mpg-table/backup-abort',
+				'/ag-sync-bridge/v1/v4mpg-table/deploy',
+				'/ag-sync-bridge/v1/v4mpg-table/verify',
+				'/ag-sync-bridge/v1/v4mpg-table/rollback',
+				'/ag-sync-bridge/v1/v4mpg-table/status',
+				'/ag-sync-bridge/v1/v4mpg-table/recover',
+			),
+			true
+		);
 	}
 
 	private function sign( $method, $route, $timestamp, $nonce = '', $body_hash = '' ) {

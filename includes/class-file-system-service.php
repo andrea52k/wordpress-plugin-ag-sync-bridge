@@ -127,7 +127,17 @@ class File_System_Service {
 			$latest_snapshot = empty( $latest_snapshot ) ? array() : $latest_snapshot[0];
 
 			if ( ! empty( $latest_snapshot ) ) {
-				$latest_snapshot['full_snapshot_validation'] = $this->validate_full_snapshot_manifest( array_get( $latest_snapshot, 'manifest', array() ) );
+				$manifest = array_get( $latest_snapshot, 'manifest', array() );
+				$scope    = $this->get_snapshot_scope_from_manifest( is_array( $manifest ) ? $manifest : array() );
+				if ( 'partial' === $scope ) {
+					$latest_snapshot['partial_snapshot_validation']      = $this->validate_partial_snapshot_manifest( $manifest );
+					$latest_snapshot['full_validation_applicable']       = false;
+					unset( $latest_snapshot['full_snapshot_validation'] );
+				} else {
+					$latest_snapshot['full_snapshot_validation']         = $this->validate_full_snapshot_manifest( $manifest );
+					$latest_snapshot['full_validation_applicable']       = true;
+					unset( $latest_snapshot['partial_snapshot_validation'] );
+				}
 			}
 
 			$sitemap_integrity = $this->get_root_sitemap_integrity( ABSPATH );
@@ -187,6 +197,37 @@ class File_System_Service {
 		}
 
 		return '';
+	}
+
+	public function get_exact_snapshot_metadata( $basename, $include_hash = true ) {
+		$path = $this->find_package( $basename, 'snapshots' );
+		return $path ? $this->build_package_metadata( $path, $include_hash ) : array();
+	}
+
+	/** Delete only one checksum- and manifest-bound snapshot plus its sidecar. */
+	public function delete_exact_snapshot( $basename, $sha256, $manifest_id, $manifest_sha256 ) {
+		$basename = (string) $basename;
+		if ( $basename !== basename( $basename ) || sanitize_file_name( $basename ) !== $basename || '.zip' !== strtolower( substr( $basename, -4 ) ) ) {
+			throw new \RuntimeException( 'Exact snapshot basename is invalid.' );
+		}
+		$path = $this->find_package( $basename, 'snapshots' );
+		$root = realpath( $this->get_snapshot_dir() );
+		$real = $path ? realpath( $path ) : false;
+		if ( false === $root || false === $real || 0 !== strpos( normalize_path( $real ), trailingslashit( normalize_path( $root ) ) ) ) {
+			throw new \RuntimeException( 'Exact snapshot is missing or outside snapshot storage.' );
+		}
+		$metadata = $this->build_package_metadata( $real, true );
+		$manifest            = array_get( $metadata, 'manifest', array() );
+		$actual_manifest_id  = (string) array_get( $manifest, 'id', '' );
+		$actual_manifest_sha = V4MPG_Table_Deploy_Service::sha256( $manifest );
+		if ( '' === (string) $manifest_id || ! hash_equals( (string) $manifest_id, $actual_manifest_id ) || ! preg_match( '/^[a-f0-9]{64}$/', strtolower( (string) $sha256 ) ) || ! hash_equals( strtolower( (string) $sha256 ), (string) array_get( $metadata, 'sha256', '' ) ) || ! hash_equals( strtolower( (string) $manifest_sha256 ), $actual_manifest_sha ) ) {
+			throw new \RuntimeException( 'Exact snapshot delete proof mismatch.' );
+		}
+		$meta = $this->get_meta_path_for_package( $real );
+		if ( ! unlink( $real ) ) { throw new \RuntimeException( 'Unable to delete exact remote snapshot.' ); }
+		if ( is_file( $meta ) && ! unlink( $meta ) ) { throw new \RuntimeException( 'Snapshot ZIP was deleted but its exact sidecar remains.' ); }
+		if ( is_file( $real ) || is_file( $meta ) ) { throw new \RuntimeException( 'Exact remote snapshot cleanup verification failed.' ); }
+		return array( 'basename'=>$basename, 'sha256'=>strtolower((string)$sha256), 'manifest_id'=>$actual_manifest_id, 'manifest_sha256'=>$actual_manifest_sha, 'exists_after'=>false, 'sidecar_exists_after'=>false );
 	}
 
 	public function list_packages( $type = 'snapshots', $limit = 10, $include_hash = false ) {
@@ -481,6 +522,7 @@ class File_System_Service {
 		$is_dir         = is_dir( $path );
 		$writable       = $is_dir && is_writable( $path );
 		$write_test     = false;
+		$write_test_detail = array( 'stage'=>'not-run', 'system_error'=>'' );
 		$free_bytes     = $this->safe_disk_free_space( $path );
 		$total_bytes    = $this->safe_disk_total_space( $path );
 		$required_bytes = max( 0, (int) $required_bytes );
@@ -500,17 +542,18 @@ class File_System_Service {
 		}
 
 		if ( $is_dir && $writable ) {
-			$test_path = normalize_path( $path . '/agsb-write-test-' . wp_generate_password( 8, false, false ) . '.tmp' );
-			$written   = @file_put_contents( $test_path, 'ok', LOCK_EX );
-			$write_test = false !== $written && file_exists( $test_path );
-
-			if ( file_exists( $test_path ) ) {
-				@unlink( $test_path );
+			$test_path = normalize_path( $path . '/.agsb-probe-' . wp_generate_password( 8, false, false ) . '.json' );
+			error_clear_last();$handle=@fopen($test_path,'x+b');
+			if(false===$handle){$write_test_detail=array('stage'=>'open','system_error'=>(string)array_get(error_get_last(),'message',''));}
+			else{
+				$payload='{"agsb_probe":true}';$locked=@flock($handle,LOCK_EX);if(!$locked){$write_test_detail=array('stage'=>'flock','system_error'=>(string)array_get(error_get_last(),'message',''));}
+				elseif(strlen($payload)!==@fwrite($handle,$payload)){$write_test_detail=array('stage'=>'write','system_error'=>(string)array_get(error_get_last(),'message',''));}
+				elseif(!@fflush($handle)||(function_exists('fsync')&&!@fsync($handle))){$write_test_detail=array('stage'=>'flush','system_error'=>(string)array_get(error_get_last(),'message',''));}
+				else{$write_test_detail=array('stage'=>'verify','system_error'=>'');}
+				@flock($handle,LOCK_UN);fclose($handle);
+				if('verify'===$write_test_detail['stage']){$contents=@file_get_contents($test_path);if($contents!==$payload){$write_test_detail=array('stage'=>'verify','system_error'=>(string)array_get(error_get_last(),'message',''));}elseif(!unlink($test_path)||file_exists($test_path)){$write_test_detail=array('stage'=>'cleanup','system_error'=>(string)array_get(error_get_last(),'message',''));}else{$write_test=true;$write_test_detail=array('stage'=>'complete','system_error'=>'');}}
 			}
-
-			if ( ! $write_test ) {
-				$errors[] = 'write_test_failed';
-			}
+			if(!$write_test){$errors[]='write_test_failed';if(file_exists($test_path)&&(!@unlink($test_path)||file_exists($test_path))){$errors[]='write_test_cleanup_failed';$write_test_detail['stage']='cleanup';$write_test_detail['system_error']=(string)array_get(error_get_last(),'message',$write_test_detail['system_error']);}}
 		}
 
 		if ( null !== $free_bytes && $required_bytes > 0 && $free_bytes < $required_bytes ) {
@@ -525,6 +568,7 @@ class File_System_Service {
 			'is_dir'              => $is_dir,
 			'writable'            => $writable,
 			'write_test'          => $write_test,
+			'write_test_detail'   => $write_test_detail,
 			'free_bytes'          => $free_bytes,
 			'free_human'          => null === $free_bytes ? '' : format_bytes( $free_bytes ),
 			'total_bytes'         => $total_bytes,
@@ -761,6 +805,74 @@ class File_System_Service {
 		return $collapsed;
 	}
 
+	/**
+	 * Verify that a partial path stays on the real WordPress filesystem tree.
+	 *
+	 * ABSPATH itself may be a link, but no selected component below that trusted
+	 * root may be a symlink, junction or other alias to a different real path.
+	 * Missing leaves are allowed for tombstone/restore contracts; their nearest
+	 * existing parent is still checked.
+	 *
+	 * @param string $relative Relative path below ABSPATH.
+	 * @param bool   $require_existing Whether the selected leaf must exist.
+	 * @return true|\WP_Error
+	 */
+	public function validate_partial_target_path( $relative, $require_existing = false ) {
+		$relative_input = trim( str_replace( '\\', '/', (string) $relative ) );
+		$relative       = trim( $relative_input, '/' );
+
+		if ( '' === $relative || $relative !== $relative_input || preg_replace( '#/+#', '/', $relative ) !== $relative || false !== strpos( $relative, "\0" ) || preg_match( '#^[a-zA-Z]:/#', $relative ) || preg_match( '#(^|/)\.{1,2}(/|$)#', $relative ) ) {
+			return new \WP_Error( 'ag_sync_bridge_partial_path_unsafe', __( 'Partial path is not a safe relative filesystem path.', 'ag-sync-bridge' ) );
+		}
+
+		$root_path = rtrim( normalize_path( ABSPATH ), '/' );
+		$root_real = realpath( $root_path );
+		if ( false === $root_real || ! is_dir( $root_real ) ) {
+			return new \WP_Error( 'ag_sync_bridge_partial_root_unresolved', __( 'Unable to resolve the real WordPress root for a partial operation.', 'ag-sync-bridge' ) );
+		}
+
+		$root_real     = rtrim( normalize_path( $root_real ), '/' );
+		$current_path  = $root_path;
+		$expected_real = $root_real;
+		$parts         = explode( '/', $relative );
+
+		foreach ( $parts as $part ) {
+			$current_path .= '/' . $part;
+			$expected_real .= '/' . $part;
+			$exists = file_exists( $current_path ) || is_link( $current_path );
+
+			if ( ! $exists ) {
+				break;
+			}
+
+			$resolved = realpath( $current_path );
+			if ( is_link( $current_path ) || false === $resolved || ! $this->paths_are_equal( $resolved, $expected_real ) || ! $this->resolved_path_is_within_root( $resolved, $root_real ) ) {
+				return new \WP_Error(
+					'ag_sync_bridge_partial_path_link_forbidden',
+					__( 'Partial operations cannot traverse a symlink, junction or filesystem alias.', 'ag-sync-bridge' ),
+					array(
+						'path'      => $relative,
+						'component' => ltrim( str_replace( $root_path, '', normalize_path( $current_path ) ), '/' ),
+					)
+				);
+			}
+		}
+
+		$absolute = normalize_path( $root_path . '/' . $relative );
+		if ( $require_existing && ! file_exists( $absolute ) && ! is_link( $absolute ) ) {
+			return new \WP_Error(
+				'ag_sync_bridge_partial_path_missing',
+				sprintf(
+					/* translators: %s: requested path */
+					__( 'Partial path does not exist locally: %s', 'ag-sync-bridge' ),
+					$relative
+				)
+			);
+		}
+
+		return true;
+	}
+
 	public function get_partial_backup_export_data( array $paths ) {
 		$relative_paths = $this->normalize_partial_export_paths( $paths, false );
 		if ( is_wp_error( $relative_paths ) ) {
@@ -949,6 +1061,115 @@ class File_System_Service {
 		);
 	}
 
+	/**
+	 * Validate the canonical contract for an intentional file-only snapshot.
+	 *
+	 * The manifest paths and entries must be canonical, ordered and identical to
+	 * the caller's expected paths when an expectation is supplied. A partial
+	 * package must never declare a database payload.
+	 *
+	 * @param array $manifest Snapshot manifest.
+	 * @param array $expected_paths Optional canonical path contract.
+	 * @return array
+	 */
+	public function validate_partial_snapshot_manifest( array $manifest, array $expected_paths = array() ) {
+		$errors          = array();
+		$scope           = $this->get_snapshot_scope_from_manifest( $manifest );
+		$declared_paths  = array_get( $manifest, 'partial_paths', array() );
+		$declared_paths  = is_array( $declared_paths ) ? array_values( $declared_paths ) : array();
+		$normalized      = $this->normalize_partial_export_paths( $declared_paths, false );
+		$expected        = $this->normalize_partial_export_paths( $expected_paths, false );
+		$entries         = array_get( $manifest, 'partial_entries', array() );
+		$entries         = is_array( $entries ) ? array_values( $entries ) : array();
+		$validated_paths = array();
+		$database        = array_get( $manifest, 'database', array() );
+		$database        = is_array( $database ) ? $database : array();
+		$database_included = ! empty( $database['filename'] ) || ! empty( $database['included'] );
+
+		if ( 'partial' !== $scope ) {
+			$errors[] = 'snapshot_scope_not_partial';
+		}
+
+		if ( is_wp_error( $normalized ) ) {
+			$errors[]  = 'partial_paths_invalid:' . $normalized->get_error_code();
+			$normalized = array();
+		} elseif ( empty( $normalized ) ) {
+			$errors[] = 'partial_paths_missing';
+		} elseif ( $declared_paths !== $normalized ) {
+			$errors[] = 'partial_paths_not_canonical';
+		}
+
+		if ( is_wp_error( $expected ) ) {
+			$errors[] = 'expected_partial_paths_invalid:' . $expected->get_error_code();
+			$expected = array();
+		} elseif ( ! empty( $expected_paths ) && $expected_paths !== $expected ) {
+			$errors[] = 'expected_partial_paths_not_canonical';
+		}
+
+		if ( ! empty( $expected ) && $normalized !== $expected ) {
+			$errors[] = 'partial_paths_mismatch';
+		}
+
+		if ( $database_included ) {
+			$errors[] = 'partial_database_declared';
+		}
+
+		if ( empty( $entries ) ) {
+			$errors[] = 'partial_entries_missing';
+		}
+
+		foreach ( $entries as $entry ) {
+			if ( ! is_array( $entry ) ) {
+				$errors[] = 'partial_entry_invalid';
+				continue;
+			}
+
+			$entry_path = array_get( $entry, 'path', '' );
+			$entry_paths = $this->normalize_partial_export_paths( array( $entry_path ), false );
+			if ( is_wp_error( $entry_paths ) || 1 !== count( $entry_paths ) || (string) $entry_path !== $entry_paths[0] ) {
+				$errors[] = 'partial_entry_path_invalid';
+				continue;
+			}
+
+			$entry_path = $entry_paths[0];
+			if ( in_array( $entry_path, $validated_paths, true ) ) {
+				$errors[] = 'partial_entry_duplicate:' . $entry_path;
+				continue;
+			}
+
+			$type   = (string) array_get( $entry, 'type', '' );
+			$exists = array_key_exists( 'exists', $entry ) ? (bool) $entry['exists'] : 'missing' !== $type;
+			$archive = (string) array_get( $entry, 'archive', '' );
+
+			if ( ! in_array( $type, array( 'file', 'directory', 'missing' ), true ) ) {
+				$errors[] = 'partial_entry_type_invalid:' . $entry_path;
+			}
+			if ( ( 'missing' === $type ) !== ( ! $exists ) ) {
+				$errors[] = 'partial_entry_tombstone_invalid:' . $entry_path;
+			}
+			if ( $archive !== $this->get_partial_archive_path( $entry_path ) ) {
+				$errors[] = 'partial_entry_archive_mismatch:' . $entry_path;
+			}
+
+			$validated_paths[] = $entry_path;
+		}
+
+		if ( $validated_paths !== $normalized ) {
+			$errors[] = 'partial_entries_paths_mismatch';
+		}
+
+		return array(
+			'ok'                     => empty( $errors ),
+			'snapshot_scope'         => $scope ?: 'unknown',
+			'errors'                 => array_values( array_unique( $errors ) ),
+			'partial_paths'          => $normalized,
+			'expected_partial_paths' => $expected,
+			'entry_count'            => count( $entries ),
+			'database_included'      => $database_included,
+			'full_validation_applicable' => false,
+		);
+	}
+
 	public function get_snapshot_scope_from_manifest( array $manifest ) {
 		$scope = (string) array_get( $manifest, 'snapshot_scope', '' );
 		if ( '' === $scope ) {
@@ -995,13 +1216,20 @@ class File_System_Service {
 		return false;
 	}
 
-	public function replace_directory( $source_dir, $target_dir, array $preserve_root_items = array(), $progress_callback = null ) {
+	public function replace_directory( $source_dir, $target_dir, array $preserve_root_items = array(), $progress_callback = null, $protect_partial_exclusions = false ) {
 		if ( ! file_exists( $source_dir ) ) {
 			return true;
 		}
 
 		$source_dir = normalize_path( $source_dir );
 		$target_dir = normalize_path( $target_dir );
+
+		if ( $protect_partial_exclusions ) {
+			$validation = $this->validate_partial_directory_replacement( $source_dir, $target_dir );
+			if ( is_wp_error( $validation ) ) {
+				return $validation;
+			}
+		}
 
 		if ( ! ensure_directory( $target_dir ) ) {
 			return new \WP_Error( 'ag_sync_bridge_target_dir_failed', __( 'Unable to prepare target directory.', 'ag-sync-bridge' ) );
@@ -1019,6 +1247,56 @@ class File_System_Service {
 		}
 
 		return $this->copy_directory_contents( $source_dir, $target_dir, $preserve_root_items, $progress_callback );
+	}
+
+	/**
+	 * Fail before a partial directory replacement could erase or overwrite an
+	 * excluded/protected descendant.
+	 *
+	 * @param string $source_dir Extracted partial directory.
+	 * @param string $target_dir WordPress destination directory.
+	 * @return true|\WP_Error
+	 */
+	public function validate_partial_directory_replacement( $source_dir, $target_dir ) {
+		$source_dir = rtrim( normalize_path( $source_dir ), '/' );
+		$target_dir = rtrim( normalize_path( $target_dir ), '/' );
+		$root       = rtrim( normalize_path( ABSPATH ), '/' );
+
+		if ( ! $this->normalized_path_is_within_root( $target_dir, $root ) ) {
+			return new \WP_Error( 'ag_sync_bridge_partial_directory_outside_root', __( 'Partial directory target is outside the WordPress root.', 'ag-sync-bridge' ) );
+		}
+
+		$relative = ltrim( substr( $target_dir, strlen( $root ) ), '/' );
+		$safe     = $this->validate_partial_target_path( $relative, false );
+		if ( is_wp_error( $safe ) ) {
+			return $safe;
+		}
+
+		if ( is_link( $source_dir ) || ! is_dir( $source_dir ) ) {
+			return new \WP_Error( 'ag_sync_bridge_partial_directory_source_invalid', __( 'Partial directory source is missing, linked or not a directory.', 'ag-sync-bridge' ) );
+		}
+
+		if ( ( file_exists( $target_dir ) || is_link( $target_dir ) ) && ! is_dir( $target_dir ) ) {
+			return new \WP_Error( 'ag_sync_bridge_partial_directory_target_invalid', __( 'Partial directory target exists but is not a directory.', 'ag-sync-bridge' ) );
+		}
+
+		if ( $this->is_protected_partial_absolute_path( $target_dir ) || $this->should_exclude( $target_dir ) ) {
+			return $this->partial_directory_exclusion_error( $relative );
+		}
+
+		$source_validation = $this->validate_partial_directory_tree( $source_dir, $target_dir, 'source' );
+		if ( is_wp_error( $source_validation ) ) {
+			return $source_validation;
+		}
+
+		if ( is_dir( $target_dir ) ) {
+			$target_validation = $this->validate_partial_directory_tree( $target_dir, $target_dir, 'target' );
+			if ( is_wp_error( $target_validation ) ) {
+				return $target_validation;
+			}
+		}
+
+		return true;
 	}
 
 	public function copy_directory_contents( $source_dir, $target_dir, array $preserve_root_items = array(), $progress_callback = null ) {
@@ -1172,7 +1450,14 @@ class File_System_Service {
 		return $summary;
 	}
 
-	private function replace_urls_in_dataset_file( $path, array $replacements ) {
+	public function replace_urls_in_dataset_file( $path, array $replacements ) {
+		if ( empty( $replacements ) ) {
+			return array(
+				'updated'         => false,
+				'entries_updated' => 0,
+			);
+		}
+
 		$extension = strtolower( (string) pathinfo( $path, PATHINFO_EXTENSION ) );
 
 		if ( 'xlsx' === $extension ) {
@@ -1489,7 +1774,7 @@ class File_System_Service {
 			return '';
 		}
 
-		if ( false !== strpos( $relative, "\0" ) || preg_match( '#^[a-zA-Z]:/#', $relative ) || preg_match( '#(^|/)\.\.(/|$)#', $relative ) ) {
+		if ( false !== strpos( $relative, "\0" ) || preg_match( '#^[a-zA-Z]:/#', $relative ) || preg_match( '#(^|/)\.{1,2}(/|$)#', $relative ) ) {
 			return new \WP_Error(
 				'ag_sync_bridge_partial_path_unsafe',
 				sprintf(
@@ -1542,15 +1827,9 @@ class File_System_Service {
 			return new \WP_Error( 'ag_sync_bridge_partial_path_outside_root', __( 'Partial push path resolves outside the WordPress root.', 'ag-sync-bridge' ) );
 		}
 
-		if ( $require_existing && ! file_exists( $absolute ) && ! is_link( $absolute ) ) {
-			return new \WP_Error(
-				'ag_sync_bridge_partial_path_missing',
-				sprintf(
-					/* translators: %s: requested path */
-					__( 'Partial push path does not exist locally: %s', 'ag-sync-bridge' ),
-					$relative
-				)
-			);
+		$containment = $this->validate_partial_target_path( $relative, $require_existing );
+		if ( is_wp_error( $containment ) ) {
+			return $containment;
 		}
 
 		if ( ( file_exists( $absolute ) || is_link( $absolute ) ) && $this->should_exclude( $absolute ) ) {
@@ -1565,6 +1844,115 @@ class File_System_Service {
 		}
 
 		return $relative;
+	}
+
+	private function validate_partial_directory_tree( $scan_root, $target_root, $tree_role ) {
+		$scan_root = rtrim( normalize_path( $scan_root ), '/' );
+		$target_root = rtrim( normalize_path( $target_root ), '/' );
+		$scan_real = realpath( $scan_root );
+
+		if ( false === $scan_real || is_link( $scan_root ) ) {
+			return new \WP_Error(
+				'ag_sync_bridge_partial_directory_link_forbidden',
+				__( 'Partial directory replacement cannot traverse a linked source or target.', 'ag-sync-bridge' ),
+				array( 'tree' => sanitize_key( $tree_role ) )
+			);
+		}
+
+		$scan_real = rtrim( normalize_path( $scan_real ), '/' );
+
+		try {
+			$iterator = new RecursiveIteratorIterator(
+				new RecursiveDirectoryIterator( $scan_root, RecursiveDirectoryIterator::SKIP_DOTS ),
+				RecursiveIteratorIterator::SELF_FIRST
+			);
+
+			/** @var SplFileInfo $item */
+			foreach ( $iterator as $item ) {
+				$item_path = normalize_path( $item->getPathname() );
+				$relative  = ltrim( substr( $item_path, strlen( $scan_root ) ), '/' );
+				$resolved  = realpath( $item_path );
+				$expected  = normalize_path( $scan_real . '/' . $relative );
+
+				if ( $item->isLink() || false === $resolved || ! $this->paths_are_equal( $resolved, $expected ) ) {
+					return new \WP_Error(
+						'ag_sync_bridge_partial_directory_link_forbidden',
+						__( 'Partial directory replacement cannot traverse a symlink, junction or filesystem alias.', 'ag-sync-bridge' ),
+						array(
+							'tree' => sanitize_key( $tree_role ),
+							'path' => $relative,
+						)
+					);
+				}
+
+				$effective_target = normalize_path( $target_root . '/' . $relative );
+				if ( $this->is_protected_partial_absolute_path( $effective_target ) || $this->should_exclude( $effective_target ) ) {
+					$target_relative = ltrim( str_replace( rtrim( normalize_path( ABSPATH ), '/' ), '', $effective_target ), '/' );
+					return $this->partial_directory_exclusion_error( $target_relative );
+				}
+			}
+		} catch ( \UnexpectedValueException $error ) {
+			return new \WP_Error(
+				'ag_sync_bridge_partial_directory_scan_failed',
+				__( 'Unable to inspect the complete partial directory before replacement.', 'ag-sync-bridge' ),
+				array(
+					'tree'    => sanitize_key( $tree_role ),
+					'message' => $error->getMessage(),
+				)
+			);
+		}
+
+		return true;
+	}
+
+	private function partial_directory_exclusion_error( $relative ) {
+		return new \WP_Error(
+			'ag_sync_bridge_partial_directory_contains_excluded',
+			__( 'Partial directory replacement is blocked because it contains an excluded or protected path. Select narrower paths instead.', 'ag-sync-bridge' ),
+			array( 'path' => (string) $relative )
+		);
+	}
+
+	private function is_protected_partial_absolute_path( $path ) {
+		$root = rtrim( normalize_path( ABSPATH ), '/' );
+		$path = normalize_path( $path );
+		if ( ! $this->normalized_path_is_within_root( $path, $root ) ) {
+			return true;
+		}
+
+		$relative = strtolower( ltrim( substr( $path, strlen( $root ) ), '/' ) );
+		$plugin_dir = dirname( $this->config->get_plugin_basename() );
+		$plugin_dir = '.' === $plugin_dir ? 'ag-sync-bridge' : trim( str_replace( '\\', '/', $plugin_dir ), '/' );
+		$plugin_rel = strtolower( 'wp-content/plugins/' . $plugin_dir );
+
+		return 'wp-config.php' === $relative
+			|| 'wp-admin' === $relative
+			|| 0 === strpos( $relative, 'wp-admin/' )
+			|| 'wp-includes' === $relative
+			|| 0 === strpos( $relative, 'wp-includes/' )
+			|| 'wp-content/ag-sync-bridge-data' === $relative
+			|| 0 === strpos( $relative, 'wp-content/ag-sync-bridge-data/' )
+			|| $plugin_rel === $relative
+			|| 0 === strpos( $relative, $plugin_rel . '/' );
+	}
+
+	private function normalized_path_is_within_root( $path, $root ) {
+		$path_key = $this->path_comparison_key( $path );
+		$root_key = rtrim( $this->path_comparison_key( $root ), '/' );
+		return $path_key === $root_key || 0 === strpos( $path_key . '/', $root_key . '/' );
+	}
+
+	private function resolved_path_is_within_root( $path, $root ) {
+		return $this->normalized_path_is_within_root( normalize_path( $path ), normalize_path( $root ) );
+	}
+
+	private function paths_are_equal( $left, $right ) {
+		return $this->path_comparison_key( $left ) === $this->path_comparison_key( $right );
+	}
+
+	private function path_comparison_key( $path ) {
+		$path = rtrim( normalize_path( $path ), '/' );
+		return '\\' === DIRECTORY_SEPARATOR ? strtolower( $path ) : $path;
 	}
 
 	private function is_allowed_partial_root_path( $relative ) {
@@ -1827,7 +2215,13 @@ class File_System_Service {
 			$meta['manifest'] = $manifest;
 			$meta['snapshot_scope'] = $this->get_snapshot_scope_from_manifest( $manifest );
 			$meta['is_full_snapshot'] = 'full' === $meta['snapshot_scope'];
-			$meta['full_snapshot_validation'] = $this->validate_full_snapshot_manifest( $manifest );
+			if ( 'partial' === $meta['snapshot_scope'] ) {
+				$meta['partial_snapshot_validation'] = $this->validate_partial_snapshot_manifest( $manifest );
+				$meta['full_validation_applicable']  = false;
+			} else {
+				$meta['full_snapshot_validation'] = $this->validate_full_snapshot_manifest( $manifest );
+				$meta['full_validation_applicable'] = true;
+			}
 
 			if ( ! empty( $manifest['type'] ) ) {
 				$meta['type'] = $manifest['type'];

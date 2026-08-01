@@ -20,7 +20,7 @@ Se devi modificare o gestire il plugin da un agente automatico, leggi prima:
 
 ## Versione
 
-Versione plugin: `0.1.43`
+Versione plugin: `0.1.45`
 
 Slug tecnico WordPress: `ag-sync-bridge`
 
@@ -316,6 +316,7 @@ Da `0.1.17`, cliccare `Bacheca > Aggiornamenti > Verifica di nuovo` forza anche 
 - `wp agsync push --use-existing-snapshot` riusa solo snapshot marcati `full`; vecchi pacchetti senza scope vengono bloccati.
 - `wp agsync push --paths=...` crea un pacchetto parziale file-only. Il formato base esiste da `0.1.26`, ma il protocollo sicuro di backup scoped richiede `0.1.42` su entrambi i peer.
 - Da `0.1.43`, un push parziale esplicito non esegue aggiornamenti automatici di plugin, temi o traduzioni estranei allo scope. I push completi mantengono la manutenzione automatica fail-closed.
+- Da `0.1.44`, `wp agsync pull --paths=...` richiede `0.1.44` su entrambi i peer, crea uno snapshot live file-only e un backup locale partial verificato con tombstone. Scope, path e SHA-256 devono coincidere esattamente; `--use-existing-snapshot` non è ammesso.
 - `wp agsync push_plan [--paths=...]` mostra senza modifiche classificazione, trasferimenti, metriche full/partial e stato del rollback. Un push parziale richiede un backup remoto pre-push: senza backup abilitato viene bloccato, perché una cartella selezionata sostituisce il relativo sottoalbero sul live.
 - `wp agsync remote_cancel --operation-id=<id> --kind=snapshot|import` annulla solo l'operazione remota indicata. Un import che ha gia modificato database o file resta `rollback_required` e va ripristinato dal backup.
 - `wp agsync cancel` richiede lo stop cooperativo dell'operazione locale attiva. Il segnale resta nel lock e viene letto durante snapshot, trasferimenti e import.

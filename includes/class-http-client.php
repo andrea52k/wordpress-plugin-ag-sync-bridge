@@ -53,13 +53,16 @@ class Http_Client {
 		);
 	}
 
-	public function create_remote_snapshot( $type = 'manual-remote-snapshot', $cancellation_check = null, $operation_callback = null ) {
+	public function create_remote_snapshot( $type = 'manual-remote-snapshot', $cancellation_check = null, $operation_callback = null, array $paths = array() ) {
+		$scope = empty( $paths ) ? 'full' : 'partial';
 		$result = $this->request_json(
 			'POST',
 			'/ag-sync-bridge/v1/snapshot/create',
 			array(
 				'type'  => $type,
 				'async' => true,
+				'scope' => $scope,
+				'paths' => array_values( $paths ),
 			)
 		);
 
@@ -80,6 +83,10 @@ class Http_Client {
 
 	public function get_latest_snapshot() {
 		return $this->request_json( 'GET', '/ag-sync-bridge/v1/snapshot/latest' );
+	}
+
+	public function delete_remote_snapshot_exact( $operation_id, $basename, $sha256, $manifest_id, $manifest_sha256 ) {
+		return $this->request_json( 'POST', '/ag-sync-bridge/v1/snapshot/delete-exact', array( 'operation_id'=>(string)$operation_id, 'basename'=>(string)$basename, 'sha256'=>strtolower((string)$sha256), 'manifest_id'=>(string)$manifest_id, 'manifest_sha256'=>strtolower((string)$manifest_sha256) ) );
 	}
 
 	public function create_remote_backup( $scope = 'full', array $paths = array() ) {
@@ -582,7 +589,7 @@ class Http_Client {
 		return $result;
 	}
 
-	public function trigger_remote_import( $snapshot_basename, $expected_sha256, $allow_partial_snapshot = false, $cancellation_check = null, $operation_callback = null ) {
+	public function trigger_remote_import( $snapshot_basename, $expected_sha256, $allow_partial_snapshot = false, $cancellation_check = null, $operation_callback = null, array $expected_partial_paths = array() ) {
 		$result = $this->request_json(
 			'POST',
 			'/ag-sync-bridge/v1/snapshot/import',
@@ -591,6 +598,7 @@ class Http_Client {
 				'expected_sha256'        => $expected_sha256,
 				'async'                  => true,
 				'allow_partial_snapshot' => $allow_partial_snapshot ? 1 : 0,
+				'expected_partial_paths' => array_values( $expected_partial_paths ),
 			)
 		);
 
@@ -849,7 +857,7 @@ class Http_Client {
 			$result   = $this->decode_json_response( $response );
 		}
 
-		if ( '/ag-sync-bridge/v1/backup/create' !== $route && $this->should_retry_with_legacy_signature( $result ) ) {
+		if ( ! $this->requires_signed_body_route( $route ) && $this->should_retry_with_legacy_signature( $result ) ) {
 			$this->use_legacy_signatures = true;
 			$this->logger->info(
 				'Remote uses legacy request signatures. Falling back for compatibility.',
@@ -863,6 +871,18 @@ class Http_Client {
 		}
 
 		return $result;
+	}
+
+	private function requires_signed_body_route( $route ) {
+		return in_array(
+			(string) $route,
+			array(
+				'/ag-sync-bridge/v1/backup/create',
+				'/ag-sync-bridge/v1/snapshot/create',
+				'/ag-sync-bridge/v1/snapshot/import',
+			),
+			true
+		);
 	}
 
 	private function is_transient_transport_error( $result ) {

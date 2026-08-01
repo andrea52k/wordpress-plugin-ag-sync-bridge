@@ -357,3 +357,12 @@ currently uses a public repo to avoid tokens.
 
 From version `0.1.17`, WordPress manual update checks with `force-check` bypass
 the plugin's GitHub release cache.
+
+## Partial pull protocol
+
+From `0.1.44`, partial pull reuses the push path normalizer and allowlist. The
+signed JSON request binds `scope=partial` and the exact canonical paths to the
+HMAC. The live exports only those paths without a database; before download the
+local creates and validates a file-only backup of the same targets, including
+tombstones. Import requires an explicit partial allow, matching paths and
+SHA-256. Full pull keeps the existing full snapshot and full backup flow.

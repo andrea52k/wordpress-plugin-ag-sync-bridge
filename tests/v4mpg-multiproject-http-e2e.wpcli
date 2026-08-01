@@ -1,0 +1,131 @@
+<?php
+
+namespace AGSyncBridge {
+	use RuntimeException;
+	if ( ! class_exists( __NAMESPACE__ . '\\Config', false ) ) {
+		class Config {
+			private $storage;
+			public function __construct( $storage ) { $this->storage = $storage; }
+			public function get_storage_dir() { return $this->storage; }
+			public function get_role() { return 'remote'; }
+		}
+	}
+	if ( ! class_exists( __NAMESPACE__ . '\\Logger', false ) ) { class Logger {} }
+	if ( ! class_exists( __NAMESPACE__ . '\\Remote_Operation_Runtime', false ) ) {
+		class Remote_Operation_Runtime {
+			public $state = array();
+			public function __construct( $config = null, $logger = null ) { unset( $config, $logger ); }
+			public function reserve( $kind, array $state ) { $this->state = array_merge( $state, array( 'kind' => $kind, 'status' => 'queued', 'updated_at' => gmdate( 'c' ) ) ); return $this->state; }
+			public function claim( $id ) { $this->state['id'] = $id; $this->state['status'] = 'running'; return $this->state; }
+			public function heartbeat( $id, $stage, $progress, array $changes = array() ) { $this->state = array_merge( $this->state, $changes, compact( 'id', 'stage', 'progress' ), array( 'status' => 'running', 'updated_at' => gmdate( 'c' ) ) ); return $this->state; }
+			public function finalize( $id, $status, array $changes = array() ) { $this->state = array_merge( $this->state, $changes, compact( 'id', 'status' ), array( 'updated_at' => gmdate( 'c' ) ) ); return $this->state; }
+			public function inspect() { return $this->state; }
+			public function resolve_recovery( $id, $kind, $updated, array $verification ) { unset( $kind, $updated, $verification ); $this->state['id'] = $id; $this->state['status'] = 'reconciled'; return $this->state; }
+		}
+	}
+	class V4MPG_Multi_WPDB {
+		public $prefix;
+		public $insert_id = 0;
+		public $commit_fault = 'none';
+		private $inner;
+		public function __construct( $inner, $prefix ) { $this->inner = $inner; $this->prefix = $prefix; }
+		public function prepare( $query, ...$args ) { return $this->inner->prepare( $query, ...$args ); }
+		public function get_var( $query ) { return $this->inner->get_var( $query ); }
+		public function get_row( $query, $output = OBJECT, $y = 0 ) { return $this->inner->get_row( $query, $output, $y ); }
+		public function get_results( $query, $output = OBJECT ) { return $this->inner->get_results( $query, $output ); }
+		public function get_col( $query, $x = 0 ) { return $this->inner->get_col( $query, $x ); }
+		public function insert( $table, $data, $format = null ) { $result = $this->inner->insert( $table, $data, $format ); $this->insert_id = (int) $this->inner->insert_id; return $result; }
+		public function update( $table, $data, $where, $format = null, $where_format = null ) { return $this->inner->update( $table, $data, $where, $format, $where_format ); }
+		public function delete( $table, $where, $where_format = null ) { return $this->inner->delete( $table, $where, $where_format ); }
+		public function query( $query ) { $normalized = strtoupper( trim( (string) $query ) ); if ( 'COMMIT' === $normalized && 'before' === $this->commit_fault ) { return false; } if ( 'COMMIT' === $normalized && 'after' === $this->commit_fault ) { $this->inner->query( $query ); return false; } return $this->inner->query( $query ); }
+	}
+	function multi_expect( $condition, $message ) { if ( ! $condition ) { throw new RuntimeException( $message ); } }
+	function multi_digest( array $rows ) { $ctx = hash_init( 'sha256' ); foreach ( $rows as $row ) { hash_update( $ctx, $row['row_index'] . "\0" . $row['url_path'] . "\0" . $row['row_sha256'] . "\n" ); } return hash_final( $ctx ); }
+	function multi_value_hash( $value ) { return hash( 'sha256', "v4mpg-content-v1\0text\0" . $value ); }
+}
+
+namespace {
+	use AGSyncBridge\Config;
+	use AGSyncBridge\Logger;
+	use AGSyncBridge\Remote_Operation_Runtime;
+	use AGSyncBridge\V4MPG_Multi_WPDB;
+	use AGSyncBridge\V4MPG_Table_Deploy_Service;
+
+	if ( ! defined( 'AG_SYNC_BRIDGE_V4MPG_ALLOWED_TARGETS' ) ) { define( 'AG_SYNC_BRIDGE_V4MPG_ALLOWED_TARGETS', '910001:e2e-a,910002:e2e-b' ); }
+	require_once dirname( __DIR__ ) . '/includes/class-v4mpg-table-deploy-service.php';
+	global $wpdb;
+	$original_prefix = (string) $wpdb->prefix;
+	$prefix = 'agsb_v4e2e_' . substr( bin2hex( random_bytes( 4 ) ), 0, 8 ) . '_';
+	$storage = (string) getenv( 'AGSB_E2E_STORAGE' );
+	if ( '' === $storage ) { $storage = sys_get_temp_dir() . '/agsb-v4multi-' . bin2hex( random_bytes( 4 ) ); }
+	wp_mkdir_p( $storage . '/temp' );
+	$names = array( 'mpg_runtime_dataset_rows', 'mpg_runtime_dataset_versions', 'mpg_runtime_projects', 'mpg_projects', 'mpg_location_index', 'mpg_cache', 'mpg_dataset_rows' );
+	$drop = static function () use ( $wpdb, $prefix, $names ) { foreach ( $names as $name ) { $wpdb->query( "DROP TABLE IF EXISTS `{$prefix}{$name}`" ); } };
+	$clear_http = static function () { $root = WP_CONTENT_DIR . '/cache/agsb-v4mpg-e2e'; if ( ! is_dir( $root ) ) { return; } $iterator = new RecursiveIteratorIterator( new RecursiveDirectoryIterator( $root, FilesystemIterator::SKIP_DOTS ), RecursiveIteratorIterator::CHILD_FIRST ); foreach ( $iterator as $entry ) { $entry->isDir() ? rmdir( $entry->getPathname() ) : unlink( $entry->getPathname() ); } rmdir( $root ); };
+	$seed = static function () use ( $wpdb, $prefix, $drop ) {
+		$drop();
+		$wpdb->query( "CREATE TABLE `{$prefix}mpg_runtime_dataset_versions` (id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,project_id BIGINT UNSIGNED NOT NULL,dataset_id VARCHAR(64) NOT NULL,version_key VARCHAR(190) NOT NULL,source_sha256 CHAR(64) NOT NULL,dataset_sha256 CHAR(64) NOT NULL,header_sha256 CHAR(64) NOT NULL,header_json LONGTEXT NOT NULL,urls_sha256 CHAR(64) NOT NULL,urls_json LONGTEXT NOT NULL,url_change_count INT NOT NULL DEFAULT 0,row_count INT NOT NULL,column_count INT NOT NULL,status VARCHAR(32) NOT NULL,created_at DATETIME NULL,validated_at DATETIME NULL,activated_at DATETIME NULL,PRIMARY KEY(id),UNIQUE KEY project_version(project_id,version_key)) ENGINE=InnoDB" );
+		$wpdb->query( "CREATE TABLE `{$prefix}mpg_runtime_dataset_rows` (version_id BIGINT UNSIGNED NOT NULL,project_id BIGINT UNSIGNED NOT NULL,row_index INT NOT NULL,url_path VARCHAR(255) NOT NULL,city VARCHAR(120) NOT NULL,province VARCHAR(120) NOT NULL,row_data LONGTEXT NOT NULL,row_sha256 CHAR(64) NOT NULL,PRIMARY KEY(version_id,row_index)) ENGINE=InnoDB" );
+		$wpdb->query( "CREATE TABLE `{$prefix}mpg_runtime_projects` (project_id BIGINT UNSIGNED NOT NULL,active_version_id BIGINT UNSIGNED NOT NULL,enabled TINYINT NOT NULL,updated_at DATETIME NULL,PRIMARY KEY(project_id)) ENGINE=InnoDB" );
+		$wpdb->query( "CREATE TABLE `{$prefix}mpg_projects` (id BIGINT UNSIGNED NOT NULL,headers LONGTEXT NOT NULL,urls_array LONGTEXT NOT NULL,updated_at BIGINT NOT NULL,sitemap_filename VARCHAR(190) NOT NULL,PRIMARY KEY(id)) ENGINE=InnoDB" );
+		$wpdb->query( "CREATE TABLE `{$prefix}mpg_location_index` (id BIGINT UNSIGNED NOT NULL,project_id BIGINT UNSIGNED NOT NULL,dataset_token VARCHAR(64) NOT NULL,province VARCHAR(120) NOT NULL,city VARCHAR(120) NOT NULL,url VARCHAR(255) NOT NULL,PRIMARY KEY(id),KEY project_id(project_id)) ENGINE=InnoDB" );
+		$wpdb->query( "CREATE TABLE `{$prefix}mpg_cache` (project_id BIGINT UNSIGNED NOT NULL,payload LONGTEXT NULL,KEY project_id(project_id)) ENGINE=InnoDB" );
+		$wpdb->query( "CREATE TABLE `{$prefix}mpg_dataset_rows` (project_id BIGINT UNSIGNED NOT NULL,payload LONGTEXT NULL,KEY project_id(project_id)) ENGINE=InnoDB" );
+		$bases = array(); $headers = wp_json_encode( array( 'geo_id', 'meta_title', 'meta_desc' ), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES );
+		foreach ( array( 910001 => 'e2e-a', 910002 => 'e2e-b' ) as $project_id => $dataset_id ) {
+			$rows = array(); $urls = array();
+			for ( $i = 0; $i < 101; $i++ ) { $path = 0 === $i ? "/{$dataset_id}/" : "/{$dataset_id}-{$i}/"; $values = array( $dataset_id . '-' . $i, "Titolo umano originale {$dataset_id} {$i}", "Descrizione originale {$dataset_id} {$i}" ); $json = wp_json_encode( $values, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES ); $rows[] = array( 'row_index' => $i, 'url_path' => $path, 'row_data' => $json, 'row_sha256' => hash( 'sha256', $json ) ); $urls[] = $path; }
+			$urls_json = wp_json_encode( $urls, JSON_UNESCAPED_SLASHES ); $dataset_sha = \AGSyncBridge\multi_digest( $rows ); $source_sha = hash( 'sha256', 'source-' . $dataset_id );
+			$wpdb->insert( $prefix . 'mpg_runtime_dataset_versions', array( 'project_id' => $project_id, 'dataset_id' => $dataset_id, 'version_key' => 'base-' . $dataset_id, 'source_sha256' => $source_sha, 'dataset_sha256' => $dataset_sha, 'header_sha256' => hash( 'sha256', $headers ), 'header_json' => $headers, 'urls_sha256' => hash( 'sha256', $urls_json ), 'urls_json' => $urls_json, 'url_change_count' => 0, 'row_count' => 101, 'column_count' => 3, 'status' => 'active', 'created_at' => gmdate( 'Y-m-d H:i:s' ), 'validated_at' => gmdate( 'Y-m-d H:i:s' ), 'activated_at' => gmdate( 'Y-m-d H:i:s' ) ) );
+			$version_id = (int) $wpdb->insert_id; foreach ( $rows as $row ) { $wpdb->insert( $prefix . 'mpg_runtime_dataset_rows', array_merge( $row, array( 'version_id' => $version_id, 'project_id' => $project_id, 'city' => 'Citta ' . $row['row_index'], 'province' => 'Test' ) ) ); }
+			$wpdb->insert( $prefix . 'mpg_runtime_projects', array( 'project_id' => $project_id, 'active_version_id' => $version_id, 'enabled' => 1, 'updated_at' => gmdate( 'Y-m-d H:i:s' ) ) );
+			$wpdb->insert( $prefix . 'mpg_projects', array( 'id' => $project_id, 'headers' => $headers, 'urls_array' => $urls_json, 'updated_at' => time(), 'sitemap_filename' => '' ) );
+			foreach ( $rows as $row ) { $wpdb->insert( $prefix . 'mpg_location_index', array( 'id' => ( $project_id - 910000 ) * 1000 + $row['row_index'], 'project_id' => $project_id, 'dataset_token' => $dataset_id . '-' . $row['row_index'], 'province' => 'Test', 'city' => 'Citta ' . $row['row_index'], 'url' => $row['url_path'] ) ); }
+			$wpdb->insert( $prefix . 'mpg_cache', array( 'project_id' => $project_id, 'payload' => 'stale' ) ); $wpdb->insert( $prefix . 'mpg_dataset_rows', array( 'project_id' => $project_id, 'payload' => 'stale' ) );
+			$bases[] = compact( 'project_id', 'dataset_id', 'version_id', 'source_sha', 'dataset_sha', 'headers', 'urls_json', 'rows' );
+		}
+		return $bases;
+	};
+	$make = static function ( array $bases, $operation_id ) { $targets = array(); $release_sets = array(); $after = array(); foreach ( $bases as $base ) { $rows = $base['rows']; $values = json_decode( $rows[0]['row_data'], true ); $before = $values[1]; $values[1] = 'Titolo umano approvato ' . $base['dataset_id']; $after[ $base['project_id'] ] = $values[1]; $rows[0]['row_data'] = wp_json_encode( $values, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES ); $rows[0]['row_sha256'] = hash( 'sha256', $rows[0]['row_data'] ); $digest = \AGSyncBridge\multi_digest( $rows ); $candidate = array( 'source_sha256' => $base['source_sha'], 'dataset_sha256' => $digest, 'header_sha256' => hash( 'sha256', $base['headers'] ), 'urls_sha256' => hash( 'sha256', $base['urls_json'] ), 'row_count' => 101, 'column_count' => 3, 'ordered_digest' => $digest, 'changed_cell_count' => 1, 'declared_changes' => array( array( 'geo_id' => $base['dataset_id'] . '-0', 'field' => 'meta_title', 'before_hash' => \AGSyncBridge\multi_value_hash( $before ), 'after_hash' => \AGSyncBridge\multi_value_hash( $values[1] ), 'after' => $values[1] ) ) ); $expected = array( 'project_id' => $base['project_id'], 'dataset_id' => $base['dataset_id'], 'active_version_id' => $base['version_id'], 'dataset_sha256' => $base['dataset_sha'], 'urls_sha256' => hash( 'sha256', $base['urls_json'] ), 'row_count' => 101 ); $targets[] = array( 'project_id' => $base['project_id'], 'dataset_id' => $base['dataset_id'], 'expected_previous' => $expected, 'candidate' => $candidate ); $release_sets[] = array( 'dataset_id' => $base['dataset_id'], 'final_dataset_sha256' => $digest, 'changed_cell_count' => 1 ); } $release = array( 'release_id' => 'release-' . $operation_id, 'activation_receipt_sha256' => str_repeat( 'a', 64 ), 'catalog_generation' => 'e2e', 'catalog_sha256' => str_repeat( 'b', 64 ), 'candidate_summary_sha256' => str_repeat( 'c', 64 ), 'authoring_runs' => array( array( 'run_id' => 'e2e-run', 'receipt_sha256' => str_repeat( 'd', 64 ), 'patch_manifest_sha256' => str_repeat( 'e', 64 ) ) ), 'datasets' => $release_sets ); $deployment = array( 'release' => $release, 'targets' => $targets ); return array( 'request' => array( 'operation_id' => $operation_id, 'payload_sha256' => V4MPG_Table_Deploy_Service::sha256( $deployment ), 'backup_sha256' => str_repeat( 'f', 64 ) ), 'deployment' => $deployment, 'after' => $after ); };
+	$http = static function ( $dataset_id, $project_id ) use ( $prefix ) { $url = add_query_arg( array( 'agsb_prefix' => $prefix, 'agsb_project' => $project_id ), home_url( '/' . $dataset_id . '/' ) ); $response = wp_remote_get( $url, array( 'timeout' => 15 ) ); $detail = is_wp_error( $response ) ? $response->get_error_message() : 'HTTP ' . wp_remote_retrieve_response_code( $response ) . ' body=' . substr( wp_remote_retrieve_body( $response ), 0, 160 ); \AGSyncBridge\multi_expect( ! is_wp_error( $response ) && 200 === wp_remote_retrieve_response_code( $response ), 'HTTP fixture request failed for ' . $url . ': ' . $detail ); return array( 'cache' => (string) wp_remote_retrieve_header( $response, 'x-e2e-cache' ), 'body' => json_decode( wp_remote_retrieve_body( $response ), true ) ); };
+
+	try {
+		$wpdb->prefix = $prefix; $clear_http(); $bases = $seed(); $adapter = new V4MPG_Multi_WPDB( $wpdb, $prefix ); $service = new V4MPG_Table_Deploy_Service( new Config( $storage ), new Logger(), $adapter, new Remote_Operation_Runtime() ); $reflect = new ReflectionClass( V4MPG_Table_Deploy_Service::class ); foreach ( array( 'deploy_transaction', 'advance_cache_epoch_barrier', 'end_cache_epoch_barrier', 'verify_receipt_active', 'restore_receipt_exact', 'clear_targeted_cache', 'inspect_recovery_outcome' ) as $name ) { ${$name} = $reflect->getMethod( $name ); ${$name}->setAccessible( true ); }
+		$case = $make( $bases, 'multi-success-0001' );
+		$backup_targets = array_map( static function ( $target ) { unset( $target['candidate'] ); return $target; }, $case['deployment']['targets'] );
+		$site = array( 'home_url' => untrailingslashit( home_url() ), 'site_url' => untrailingslashit( site_url() ), 'home_host' => strtolower( (string) wp_parse_url( home_url(), PHP_URL_HOST ) ) );
+		$backup_request = array( 'protocol' => 1, 'operation_id' => 'multi-backup-tamper-0001', 'expected_site' => $site, 'targets' => $backup_targets );
+		$backup = $service->backup( $backup_request );
+		$manifest_json = V4MPG_Table_Deploy_Service::canonical_json( $backup['artifact'] );
+		\AGSyncBridge\multi_expect( strlen( $manifest_json ) < 65536 && false === strpos( $manifest_json, '"rows"' ) && false === strpos( $manifest_json, '"url_paths"' ), 'Multi-project backup manifest was not bounded.' );
+		$proofs = array();
+		foreach ( $backup_targets as $target ) {
+			$digest = hash_init( 'sha256' ); $page_hashes = array(); $row_count = 0;
+			foreach ( array( 0, 100 ) as $offset ) {
+				$page = $service->backup_page( array( 'protocol' => 1, 'operation_id' => $backup_request['operation_id'], 'expected_site' => $site, 'backup_token' => $backup['backup_token'], 'project_id' => $target['project_id'], 'dataset_id' => $target['dataset_id'], 'offset' => $offset, 'limit' => 100 ) );
+				$page_hashes[] = $page['page_sha256'];
+				foreach ( $page['page']['rows'] as $row ) { hash_update( $digest, $row['row_index'] . "\0" . $row['url_path'] . "\0" . $row['row_sha256'] . "\n" ); $row_count++; }
+			}
+			$proofs[] = array( 'project_id' => $target['project_id'], 'dataset_id' => $target['dataset_id'], 'row_count' => $row_count, 'ordered_digest' => hash_final( $digest ), 'pages_sha256' => V4MPG_Table_Deploy_Service::sha256( $page_hashes ) );
+		}
+		$tampered = $proofs; $tampered[1]['pages_sha256'] = str_repeat( '0', 64 ); $tamper_rejected = false;
+		try { $service->backup_seal( array( 'protocol' => 1, 'operation_id' => $backup_request['operation_id'], 'expected_site' => $site, 'backup_token' => $backup['backup_token'], 'local_backup_sha256' => hash( 'sha256', $manifest_json ), 'datasets' => $tampered ) ); } catch ( Throwable $error ) { $tamper_rejected = false !== strpos( strtolower( $error->getMessage() ), 'page-hash' ); }
+		\AGSyncBridge\multi_expect( $tamper_rejected, 'Tampered paged backup proof was accepted.' );
+		$aborted = $service->backup_abort( array( 'protocol' => 1, 'operation_id' => $backup_request['operation_id'], 'expected_site' => $site, 'backup_token' => $backup['backup_token'], 'reason' => 'e2e-tamper-confirmed' ) );
+		\AGSyncBridge\multi_expect( 'backup-aborted' === $aborted['status'] && false === get_transient( 'ag_sync_v4mpg_backup_' . md5( $backup['backup_token'] ) ), 'Backup abort did not remove the open session.' );
+		if ( '1' === (string) getenv( 'AGSB_E2E_BACKUP_ONLY' ) ) {
+			$output = (string) getenv( 'AGSB_E2E_RECEIPT' );
+			$artifact = array( 'receipt_type' => 'agsync-v4mpg-paged-backup-tamper-e2e', 'schema_version' => 1, 'status' => 'passed', 'created_at' => gmdate( 'c' ), 'service_sha256' => hash_file( 'sha256', dirname( __DIR__ ) . '/includes/class-v4mpg-table-deploy-service.php' ), 'harness_sha256' => hash_file( 'sha256', __FILE__ ), 'datasets' => 2, 'rows_per_dataset' => 101, 'manifest_bytes' => strlen( $manifest_json ), 'pages_downloaded' => 4, 'tampered_page_hash_rejected' => true, 'open_session_abort_verified' => true );
+			if ( '' !== $output ) { wp_mkdir_p( dirname( $output ) ); file_put_contents( $output, wp_json_encode( $artifact, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE ), LOCK_EX ); echo 'e2e_receipt=' . wp_normalize_path( $output ) . ' sha256=' . hash_file( 'sha256', $output ) . "\n"; }
+			echo "v4mpg paged backup tamper E2E: ok\n";
+			return;
+		}
+		$barrier = null; $args = array( $case['request'], $case['deployment'], &$barrier ); $receipt = $deploy_transaction->invokeArgs( $service, $args ); $advance_args = array( &$barrier, 'multi-commit' ); $advance_cache_epoch_barrier->invokeArgs( $service, $advance_args ); $verify_receipt_active->invoke( $service, $receipt['datasets'], 'deployed' ); $clear_targeted_cache->invoke( $service, $receipt['datasets'], false );
+		$http_new = array(); foreach ( array( 910001 => 'e2e-a', 910002 => 'e2e-b' ) as $project_id => $dataset_id ) { $miss = $http( $dataset_id, $project_id ); $hit = $http( $dataset_id, $project_id ); \AGSyncBridge\multi_expect( 'MISS' === $miss['cache'] && 'HIT' === $hit['cache'] && $case['after'][ $project_id ] === $hit['body']['title'], 'HTTP MISS/HIT did not expose the committed candidate.' ); $http_new[ $dataset_id ] = array( 'miss' => $miss['cache'], 'hit' => $hit['cache'], 'version_id' => $hit['body']['active_version_id'] ); }
+		$restore_receipt_exact->invoke( $service, $receipt ); $advance_args = array( &$barrier, 'multi-rollback' ); $advance_cache_epoch_barrier->invokeArgs( $service, $advance_args ); $verify_receipt_active->invoke( $service, $receipt['datasets'], 'rolled-back' ); $clear_targeted_cache->invoke( $service, $receipt['datasets'], false );
+		$http_old = array(); foreach ( array( 910001 => 'e2e-a', 910002 => 'e2e-b' ) as $project_id => $dataset_id ) { $miss = $http( $dataset_id, $project_id ); $hit = $http( $dataset_id, $project_id ); \AGSyncBridge\multi_expect( 'MISS' === $miss['cache'] && 'HIT' === $hit['cache'] && false !== strpos( $hit['body']['title'], 'originale' ), 'HTTP rollback did not restore the exact old content.' ); $http_old[ $dataset_id ] = array( 'miss' => $miss['cache'], 'hit' => $hit['cache'], 'version_id' => $hit['body']['active_version_id'] ); }
+		$end_cache_epoch_barrier->invoke( $service, $barrier ); $barrier = null;
+		foreach ( array( 'mpg_cache', 'mpg_dataset_rows' ) as $cache_table ) { \AGSyncBridge\multi_expect( 0 === (int) $wpdb->get_var( "SELECT COUNT(*) FROM `{$prefix}{$cache_table}` WHERE project_id IN (910001,910002)" ), 'Targeted database cache rows survived cleanup.' ); }
+		$output = (string) getenv( 'AGSB_E2E_RECEIPT' ); $artifact = array( 'receipt_type' => 'agsync-v4mpg-multiproject-http-e2e', 'schema_version' => 1, 'status' => 'passed', 'created_at' => gmdate( 'c' ), 'wordpress_path' => wp_normalize_path( ABSPATH ), 'service_sha256' => hash_file( 'sha256', dirname( __DIR__ ) . '/includes/class-v4mpg-table-deploy-service.php' ), 'harness_sha256' => hash_file( 'sha256', __FILE__ ), 'prefix' => $prefix, 'datasets' => count( $receipt['datasets'] ), 'rows_per_dataset' => 101, 'backup_manifest_bytes' => strlen( $manifest_json ), 'backup_pages' => 4, 'backup_tamper_rejected' => $tamper_rejected, 'backup_abort_verified' => true, 'deployment_receipt_sha256' => V4MPG_Table_Deploy_Service::sha256( $receipt ), 'previous_version_ids' => array_column( $receipt['datasets'], 'previous_version_id' ), 'new_version_ids' => array_column( $receipt['datasets'], 'new_version_id' ), 'http_new' => $http_new, 'http_old' => $http_old, 'cache_tables_cleared' => true ); if ( '' !== $output ) { wp_mkdir_p( dirname( $output ) ); file_put_contents( $output, wp_json_encode( $artifact, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE ), LOCK_EX ); echo 'e2e_receipt=' . wp_normalize_path( $output ) . ' sha256=' . hash_file( 'sha256', $output ) . "\n"; } echo "v4mpg multi-project HTTP E2E: ok\n";
+	} finally { $drop(); $clear_http(); $wpdb->prefix = $original_prefix; }
+}
