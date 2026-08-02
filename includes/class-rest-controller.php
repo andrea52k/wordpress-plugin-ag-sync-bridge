@@ -732,6 +732,23 @@ class Rest_Controller {
 
 		$chunk_path = normalize_path( $chunk_dir . '/' . sprintf( 'chunk-%05d.part', $chunk_index ) );
 		$meta_path  = normalize_path( $chunk_dir . '/upload.json' );
+		$lease       = @fopen( normalize_path( $chunk_dir . '/upload.lock' ), 'c' );
+		if ( ! is_resource( $lease ) || ! @flock( $lease, LOCK_EX ) ) {
+			if ( is_resource( $lease ) ) { fclose( $lease ); }
+			return new WP_Error( 'ag_sync_bridge_chunk_lease_failed', __( 'Unable to reserve chunk upload storage.', 'ag-sync-bridge' ), array( 'status' => 503 ) );
+		}
+		try {
+		// Refresh the lease before any chunk bytes exist, so unrelated cleanup
+		// cannot delete a resumed upload between write and metadata update.
+		$this->file_system->write_json_file(
+			$meta_path,
+			array(
+				'upload_id'     => $upload_id,
+				'filename'      => $filename,
+				'total_chunks'  => $total_chunks,
+				'updated_at'    => gmdate( 'c' ),
+			)
+		);
 		$written    = file_put_contents( $chunk_path, $body, LOCK_EX );
 
 		if ( false === $written ) {
@@ -777,7 +794,6 @@ class Rest_Controller {
 				'updated_at'    => gmdate( 'c' ),
 			)
 		);
-
 		return new WP_REST_Response(
 			array(
 				'upload_id'     => $upload_id,
@@ -787,6 +803,10 @@ class Rest_Controller {
 				'stored_at'     => gmdate( 'c' ),
 			)
 		);
+		} finally {
+			@flock( $lease, LOCK_UN );
+			fclose( $lease );
+		}
 	}
 
 	public function abort_chunked_upload( WP_REST_Request $request ) {
@@ -828,6 +848,13 @@ class Rest_Controller {
 		if ( ! is_dir( $chunk_dir ) ) {
 			return new WP_Error( 'ag_sync_bridge_chunk_upload_missing', __( 'Temporary chunk upload directory was not found.', 'ag-sync-bridge' ), array( 'status' => 404 ) );
 		}
+		$lease = @fopen( normalize_path( $chunk_dir . '/upload.lock' ), 'c' );
+		if ( ! is_resource( $lease ) || ! @flock( $lease, LOCK_EX ) ) {
+			if ( is_resource( $lease ) ) { fclose( $lease ); }
+			return new WP_Error( 'ag_sync_bridge_chunk_lease_failed', __( 'Unable to reserve chunk upload storage.', 'ag-sync-bridge' ), array( 'status' => 503 ) );
+		}
+		try {
+		$this->file_system->write_json_file( normalize_path( $chunk_dir . '/upload.json' ), array( 'upload_id' => $upload_id, 'filename' => $filename, 'total_chunks' => $total_chunks, 'updated_at' => gmdate( 'c' ) ) );
 
 		$incoming_dir = $this->file_system->get_incoming_dir();
 		$file_path    = normalize_path( $incoming_dir . '/' . gmdate( 'Ymd-His' ) . '-' . $filename );
@@ -891,10 +918,16 @@ class Rest_Controller {
 		$sha256 = hash_file( 'sha256', $file_path );
 		if ( $expected_sha256 && ! hash_equals( $expected_sha256, strtolower( $sha256 ) ) ) {
 			$this->file_system->cleanup_path( $file_path );
+			@flock( $lease, LOCK_UN );
+			fclose( $lease );
+			$lease = null;
 			$this->file_system->cleanup_path( $chunk_dir );
 			return new WP_Error( 'ag_sync_bridge_upload_checksum', __( 'Uploaded snapshot checksum failed.', 'ag-sync-bridge' ), array( 'status' => 400 ) );
 		}
 
+		@flock( $lease, LOCK_UN );
+		fclose( $lease );
+		$lease = null;
 		$this->file_system->cleanup_path( $chunk_dir );
 
 		$response = array(
@@ -907,6 +940,12 @@ class Rest_Controller {
 
 		$this->logger->info( 'Remote snapshot uploaded via chunks.', $response );
 		return new WP_REST_Response( $response );
+		} finally {
+			if ( is_resource( $lease ) ) {
+				@flock( $lease, LOCK_UN );
+				fclose( $lease );
+			}
+		}
 	}
 
 	public function import_snapshot( WP_REST_Request $request ) {

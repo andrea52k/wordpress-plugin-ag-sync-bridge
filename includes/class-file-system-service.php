@@ -11,6 +11,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 class File_System_Service {
+	const UPLOAD_CHUNK_GRACE_SECONDS = 86400;
 	/**
 	 * @var Config
 	 */
@@ -417,12 +418,7 @@ class File_System_Service {
 				array( 'index.php', '.htaccess' ),
 				'incoming'
 			),
-			'upload_chunks'   => $operation_open ? $this->skipped_cleanup_summary( 'upload_chunks', 'operation_running' ) : $this->cleanup_directory_children(
-				$this->get_upload_chunks_dir(),
-				$min_age_seconds,
-				array( 'index.php', '.htaccess' ),
-				'upload_chunks'
-			),
+			'upload_chunks'   => $this->cleanup_upload_chunk_directories( $min_age_seconds, $operation_open ),
 		);
 
 		$total = $this->empty_cleanup_summary( 'total' );
@@ -497,6 +493,64 @@ class File_System_Service {
 		}
 
 		return $summary;
+	}
+
+	/**
+	 * Upload chunks must survive unrelated snapshot/import cleanups.  A full
+	 * upload can legitimately take longer than the zero-age cleanup requested
+	 * when another async operation completes.
+	 */
+	private function cleanup_upload_chunk_directories( $min_age_seconds, $operation_open ) {
+		if ( $operation_open ) {
+			return $this->skipped_cleanup_summary( 'upload_chunks', 'operation_running' );
+		}
+
+		$summary = $this->empty_cleanup_summary( 'upload_chunks' );
+		$dir     = $this->get_upload_chunks_dir();
+		if ( ! is_dir( $dir ) ) {
+			return $summary;
+		}
+
+		foreach ( new \DirectoryIterator( $dir ) as $item ) {
+			if ( $item->isDot() || in_array( $item->getFilename(), array( 'index.php', '.htaccess' ), true ) ) {
+				continue;
+			}
+			$path = normalize_path( $item->getPathname() );
+			if ( $this->upload_chunk_directory_is_recent( $path ) || ! $this->is_path_old_enough( $path, $min_age_seconds ) ) {
+				continue;
+			}
+			$summary = $this->merge_cleanup_summary( $summary, $this->cleanup_path_with_summary( $path ) );
+		}
+
+		return $summary;
+	}
+
+	private function upload_chunk_directory_is_recent( $path ) {
+		$lease_path = normalize_path( trailingslashit( $path ) . 'upload.lock' );
+		if ( is_file( $lease_path ) ) {
+			$lease = @fopen( $lease_path, 'c' );
+			if ( is_resource( $lease ) ) {
+				$locked = @flock( $lease, LOCK_EX | LOCK_NB );
+				if ( ! $locked ) {
+					fclose( $lease );
+					return true;
+				}
+				@flock( $lease, LOCK_UN );
+				fclose( $lease );
+			}
+		}
+		$metadata_path = normalize_path( trailingslashit( $path ) . 'upload.json' );
+		$updated_at    = 0;
+		if ( is_file( $metadata_path ) ) {
+			$metadata = json_decode( (string) file_get_contents( $metadata_path ), true );
+			if ( is_array( $metadata ) ) {
+				$updated_at = strtotime( (string) array_get( $metadata, 'updated_at', '' ) );
+			}
+		}
+		if ( ! is_int( $updated_at ) || $updated_at < 1 ) {
+			$updated_at = (int) @filemtime( $path );
+		}
+		return $updated_at > 0 && ( time() - $updated_at ) < self::UPLOAD_CHUNK_GRACE_SECONDS;
 	}
 
 	private function cleanup_path_with_summary( $path ) {

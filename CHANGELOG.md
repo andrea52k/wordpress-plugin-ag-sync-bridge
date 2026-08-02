@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.48
+
+- Prevented runtime cleanup from deleting an active chunked upload during a full snapshot transfer.
+- Added leased upload storage and regression coverage for cleanup while an upload is active.
+
 ## 0.1.47
 
 - Il delta V4MPG lega ogni cella al `url_path` immutabile della versione base,

@@ -20,7 +20,7 @@ Se devi modificare o gestire il plugin da un agente automatico, leggi prima:
 
 ## Versione
 
-Versione plugin: `0.1.47`
+Versione plugin: `0.1.48`
 
 Slug tecnico WordPress: `ag-sync-bridge`
 

@@ -8,9 +8,12 @@ namespace {
 	define( 'ABSPATH', $agsb_fixture_root . '/site/' );
 	define( 'WP_CONTENT_DIR', ABSPATH . 'wp-content' );
 	define( 'AG_SYNC_BRIDGE_VERSION', 'test' );
+	define( 'HOUR_IN_SECONDS', 3600 );
 
 	function __( $message ) { return $message; }
 	function normalize_path( $path ) { return str_replace( '\\', '/', (string) $path ); }
+	function trailingslashit( $path ) { return rtrim( (string) $path, '/\\' ) . '/'; }
+	function absint( $value ) { return abs( (int) $value ); }
 	function ensure_directory( $path ) { return is_dir( $path ) || mkdir( $path, 0777, true ); }
 	function array_get( $array, $key, $default = null ) { return is_array( $array ) && array_key_exists( $key, $array ) ? $array[ $key ] : $default; }
 	function sanitize_key( $value ) { return preg_replace( '/[^a-z0-9_\-]/', '', strtolower( (string) $value ) ); }
@@ -84,6 +87,10 @@ namespace {
 
 namespace AGSyncBridge {
 	class Config {
+		public function get_storage_dir() { return ABSPATH . 'wp-content/ag-sync-bridge-data'; }
+		public function get_data_dir( $name ) { return ABSPATH . 'wp-content/ag-sync-bridge-data/' . sanitize_key( $name ); }
+		public function get_state() { return array(); }
+		public function get( $key, $default = null ) { unset( $key ); return $default; }
 		public function get_plugin_basename() { return 'ag-sync-bridge/ag-sync-bridge.php'; }
 		public function get_exclude_patterns() {
 			return array(
@@ -114,7 +121,7 @@ namespace AGSyncBridge {
 
 	$config      = new Config();
 	$logger      = new Logger();
-	$file_system = new File_System_Service( $config, $logger );
+		$file_system = new File_System_Service( $config, $logger );
 	$archive     = new Archive_Service( $config, $logger );
 	$importer    = new Import_Service( $config, $logger, $file_system, new Database_Service(), $archive );
 
@@ -125,6 +132,27 @@ namespace AGSyncBridge {
 	$nested_link  = '';
 
 	try {
+		$upload_root = $file_system->get_upload_chunks_dir();
+		ensure_directory( $upload_root . '/recent' );
+		file_put_contents( $upload_root . '/recent/chunk-00000.part', 'recent' );
+		file_put_contents( $upload_root . '/recent/upload.json', wp_json_encode( array( 'updated_at' => gmdate( 'c' ) ) ) );
+		ensure_directory( $upload_root . '/stale' );
+		file_put_contents( $upload_root . '/stale/chunk-00000.part', 'stale' );
+		file_put_contents( $upload_root . '/stale/upload.json', wp_json_encode( array( 'updated_at' => gmdate( 'c', time() - 90000 ) ) ) );
+		ensure_directory( $upload_root . '/locked' );
+		file_put_contents( $upload_root . '/locked/chunk-00000.part', 'locked' );
+		file_put_contents( $upload_root . '/locked/upload.json', wp_json_encode( array( 'updated_at' => gmdate( 'c', time() - 90000 ) ) ) );
+		$locked_upload_lease = fopen( $upload_root . '/locked/upload.lock', 'c' );
+		expect_partial_boundary( is_resource( $locked_upload_lease ) && flock( $locked_upload_lease, LOCK_EX | LOCK_NB ), 'Test fixture must hold an active upload lease.' );
+		$file_system->cleanup_runtime_storage( null, null, 0 );
+		expect_partial_boundary( is_file( $upload_root . '/recent/chunk-00000.part' ), 'A recent active upload must survive zero-age runtime cleanup.' );
+		expect_partial_boundary( ! file_exists( $upload_root . '/stale' ), 'A stale upload directory must be eligible for cleanup.' );
+		expect_partial_boundary( is_file( $upload_root . '/locked/chunk-00000.part' ), 'A locked upload must survive zero-age runtime cleanup even with stale metadata.' );
+		flock( $locked_upload_lease, LOCK_UN );
+		fclose( $locked_upload_lease );
+		$file_system->cleanup_runtime_storage( null, null, 0 );
+		expect_partial_boundary( ! file_exists( $upload_root . '/locked' ), 'A stale upload must become eligible for cleanup after its lease is released.' );
+
 		ensure_directory( $outside );
 		ensure_directory( $link_parent );
 		file_put_contents( $outside . '/probe.txt', 'outside-original' );
