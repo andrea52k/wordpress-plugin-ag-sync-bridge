@@ -954,8 +954,12 @@ class Rest_Controller {
 		$path     = normalize_path( $this->file_system->get_incoming_dir() . '/' . $snapshot );
 		$async    = (bool) $request->get_param( 'async' );
 		$allow_partial_snapshot = (bool) $request->get_param( 'allow_partial_snapshot' );
+		$recovery_import = (bool) $request->get_param( 'recovery_import' );
 		$expected_partial_paths = $request->get_param( 'expected_partial_paths' );
 		$expected_partial_paths = is_array( $expected_partial_paths ) ? $expected_partial_paths : array();
+		if ( $recovery_import && ! $async ) {
+			return new WP_Error( 'ag_sync_bridge_recovery_import_async_required', __( 'Recovery import must run asynchronously so its supersession is recorded.', 'ag-sync-bridge' ), array( 'status' => 400 ) );
+		}
 
 		if ( ! file_exists( $path ) ) {
 			return new WP_Error( 'ag_sync_bridge_remote_import_missing', __( 'Uploaded snapshot file is missing.', 'ag-sync-bridge' ), array( 'status' => 404 ) );
@@ -976,7 +980,13 @@ class Rest_Controller {
 					)
 				);
 			}
+			if ( $recovery_import && ! $this->is_valid_stale_recovery_import( $path ) ) {
+				return new WP_Error( 'ag_sync_bridge_recovery_import_forbidden', __( 'Recovery import requires a full snapshot created by this exact live site.', 'ag-sync-bridge' ), array( 'status' => 409 ) );
+			}
 		} else {
+			if ( $recovery_import ) {
+				return new WP_Error( 'ag_sync_bridge_recovery_import_partial_forbidden', __( 'Recovery import cannot use a partial snapshot.', 'ag-sync-bridge' ), array( 'status' => 400 ) );
+			}
 			$expected_partial_paths = $this->file_system->normalize_partial_export_paths( $expected_partial_paths, false );
 			if ( is_wp_error( $expected_partial_paths ) ) {
 				return new WP_Error(
@@ -1037,7 +1047,7 @@ class Rest_Controller {
 				'schedule_args' => array( $operation_id, $path, $sha256, $import_contract ),
 			);
 
-			$operation = $this->runtime->reserve( 'import', $operation );
+			$operation = $this->runtime->reserve( 'import', $operation, $recovery_import );
 			if ( is_wp_error( $operation ) ) {
 				return $operation;
 			}
@@ -1094,6 +1104,27 @@ class Rest_Controller {
 		}
 
 		return is_wp_error( $result ) ? $result : new WP_REST_Response( $result );
+	}
+
+	/**
+	 * A recovery import may supersede a stale quarantined import only when the
+	 * package was exported by this exact live peer. This prevents the escape
+	 * hatch from becoming a general-purpose bypass of reconciliation.
+	 */
+	private function is_valid_stale_recovery_import( $path ) {
+		$current = $this->runtime->inspect();
+		if ( ! is_array( $current ) || 'import' !== (string) array_get( $current, 'kind', '' ) || 'reconcile_requested' !== (string) array_get( $current, 'status', '' ) || empty( array_get( array_get( $current, 'heartbeat', array() ), 'is_stale', false ) ) ) {
+			return false;
+		}
+
+		$manifest = $this->file_system->read_package_manifest( $path );
+		if ( ! is_array( $manifest ) || 'remote' !== (string) array_get( $manifest, 'source_role', '' ) ) {
+			return false;
+		}
+
+		$source_site = untrailingslashit( (string) array_get( $manifest, 'source_site_url', '' ) );
+		$source_home = untrailingslashit( (string) array_get( $manifest, 'source_home_url', '' ) );
+		return $source_site === untrailingslashit( site_url() ) && $source_home === untrailingslashit( home_url() );
 	}
 
 	public function run_async_import_snapshot( $operation_id, $path, $sha256, $import_contract = array() ) {

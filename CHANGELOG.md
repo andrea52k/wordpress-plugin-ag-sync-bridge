@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.51
+
+- Consente un import di recupero solo per sostituire un import live in quarantena con heartbeat scaduto.
+- Il recupero accetta esclusivamente uno snapshot completo prodotto dallo stesso live; gli snapshot parziali e i pacchetti locali restano bloccati.
+- Registra l'operazione sostituita nel nuovo runtime per un audit esplicito.
+
 ## 0.1.50
 
 - Allows a signed, verified bridge update only when an import is already quarantined and its heartbeat is stale.

@@ -20,7 +20,7 @@ Se devi modificare o gestire il plugin da un agente automatico, leggi prima:
 
 ## Versione
 
-Versione plugin: `0.1.50`
+Versione plugin: `0.1.51`
 
 Slug tecnico WordPress: `ag-sync-bridge`
 
@@ -321,6 +321,7 @@ Da `0.1.17`, cliccare `Bacheca > Aggiornamenti > Verifica di nuovo` forza anche 
 - `wp agsync remote_cancel --operation-id=<id> --kind=snapshot|import` annulla solo l'operazione remota indicata. Un import che ha gia modificato database o file resta `rollback_required` e va ripristinato dal backup.
 - `wp agsync cancel` richiede lo stop cooperativo dell'operazione locale attiva. Il segnale resta nel lock e viene letto durante snapshot, trasferimenti e import.
 - Uno stato `stale_or_orphaned` non equivale a errore certo e non equivale mai a successo. `remote_reconcile` richiede quarantena, attesa, nuova lettura dello stato e verifiche esplicite; la chiusura produce `reconciled`, mantiene l'avanzamento sotto 100 e registra `declared_success: false`.
+- `--recover-stale-remote-import` e riservato al recupero di un import `reconcile_requested` e senza heartbeat: richiede `--use-existing-snapshot`, uno snapshot `full` prodotto dallo stesso live, un import asincrono e registra l'operazione sostituita. Il peer locale autenticato HMAC è già il soggetto autorizzato a inviare snapshot completi; questi controlli limitano il percorso eccezionale e ne rendono esplicito l'audit.
 - `--allow-partial-snapshot` esiste solo per recovery deliberate e puo omettere file dal live.
 - Il fallback PHP per import/export DB e piu lento di `mysqldump/mysql`.
 - `.htaccess` viene sovrascritto solo se abilitato.

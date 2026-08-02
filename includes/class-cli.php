@@ -254,6 +254,9 @@ if ( defined( 'WP_CLI' ) && WP_CLI ) {
 		 * [--allow-partial-snapshot]
 		 * : Explicitly allow pushing a snapshot that is not marked as full. Use only for deliberate recovery operations.
 		 *
+		 * [--recover-stale-remote-import]
+		 * : Replace only a stale quarantined live import with a full snapshot that was created by that same live site.
+		 *
 		 * [--paths=<paths>]
 		 * : Comma/newline separated relative paths to push as a file-only partial package. Cannot be combined with --use-existing-snapshot.
 		 */
@@ -272,6 +275,7 @@ if ( defined( 'WP_CLI' ) && WP_CLI ) {
 					'use_existing_snapshot'  => ! empty( $assoc_args['use-existing-snapshot'] ),
 					'skip_remote_backup'     => ! empty( $assoc_args['skip-remote-backup'] ),
 					'allow_partial_snapshot' => ! empty( $assoc_args['allow-partial-snapshot'] ),
+					'recover_stale_remote_import' => ! empty( $assoc_args['recover-stale-remote-import'] ),
 					'partial_paths'          => $paths,
 				)
 			);

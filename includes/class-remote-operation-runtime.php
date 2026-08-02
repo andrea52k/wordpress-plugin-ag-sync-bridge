@@ -23,8 +23,16 @@ class Remote_Operation_Runtime {
 		$this->logger = $logger;
 	}
 
-	public function reserve( $kind, array $operation ) {
-		return $this->locked( function ( array $current ) use ( $kind, $operation ) {
+	public function reserve( $kind, array $operation, $allow_stale_recovery = false ) {
+		return $this->locked( function ( array $current ) use ( $kind, $operation, $allow_stale_recovery ) {
+			$stale_quarantine = 'import' === (string) array_get( $current, 'kind', '' )
+				&& 'reconcile_requested' === (string) array_get( $current, 'status', '' )
+				&& ( strtotime( (string) array_get( $current, 'heartbeat_at', '' ) ) < ( time() - self::DEFAULT_STALE_AFTER ) );
+			if ( $allow_stale_recovery && 'import' === $kind && $stale_quarantine ) {
+				$operation['recovery_of_operation_id'] = (string) array_get( $current, 'id', '' );
+				$operation['recovery_of_snapshot']     = (string) array_get( $current, 'snapshot', '' );
+				$operation['recovery_override']        = true;
+			} else {
 			if ( 'rollback_required' === (string) array_get( $current, 'status', '' ) ) {
 				return new WP_Error(
 					'ag_sync_bridge_remote_recovery_required',
@@ -34,6 +42,7 @@ class Remote_Operation_Runtime {
 			}
 			if ( ! empty( $current ) && ! $this->is_terminal( $current ) ) {
 				return new WP_Error( 'ag_sync_bridge_remote_operation_busy', __( 'A remote AG Sync operation is already active.', 'ag-sync-bridge' ), array( 'status' => 409, 'operation' => $current ) );
+			}
 			}
 			$operation['kind'] = $kind;
 			$operation['status'] = 'queued';

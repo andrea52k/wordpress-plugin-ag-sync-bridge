@@ -550,6 +550,7 @@ class Sync_Service {
 			$skip_remote_backup_arg = ! empty( $args['skip_remote_backup'] );
 			$skip_remote_backup    = $skip_remote_backup_arg || ! $remote_backups_enabled;
 			$allow_partial_snapshot = ! empty( $args['allow_partial_snapshot'] );
+			$recover_stale_remote_import = ! empty( $args['recover_stale_remote_import'] );
 			$partial_paths          = array_get( $args, 'partial_paths', array() );
 			$partial_paths          = is_array( $partial_paths ) ? $partial_paths : array();
 			$partial_paths          = $this->file_system->normalize_partial_export_paths( $partial_paths );
@@ -557,6 +558,9 @@ class Sync_Service {
 				return $partial_paths;
 			}
 			$is_partial_push = ! empty( $partial_paths );
+			if ( $recover_stale_remote_import && ( ! $use_existing_snapshot || $is_partial_push || $allow_partial_snapshot ) ) {
+				return new WP_Error( 'ag_sync_bridge_recovery_import_contract_invalid', __( 'Stale-import recovery requires --use-existing-snapshot and one complete live-origin snapshot.', 'ag-sync-bridge' ) );
+			}
 			$deployment_plan = $this->plan_push( $partial_paths );
 			if ( is_wp_error( $deployment_plan ) ) {
 				return $deployment_plan;
@@ -673,6 +677,11 @@ class Sync_Service {
 				$this->fail_operation( 'push', $validation );
 				return $validation;
 			}
+			if ( $recover_stale_remote_import && 'remote' !== (string) array_get( array_get( $local_snapshot, 'manifest', array() ), 'source_role', '' ) ) {
+				$error = new WP_Error( 'ag_sync_bridge_recovery_import_origin_invalid', __( 'Stale-import recovery requires a snapshot exported by the live peer.', 'ag-sync-bridge' ) );
+				$this->fail_operation( 'push', $error );
+				return $error;
+			}
 
 			$this->logger->info( 'Local push snapshot completed.', array( 'snapshot' => array_get( $local_snapshot, 'basename', '' ) ) );
 			$this->update_operation( 'push', 40, 'upload', __( 'Upload snapshot verso il live...', 'ag-sync-bridge' ) );
@@ -700,7 +709,8 @@ class Sync_Service {
 				$allow_partial_snapshot || $is_partial_push,
 				$cancellation_check,
 				null,
-				$is_partial_push ? $partial_paths : array()
+				$is_partial_push ? $partial_paths : array(),
+				$recover_stale_remote_import
 			);
 			if ( is_wp_error( $remote_import ) ) {
 				$this->fail_operation( 'push', $remote_import );

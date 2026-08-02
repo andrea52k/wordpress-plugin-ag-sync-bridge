@@ -123,6 +123,19 @@ expect_true( 'reconciled' === $closed['status'], 'verified orphan closes as reco
 expect_true( false === $closed['reconciliation']['declared_success'], 'reconciliation never declares sync success' );
 expect_true( $closed['progress'] < 100, 'reconciled operation never reports 100 percent' );
 
+$recovery_seed = $runtime->reserve( 'import', array( 'id' => 'recovery-seed' ) );
+$runtime->claim( 'recovery-seed' );
+$state = json_decode( file_get_contents( $state_path ), true );
+$state['heartbeat_at'] = gmdate( 'c', time() - 1200 );
+$state['updated_at'] = $state['heartbeat_at'];
+file_put_contents( $state_path, json_encode( $state ) );
+$quarantined_recovery_seed = $runtime->request_reconciliation( 'recovery-seed', 'import', $state['updated_at'], 'Worker verified absent.', 60 );
+$recovery_import = $runtime->reserve( 'import', array( 'id' => 'recovery-import' ), true );
+expect_true( 'queued' === $recovery_import['status'], 'stale quarantined import accepts only explicit recovery reservation' );
+expect_true( 'recovery-seed' === $recovery_import['recovery_of_operation_id'] && true === $recovery_import['recovery_override'], 'recovery reservation records the superseded operation' );
+expect_true( is_wp_error( $runtime->reserve( 'snapshot', array( 'id' => 'recovery-concurrent' ), true ) ), 'recovery override cannot open a concurrent non-import operation' );
+$runtime->request_cancel( 'recovery-import', 'import' );
+
 $fifth = $runtime->reserve( 'import', array( 'id' => 'five' ) );
 $runtime->claim( 'five' );
 $state = json_decode( file_get_contents( $state_path ), true );

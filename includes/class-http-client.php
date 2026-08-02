@@ -589,7 +589,7 @@ class Http_Client {
 		return $result;
 	}
 
-	public function trigger_remote_import( $snapshot_basename, $expected_sha256, $allow_partial_snapshot = false, $cancellation_check = null, $operation_callback = null, array $expected_partial_paths = array() ) {
+	public function trigger_remote_import( $snapshot_basename, $expected_sha256, $allow_partial_snapshot = false, $cancellation_check = null, $operation_callback = null, array $expected_partial_paths = array(), $recovery_import = false ) {
 		$result = $this->request_json(
 			'POST',
 			'/ag-sync-bridge/v1/snapshot/import',
@@ -599,6 +599,7 @@ class Http_Client {
 				'async'                  => true,
 				'allow_partial_snapshot' => $allow_partial_snapshot ? 1 : 0,
 				'expected_partial_paths' => array_values( $expected_partial_paths ),
+				'recovery_import'        => $recovery_import ? 1 : 0,
 			)
 		);
 
