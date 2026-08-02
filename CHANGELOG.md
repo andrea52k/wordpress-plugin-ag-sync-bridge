@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.56
+
+- Mantiene il fix del cleanup remoto usando l'accesso configurazione compatibile con tutti i runtime e i test.
+
 ## 0.1.55
 
 - Sul peer remoto ignora il `current_operation` locale importato nel database quando decide se può pulire `temp` e `incoming`; restano vincolanti le operazioni remote reali.

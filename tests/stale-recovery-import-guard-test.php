@@ -29,7 +29,7 @@ expect_recovery_guard( false !== strpos( $rest, "'remote' !== (string) array_get
 expect_recovery_guard( false !== strpos( $runtime, "'import' === \$kind && \$stale_quarantine" ), 'Runtime may supersede only stale quarantined imports.' );
 expect_recovery_guard( false !== strpos( $runtime, "\$operation['recovery_override']" ), 'Runtime must record the exceptional recovery reservation.' );
 expect_recovery_guard( false !== strpos( $file_system, 'public function read_package_manifest( $package_path )' ), 'REST recovery validation must be allowed to read the package manifest.' );
-expect_recovery_guard( false !== strpos( $file_system, "'remote' !== \$this->config->get_role()" ), 'Remote cleanup must ignore a local current_operation imported through the database.' );
+expect_recovery_guard( false !== strpos( $file_system, "\$this->config->get( 'role', 'local' )" ), 'Remote cleanup must ignore a local current_operation imported through the database.' );
 expect_recovery_guard( false !== strpos( $rest_source, "'/maintenance/storage-audit'" ) && false !== strpos( $rest_source, 'public function storage_audit()' ), 'Storage audit must expose a dedicated read-only authenticated route.' );
 expect_recovery_guard( false !== strpos( $cli_source, 'public function remote_storage_audit()' ), 'CLI must expose the remote storage audit.' );
 

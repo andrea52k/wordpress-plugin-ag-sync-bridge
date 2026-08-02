@@ -400,7 +400,7 @@ class File_System_Service {
 		$remote_import   = array_get( $state, 'remote_import_operation', array() );
 		$operation_status = is_array( $operation ) ? (string) array_get( $operation, 'status', '' ) : '';
 		$open_statuses   = array( 'queued', 'running', 'cancel_requested' );
-		$operation_open  = 'remote' !== $this->config->get_role() && is_array( $operation ) && ! empty( $operation ) && in_array( $operation_status, $open_statuses, true );
+		$operation_open  = 'remote' !== (string) $this->config->get( 'role', 'local' ) && is_array( $operation ) && ! empty( $operation ) && in_array( $operation_status, $open_statuses, true );
 		$operation_open  = $operation_open || ( is_array( $remote_snapshot ) && in_array( array_get( $remote_snapshot, 'status', '' ), $open_statuses, true ) );
 		$operation_open  = $operation_open || ( is_array( $remote_import ) && in_array( array_get( $remote_import, 'status', '' ), $open_statuses, true ) );
 		$results         = array(
