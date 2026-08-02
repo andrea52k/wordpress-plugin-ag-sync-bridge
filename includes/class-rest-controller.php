@@ -228,6 +228,16 @@ class Rest_Controller {
 
 		register_rest_route(
 			'ag-sync-bridge/v1',
+			'/maintenance/storage-audit',
+			array(
+				'methods'             => 'GET',
+				'callback'            => array( $this, 'storage_audit' ),
+				'permission_callback' => array( $this, 'check_permission' ),
+			)
+		);
+
+		register_rest_route(
+			'ag-sync-bridge/v1',
 			'/maintenance/update-bridge',
 			array(
 				'methods'             => 'POST',
@@ -1469,6 +1479,44 @@ class Rest_Controller {
 		$this->logger->info( 'Runtime storage cleanup completed.', array_get( $result, 'total', array() ) );
 
 		return new WP_REST_Response( $result );
+	}
+
+	public function storage_audit() {
+		return new WP_REST_Response(
+			array(
+				'wordpress'  => $this->audit_directory_children( ABSPATH ),
+				'wp_content' => $this->audit_directory_children( WP_CONTENT_DIR ),
+				'audited_at' => gmdate( 'c' ),
+			)
+		);
+	}
+
+	private function audit_directory_children( $root ) {
+		$rows = array();
+		foreach ( new \DirectoryIterator( $root ) as $child ) {
+			if ( $child->isDot() || $child->isLink() ) {
+				continue;
+			}
+			$path = $child->getPathname();
+			$bytes = $child->isFile() ? (int) $child->getSize() : 0;
+			$files = $child->isFile() ? 1 : 0;
+			if ( $child->isDir() ) {
+				try {
+					$iterator = new \RecursiveIteratorIterator( new \RecursiveDirectoryIterator( $path, \FilesystemIterator::SKIP_DOTS ) );
+					foreach ( $iterator as $entry ) {
+						if ( $entry->isFile() && ! $entry->isLink() ) {
+							$bytes += (int) $entry->getSize();
+							$files++;
+						}
+					}
+				} catch ( \UnexpectedValueException $error ) {
+					unset( $error );
+				}
+			}
+			$rows[] = array( 'name' => $child->getFilename(), 'path' => normalize_path( $path ), 'bytes' => $bytes, 'files' => $files );
+		}
+		usort( $rows, static function ( $left, $right ) { return (int) $right['bytes'] <=> (int) $left['bytes']; } );
+		return $rows;
 	}
 
 	public function update_bridge( WP_REST_Request $request ) {

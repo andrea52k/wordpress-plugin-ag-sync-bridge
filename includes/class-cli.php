@@ -370,6 +370,17 @@ if ( defined( 'WP_CLI' ) && WP_CLI ) {
 			\WP_CLI::success( 'Remote cleanup completed.' );
 		}
 
+		/** Audits remote WordPress storage without changing files. */
+		public function remote_storage_audit() {
+			$client = new Http_Client( self::$config, self::$logger );
+			$result = $client->audit_remote_storage();
+			if ( is_wp_error( $result ) ) {
+				\WP_CLI::error( $result->get_error_message() );
+			}
+			\WP_CLI::log( wp_json_encode( $result, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE ) );
+			\WP_CLI::success( 'Remote storage audit completed without changes.' );
+		}
+
 		/**
 		 * Requests cancellation of exactly one remote async snapshot or import.
 		 *

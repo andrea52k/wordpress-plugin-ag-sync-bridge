@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.53
+
+- Aggiunge un audit remoto in sola lettura delle dimensioni delle cartelle WordPress e `wp-content`, autenticato come le altre operazioni AG Sync.
+
 ## 0.1.52
 
 - Espone in sola lettura il manifest del pacchetto al controller REST, evitando il fatal durante la validazione di un recovery import.

@@ -8,6 +8,8 @@ $http = file_get_contents( $root . '/includes/class-http-client.php' );
 $rest = file_get_contents( $root . '/includes/class-rest-controller.php' );
 $runtime = file_get_contents( $root . '/includes/class-remote-operation-runtime.php' );
 $file_system = file_get_contents( $root . '/includes/class-file-system-service.php' );
+$cli_source = file_get_contents( $root . '/includes/class-cli.php' );
+$rest_source = file_get_contents( $root . '/includes/class-rest-controller.php' );
 
 function expect_recovery_guard( $condition, $message ) {
 	if ( ! $condition ) {
@@ -27,5 +29,7 @@ expect_recovery_guard( false !== strpos( $rest, "'remote' !== (string) array_get
 expect_recovery_guard( false !== strpos( $runtime, "'import' === \$kind && \$stale_quarantine" ), 'Runtime may supersede only stale quarantined imports.' );
 expect_recovery_guard( false !== strpos( $runtime, "\$operation['recovery_override']" ), 'Runtime must record the exceptional recovery reservation.' );
 expect_recovery_guard( false !== strpos( $file_system, 'public function read_package_manifest( $package_path )' ), 'REST recovery validation must be allowed to read the package manifest.' );
+expect_recovery_guard( false !== strpos( $rest_source, "'/maintenance/storage-audit'" ) && false !== strpos( $rest_source, 'public function storage_audit()' ), 'Storage audit must expose a dedicated read-only authenticated route.' );
+expect_recovery_guard( false !== strpos( $cli_source, 'public function remote_storage_audit()' ), 'CLI must expose the remote storage audit.' );
 
 echo "stale recovery import guard: ok\n";

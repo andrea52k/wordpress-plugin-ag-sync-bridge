@@ -123,6 +123,10 @@ class Http_Client {
 		return $this->request_json( 'POST', '/ag-sync-bridge/v1/maintenance/cleanup', $args );
 	}
 
+	public function audit_remote_storage() {
+		return $this->request_json( 'GET', '/ag-sync-bridge/v1/maintenance/storage-audit' );
+	}
+
 	public function cancel_remote_operation( $operation_id, $kind ) {
 		return $this->request_json(
 			'POST',
