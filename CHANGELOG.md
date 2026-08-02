@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.54
+
+- Estende l'audit remoto con il dettaglio delle sottocartelle runtime AG Sync.
+
 ## 0.1.53
 
 - Aggiunge un audit remoto in sola lettura delle dimensioni delle cartelle WordPress e `wp-content`, autenticato come le altre operazioni AG Sync.

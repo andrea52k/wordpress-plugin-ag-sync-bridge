@@ -1486,6 +1486,7 @@ class Rest_Controller {
 			array(
 				'wordpress'  => $this->audit_directory_children( ABSPATH ),
 				'wp_content' => $this->audit_directory_children( WP_CONTENT_DIR ),
+				'ag_sync_data' => $this->audit_directory_children( $this->config->get_data_dir() ),
 				'audited_at' => gmdate( 'c' ),
 			)
 		);
