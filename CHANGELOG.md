@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.46
+
+- Corregge il backup live scaricato sul peer locale: i nuovi artefatti vengono
+  creati nella cartella snapshot e il recovery può scaricare e cancellare in
+  modo esatto anche un artefatto 0.1.45 già creato nella cartella backup,
+  soltanto quando coincide con il risultato dell'operazione remota terminale.
+
 ## 0.1.45
 
 - Aggiunge il protocollo candidato V4MPG table-scoped `wp agsync v4mpg`: piano, backup paginato conservato e verificato sul peer locale, deploy delta content-only, verifica e rollback stale-safe. Il live accetta soltanto target presenti nella allowlist esplicita, corpi HMAC nonce-bound e release checksum-bound; gli ID versione vengono sempre creati sul server.

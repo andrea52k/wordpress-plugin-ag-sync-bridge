@@ -334,7 +334,8 @@ class Rest_Controller {
 		if(is_wp_error($operation)){return $operation;}
 		if(is_array($operation)&&!empty($operation)&&!in_array((string)array_get($operation,'status',''),array('complete','failed','cancelled','reconciled','rolled-back'),true)){return new WP_Error('ag_sync_bridge_snapshot_delete_busy',__('Snapshot is still referenced by an active operation.','ag-sync-bridge'),array('status'=>409));}
 		if(is_array($operation)&&!empty($operation)&&(string)array_get($operation,'id','')!==$operation_id){return new WP_Error('ag_sync_bridge_snapshot_delete_operation_mismatch',__('Snapshot cleanup operation identity mismatch.','ag-sync-bridge'),array('status'=>409));}
-		try{return new WP_REST_Response($this->file_system->delete_exact_snapshot($basename,$sha256,$manifest_id,$manifest_sha256));}catch(\Throwable $error){return new WP_Error('ag_sync_bridge_snapshot_delete_blocked',$error->getMessage(),array('status'=>409));}
+		$storage='snapshots';$result=is_array($operation)?array_get($operation,'result',array()):array();if(is_array($result)&&(string)array_get($operation,'type','')==='live-download-only-backup'&&(string)array_get($result,'basename','')===$basename){$storage='backups';}
+		try{return new WP_REST_Response($this->file_system->delete_exact_snapshot($basename,$sha256,$manifest_id,$manifest_sha256,$storage));}catch(\Throwable $error){return new WP_Error('ag_sync_bridge_snapshot_delete_blocked',$error->getMessage(),array('status'=>409));}
 	}
 
 	public function create_snapshot( WP_REST_Request $request ) {
@@ -1454,12 +1455,29 @@ class Rest_Controller {
 		return new WP_REST_Response( $result );
 	}
 
+	/** Resolve normal snapshots, plus the exact terminal 0.1.45 backup artifact. */
+	private function find_downloadable_snapshot_package( $basename ) {
+		$path = $this->file_system->find_package( $basename, 'snapshots' );
+		if ( $path ) {
+			return $path;
+		}
+
+		$state     = $this->config->get_state();
+		$operation = is_array( $state ) ? array_get( $state, 'remote_snapshot_operation', array() ) : array();
+		$result    = is_array( $operation ) ? array_get( $operation, 'result', array() ) : array();
+		$terminal  = in_array( (string) array_get( $operation, 'status', '' ), array( 'complete', 'reconciled' ), true );
+		$legacy    = 'live-download-only-backup' === (string) array_get( $operation, 'type', '' );
+		$exact     = is_array( $result ) && hash_equals( (string) array_get( $result, 'basename', '' ), (string) $basename );
+
+		return $terminal && $legacy && $exact ? $this->file_system->find_package( $basename, 'backups' ) : '';
+	}
+
 	public function download_snapshot( WP_REST_Request $request ) {
 		@set_time_limit( 0 );
 		@ini_set( 'memory_limit', '-1' );
 
 		$snapshot = sanitize_file_name( (string) $request->get_param( 'snapshot' ) );
-		$path     = $this->file_system->find_package( $snapshot, 'snapshots' );
+		$path     = $this->find_downloadable_snapshot_package( $snapshot );
 
 		if ( ! $path ) {
 			return new WP_Error( 'ag_sync_bridge_download_missing', __( 'Requested snapshot was not found.', 'ag-sync-bridge' ), array( 'status' => 404 ) );
@@ -1489,7 +1507,7 @@ class Rest_Controller {
 
 	public function download_snapshot_chunk( WP_REST_Request $request ) {
 		$snapshot = sanitize_file_name( (string) $request->get_param( 'snapshot' ) );
-		$path     = $this->file_system->find_package( $snapshot, 'snapshots' );
+		$path     = $this->find_downloadable_snapshot_package( $snapshot );
 
 		if ( ! $path ) {
 			return new WP_Error( 'ag_sync_bridge_download_missing', __( 'Requested snapshot was not found.', 'ag-sync-bridge' ), array( 'status' => 404 ) );
@@ -1549,7 +1567,7 @@ class Rest_Controller {
 		@set_time_limit( 0 );
 
 		$snapshot = sanitize_file_name( (string) $request->get_param( 'snapshot' ) );
-		$path     = $this->file_system->find_package( $snapshot, 'snapshots' );
+		$path     = $this->find_downloadable_snapshot_package( $snapshot );
 
 		if ( ! $path ) {
 			return new WP_Error( 'ag_sync_bridge_download_missing', __( 'Requested snapshot was not found.', 'ag-sync-bridge' ), array( 'status' => 404 ) );
