@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.47
+
+- Il delta V4MPG lega ogni cella al `url_path` immutabile della versione base,
+  risolve la riga tramite `version_id + project_id + url_path` e conserva
+  `authoring_geo_id`, `city` e `province` come evidenza editoriale. La scrittura
+  staging usa inoltre un CAS sull'hash esatto della riga precedente.
+- Il backup live completo accetta lo scope `full` firmato nel manifest anche
+  quando il wrapper di risposta non ripete il campo `snapshot_scope`.
+
 ## 0.1.46
 
 - Corregge il backup live scaricato sul peer locale: i nuovi artefatti vengono

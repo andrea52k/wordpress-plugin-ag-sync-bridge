@@ -36,7 +36,9 @@ All endpoints are POST-only and require nonce HMAC authentication bound to the
 exact JSON bytes. The deployment payload contains release receipt hashes,
 final dataset/header/URL digests, and the declared cell deltas. It never sends
 full row data or local version IDs. The remote clones the active rows with
-`INSERT ... SELECT`, resolves every declared `geo_id`, verifies `before_hash`,
+`INSERT ... SELECT`, resolves each declared cell by the exact immutable
+`version_id + project_id + url_path` tuple, retains the authoring `geo_id` plus
+the immutable row's `city` and `province` as bidirectional audit evidence, verifies `before_hash`,
 updates only the editorial field allowlist, and checks the ordered final digest
 before switching both project pointers in one InnoDB transaction.
 

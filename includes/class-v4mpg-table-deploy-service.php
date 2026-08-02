@@ -435,7 +435,7 @@ class V4MPG_Table_Deploy_Service {
 			throw new RuntimeException( 'Remote V4MPG base clone row count mismatch.' );
 		}
 		foreach ( $this->materialize_delta_rows( $previous, $candidate ) as $row_index => $row ) {
-			$updated = $this->wpdb->query( $this->wpdb->prepare( "UPDATE `{$tables['rows']}` SET row_data=%s,row_sha256=%s WHERE version_id=%d AND row_index=%d", $row['row_data'], $row['row_sha256'], $version_id, $row_index ) );
+			$updated = $this->wpdb->query( $this->wpdb->prepare( "UPDATE `{$tables['rows']}` SET row_data=%s,row_sha256=%s WHERE version_id=%d AND project_id=%d AND row_index=%d AND url_path=%s AND row_sha256=%s", $row['row_data'], $row['row_sha256'], $version_id, $row['project_id'], $row_index, $row['url_path'], $row['previous_row_sha256'] ) );
 			if ( 1 !== (int) $updated ) { throw new RuntimeException( 'Unable to apply an exact V4MPG delta row.' ); }
 		}
 		$stored = $this->verify_version_database( $version_id, $target['project_id'], $target['dataset_id'] );
@@ -459,26 +459,39 @@ class V4MPG_Table_Deploy_Service {
 		$headers = json_decode( (string) $previous['header_json'], true );
 		if ( ! is_array( $headers ) || count( $headers ) !== (int) $previous['column_count'] ) { throw new RuntimeException( 'Active V4MPG headers are invalid.' ); }
 		$columns = array_flip( array_map( 'strval', $headers ) );
-		$geo_column = array_search( 'geo_id', array_map( 'strval', $headers ), true );
-		if ( false === $geo_column ) { throw new RuntimeException( 'Immutable V4MPG header has no geo_id column.' ); }
-		$by_geo = array();
+		$by_path = array();
+		$geo_paths = array();
+		$path_geos = array();
 		foreach ( $candidate['declared_changes'] as $change ) {
 			if ( ! array_key_exists( $change['field'], $columns ) || ! in_array( $change['field'], self::ALLOWED_CONTENT_FIELDS, true ) ) { throw new RuntimeException( 'Declared V4MPG field is not in the immutable content allowlist.' ); }
-			$by_geo[ $change['geo_id'] ][] = $change;
+			$path = (string) $change['url_path'];
+			$geo_id = (string) $change['authoring_geo_id'];
+			if ( isset( $geo_paths[ $geo_id ] ) && ! hash_equals( $geo_paths[ $geo_id ], $path ) ) { throw new RuntimeException( 'Declared V4MPG authoring_geo_id is bound to multiple URL paths.' ); }
+			if ( isset( $path_geos[ $path ] ) && ! hash_equals( $path_geos[ $path ], $geo_id ) ) { throw new RuntimeException( 'Declared V4MPG URL path is bound to multiple authoring_geo_id values.' ); }
+			$geo_paths[ $geo_id ] = $path;
+			$path_geos[ $path ] = $geo_id;
+			$by_path[ $path ][] = $change;
 		}
-		$geo_ids = array_keys( $by_geo ); sort( $geo_ids, SORT_STRING );
+		$url_paths = array_keys( $by_path ); sort( $url_paths, SORT_STRING );
 		$tables = $this->tables();
-		$placeholders = implode( ',', array_fill( 0, count( $geo_ids ), '%s' ) );
-		$sql = $this->wpdb->prepare( "SELECT row_index,row_data,row_sha256 FROM `{$tables['rows']}` WHERE version_id=%d AND JSON_UNQUOTE(JSON_EXTRACT(row_data,'$[" . (int)$geo_column . "]')) IN ({$placeholders}) ORDER BY row_index", array_merge( array( (int)$previous['active_version_id'] ), $geo_ids ) );
+		$placeholders = implode( ',', array_fill( 0, count( $url_paths ), '%s' ) );
+		$sql = $this->wpdb->prepare( "SELECT project_id,row_index,url_path,city,province,row_data,row_sha256 FROM `{$tables['rows']}` WHERE version_id=%d AND project_id=%d AND url_path IN ({$placeholders}) ORDER BY row_index FOR UPDATE", array_merge( array( (int)$previous['active_version_id'], (int)$previous['project_id'] ), $url_paths ) );
 		$source_rows = $this->wpdb->get_results( $sql, ARRAY_A );
-		if ( ! is_array( $source_rows ) || count( $source_rows ) !== count( $geo_ids ) ) { throw new RuntimeException( 'Declared V4MPG geo_id rows are missing or non-unique in the active version.' ); }
-		$result = array(); $applied = 0;
+		if ( ! is_array( $source_rows ) ) { throw new RuntimeException( 'Unable to resolve declared V4MPG URL rows.' ); }
+		$resolved = array();
 		foreach ( $source_rows as $source ) {
+			$resolved_path = (string) ( $source['url_path'] ?? '' );
+			if ( ! isset( $by_path[ $resolved_path ] ) || isset( $resolved[ $resolved_path ] ) ) { throw new RuntimeException( 'Declared V4MPG URL rows are extra or non-unique in the active version.' ); }
+			$resolved[ $resolved_path ] = $source;
+		}
+		if ( count( $resolved ) !== count( $by_path ) || array_diff_key( $by_path, $resolved ) || array_diff_key( $resolved, $by_path ) ) { throw new RuntimeException( 'Declared V4MPG URL rows are missing, extra, or non-unique in the active version.' ); }
+		$result = array(); $applied = 0;
+		foreach ( $resolved as $source ) {
 			$index=(int)$source['row_index'];$values=json_decode((string)$source['row_data'],true);
 			if(!is_array($values)||count($values)!==count($headers)||!hash_equals(strtolower((string)$source['row_sha256']),hash('sha256',(string)$source['row_data']))){throw new RuntimeException('Active V4MPG delta source row integrity failed.');}
-			$geo_id=(string)$values[$geo_column];if(!isset($by_geo[$geo_id])){throw new RuntimeException('Resolved V4MPG geo_id is outside the declaration.');}
-			foreach($by_geo[$geo_id] as $change){$column=(int)$columns[$change['field']];$before=$this->content_value_hash($values[$column]);if(!hash_equals($before,$change['before_hash'])){throw new RuntimeException('Live V4MPG before_hash precondition failed.');}if(!hash_equals($this->content_value_hash($change['after']),$change['after_hash'])||$values[$column]===$change['after']){throw new RuntimeException('Declared V4MPG after value is invalid or unchanged.');}$values[$column]=$change['after'];$applied++;}
-			$json=wp_json_encode($values,JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE);if(!is_string($json)){throw new RuntimeException('Unable to encode patched V4MPG row.');}$result[$index]=array('row_data'=>$json,'row_sha256'=>hash('sha256',$json));
+			$url_path=(string)($source['url_path']??'');if(!isset($by_path[$url_path])){throw new RuntimeException('Resolved V4MPG URL path is outside the declaration.');}
+			foreach($by_path[$url_path] as $change){if(!hash_equals($url_path,(string)$change['url_path'])||!hash_equals((string)$source['city'],(string)$change['city'])||!hash_equals((string)$source['province'],(string)$change['province'])){throw new RuntimeException('Resolved V4MPG URL geography does not match its declaration.');}$column=(int)$columns[$change['field']];$before=$this->content_value_hash($values[$column]);if(!hash_equals($before,$change['before_hash'])){throw new RuntimeException('Live V4MPG before_hash precondition failed.');}if(!hash_equals($this->content_value_hash($change['after']),$change['after_hash'])||$values[$column]===$change['after']){throw new RuntimeException('Declared V4MPG after value is invalid or unchanged.');}$values[$column]=$change['after'];$applied++;}
+			$json=wp_json_encode($values,JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE);if(!is_string($json)){throw new RuntimeException('Unable to encode patched V4MPG row.');}$result[$index]=array('project_id'=>(int)$source['project_id'],'url_path'=>$url_path,'previous_row_sha256'=>strtolower((string)$source['row_sha256']),'row_data'=>$json,'row_sha256'=>hash('sha256',$json));
 		}
 		if($applied!==(int)$candidate['changed_cell_count']){throw new RuntimeException('Applied V4MPG delta count mismatch.');}
 		return $result;
@@ -632,7 +645,7 @@ class V4MPG_Table_Deploy_Service {
 		if ( isset( $raw['id'] ) || isset( $raw['version_id'] ) || isset( $raw['version_key'] ) ) { throw new RuntimeException( 'Local version identifiers are forbidden.' ); }
 		if ( (int)$raw['row_count'] < 1 || (int)$raw['row_count'] > self::MAX_ROWS || (int)$raw['column_count'] < 1 || ! hash_equals( strtolower($raw['dataset_sha256']), strtolower($raw['ordered_digest']) ) ) { throw new RuntimeException( 'Candidate metadata count or digest is invalid.' ); }
 		if(!is_array($raw['declared_changes'])||!self::is_list($raw['declared_changes'])||count($raw['declared_changes'])!==(int)$raw['changed_cell_count']||count($raw['declared_changes'])>self::MAX_CHANGES){throw new RuntimeException('Declared cell changes are invalid or exceed the limit.');}
-		$declared=array();$seen=array();foreach($raw['declared_changes'] as $change){$this->assert_request_keys($change,array('geo_id','field','before_hash','after_hash','after'));$geo_id=(string)$change['geo_id'];$field=(string)$change['field'];$this->assert_hash($change['before_hash']);$this->assert_hash($change['after_hash']);$key=$geo_id."\0".$field;if(!preg_match('/^[A-Za-z0-9._:-]{1,80}$/',$geo_id)||!in_array($field,self::ALLOWED_CONTENT_FIELDS,true)||isset($seen[$key])||(!is_string($change['after'])&&null!==$change['after'])){throw new RuntimeException('Declared cell change identity/value is invalid or duplicate.');}$seen[$key]=true;$declared[]=array('geo_id'=>$geo_id,'field'=>$field,'before_hash'=>strtolower($change['before_hash']),'after_hash'=>strtolower($change['after_hash']),'after'=>$change['after']);}
+		$declared=array();$seen=array();$geo_paths=array();$path_geos=array();foreach($raw['declared_changes'] as $change){$this->assert_request_keys($change,array('authoring_geo_id','url_path','city','province','field','before_hash','after_hash','after'));$geo_id=(string)$change['authoring_geo_id'];$url_path=(string)$change['url_path'];$city=(string)$change['city'];$province=(string)$change['province'];$field=(string)$change['field'];$this->assert_hash($change['before_hash']);$this->assert_hash($change['after_hash']);$key=$url_path."\0".$field;if(!preg_match('/^[A-Za-z0-9._:-]{1,80}$/',$geo_id)||!preg_match('#^/[A-Za-z0-9._~%/-]{1,253}/$#',$url_path)||false!==strpos($url_path,'//')||''===trim($city)||strlen($city)>120||''===trim($province)||strlen($province)>120||!in_array($field,self::ALLOWED_CONTENT_FIELDS,true)||isset($seen[$key])||(!is_string($change['after'])&&null!==$change['after'])){throw new RuntimeException('Declared cell change identity/value is invalid or duplicate.');}if(isset($geo_paths[$geo_id])&&!hash_equals($geo_paths[$geo_id],$url_path)){throw new RuntimeException('Declared authoring_geo_id maps to multiple URL paths.');}if(isset($path_geos[$url_path])&&!hash_equals($path_geos[$url_path],$geo_id)){throw new RuntimeException('Declared URL path maps to multiple authoring_geo_id values.');}$geo_paths[$geo_id]=$url_path;$path_geos[$url_path]=$geo_id;$seen[$key]=true;$declared[]=array('authoring_geo_id'=>$geo_id,'url_path'=>$url_path,'city'=>$city,'province'=>$province,'field'=>$field,'before_hash'=>strtolower($change['before_hash']),'after_hash'=>strtolower($change['after_hash']),'after'=>$change['after']);}
 		return array_merge( $raw, array( 'declared_changes'=>$declared,'changed_cell_count'=>count($declared),'project_id'=>$project_id,'dataset_id'=>$dataset_id,'row_count'=>(int)$raw['row_count'],'column_count'=>(int)$raw['column_count'] ) );
 	}
 
@@ -669,7 +682,7 @@ class V4MPG_Table_Deploy_Service {
 
 	private function tables() { $prefix=(string)$this->wpdb->prefix; if(!preg_match('/^[A-Za-z0-9_]+$/',$prefix)){throw new RuntimeException('Unsafe WordPress table prefix.');} return array('versions'=>$prefix.'mpg_runtime_dataset_versions','rows'=>$prefix.'mpg_runtime_dataset_rows','projects'=>$prefix.'mpg_runtime_projects'); }
 	private function assert_tables_exist(){
-		$required=array('versions'=>array('id','project_id','dataset_id','version_key','dataset_sha256','header_sha256','urls_sha256','row_count','column_count','status'),'rows'=>array('version_id','project_id','row_index','url_path','row_data','row_sha256'),'projects'=>array('project_id','active_version_id','enabled'));
+		$required=array('versions'=>array('id','project_id','dataset_id','version_key','dataset_sha256','header_sha256','urls_sha256','row_count','column_count','status'),'rows'=>array('version_id','project_id','row_index','url_path','city','province','row_data','row_sha256'),'projects'=>array('project_id','active_version_id','enabled'));
 		foreach($this->tables() as $key=>$table){$found=$this->wpdb->get_var($this->wpdb->prepare('SHOW TABLES LIKE %s',$table));if((string)$found!==$table){throw new RuntimeException('Required V4MPG runtime table missing.');}$status=$this->wpdb->get_row($this->wpdb->prepare('SHOW TABLE STATUS LIKE %s',$table),ARRAY_A);if(!is_array($status)||'innodb'!==strtolower((string)($status['Engine']??''))){throw new RuntimeException('V4MPG atomic deployment requires InnoDB tables.');}$columns=$this->wpdb->get_col("SHOW COLUMNS FROM `{$table}`",0);foreach($required[$key] as $column){if(!in_array($column,$columns,true)){throw new RuntimeException('V4MPG runtime schema is missing a required column.');}}}
 		$tables=$this->tables();$project_primary=(int)$this->wpdb->get_var("SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='{$tables['projects']}' AND index_name='PRIMARY' AND column_name='project_id'");$row_primary=(int)$this->wpdb->get_var("SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema=DATABASE() AND table_name='{$tables['rows']}' AND index_name='PRIMARY' AND column_name IN ('version_id','row_index')");if(1!==$project_primary||2!==$row_primary){throw new RuntimeException('V4MPG runtime primary keys are not the expected atomic schema.');}
 	}
