@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.55
+
+- Sul peer remoto ignora il `current_operation` locale importato nel database quando decide se può pulire `temp` e `incoming`; restano vincolanti le operazioni remote reali.
+
 ## 0.1.54
 
 - Estende l'audit remoto con il dettaglio delle sottocartelle runtime AG Sync.
