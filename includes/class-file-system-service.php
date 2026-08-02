@@ -2299,7 +2299,7 @@ class File_System_Service {
 		return $meta;
 	}
 
-	private function read_package_manifest( $package_path ) {
+	public function read_package_manifest( $package_path ) {
 		if ( ! file_exists( $package_path ) || ! class_exists( 'ZipArchive' ) ) {
 			return array();
 		}

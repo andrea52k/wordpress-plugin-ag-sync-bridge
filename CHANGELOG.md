@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.52
+
+- Espone in sola lettura il manifest del pacchetto al controller REST, evitando il fatal durante la validazione di un recovery import.
+
 ## 0.1.51
 
 - Consente un import di recupero solo per sostituire un import live in quarantena con heartbeat scaduto.
