@@ -135,6 +135,11 @@ class Import_Service {
 					return $cancelled;
 				}
 
+				$cancelled = $this->check_cancellation( $args, 'before_environment_restore', true );
+				if ( is_wp_error( $cancelled ) ) {
+					return $cancelled;
+				}
+
 				$this->database->refresh_runtime_cache();
 				$source_active_plugins = $this->database->get_active_plugins();
 
@@ -148,6 +153,10 @@ class Import_Service {
 				 * The final restore remains as an idempotent safety net.
 				 */
 				$this->database->restore_environment_state( $current_state );
+				$cancelled = $this->check_cancellation( $args, 'after_environment_restore', true );
+				if ( is_wp_error( $cancelled ) ) {
+					return $cancelled;
+				}
 				$this->logger->info(
 					'Target environment restored immediately after database import.',
 					array(
@@ -156,9 +165,17 @@ class Import_Service {
 					)
 				);
 
+				$cancelled = $this->check_cancellation( $args, 'before_prefix_remap', true );
+				if ( is_wp_error( $cancelled ) ) {
+					return $cancelled;
+				}
 				$prefix_remap = $this->database->remap_site_prefix_keys( $source_prefix, $target_prefix );
 				if ( is_wp_error( $prefix_remap ) ) {
 					return $this->with_failure_context( $prefix_remap, 'prefix_remap', true );
+				}
+				$cancelled = $this->check_cancellation( $args, 'after_prefix_remap', true );
+				if ( is_wp_error( $cancelled ) ) {
+					return $cancelled;
 				}
 			}
 
@@ -180,7 +197,26 @@ class Import_Service {
 			);
 
 			if ( ! $is_partial ) {
-				$replace_result = $this->database->replace_urls( $replacements, $target_prefix );
+				$cancelled = $this->check_cancellation( $args, 'before_url_replace', true );
+				if ( is_wp_error( $cancelled ) ) {
+					return $cancelled;
+				}
+				$replace_result = $this->database->replace_urls(
+					$replacements,
+					$target_prefix,
+					array(
+						'progress_callback' => function ( array $details ) use ( $args ) {
+							$callback = array_get( $args, 'progress_callback', null );
+							if ( is_callable( $callback ) ) {
+								call_user_func( $callback, 'url-replace-' . sanitize_key( array_get( $details, 'phase', 'batch' ) ), 60, $details );
+							}
+						},
+						'cancellation_check' => function () use ( $args ) {
+							$callback = array_get( $args, 'cancellation_check', null );
+							return is_callable( $callback ) && call_user_func( $callback, 'url_replace', true );
+						},
+					)
+				);
 				if ( is_wp_error( $replace_result ) ) {
 					return $this->with_failure_context( $replace_result, 'url_replace', true );
 				}

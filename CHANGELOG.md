@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.49
+
+- Added durable checkpoints and heartbeat reporting throughout full-import URL replacement.
+- Replaced the monolithic V4MPG URL update with cancellable primary-key micro-batches.
+
 ## 0.1.48
 
 - Prevented runtime cleanup from deleting an active chunked upload during a full snapshot transfer.

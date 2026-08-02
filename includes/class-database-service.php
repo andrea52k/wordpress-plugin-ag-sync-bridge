@@ -247,8 +247,10 @@ class Database_Service {
 		return $final_plugins;
 	}
 
-	public function replace_urls( array $replacements, $table_prefix = '' ) {
+	public function replace_urls( array $replacements, $table_prefix = '', array $options = array() ) {
 		global $wpdb;
+		$progress_callback   = array_get( $options, 'progress_callback', null );
+		$cancellation_check  = array_get( $options, 'cancellation_check', null );
 
 		if ( empty( $replacements ) ) {
 			return array(
@@ -285,6 +287,11 @@ class Database_Service {
 		$sources      = array_keys( $replacements );
 
 		foreach ( $tables as $table ) {
+			$cancelled = $this->check_url_replace_cancellation( $cancellation_check, $table, null );
+			if ( is_wp_error( $cancelled ) ) {
+				return $cancelled;
+			}
+			$this->report_url_replace_progress( $progress_callback, $table, 'table-start', $rows_updated );
 			$text_columns = $this->get_text_columns( $table );
 			if ( empty( $text_columns ) ) {
 				continue;
@@ -294,7 +301,7 @@ class Database_Service {
 			$fast_columns = $this->get_fast_replace_columns( $table, $text_columns );
 
 			if ( ! empty( $fast_columns ) ) {
-				$fast_rows = $this->replace_plain_text_columns( $table, $fast_columns, $replacements );
+				$fast_rows = $this->replace_plain_text_columns( $table, $fast_columns, $replacements, $progress_callback, $cancellation_check );
 				if ( is_wp_error( $fast_rows ) ) {
 					return $fast_rows;
 				}
@@ -313,6 +320,11 @@ class Database_Service {
 			$batch_size   = self::URL_REPLACE_BATCH_SIZE;
 
 			do {
+				$cancelled = $this->check_url_replace_cancellation( $cancellation_check, $table, $last_key );
+				if ( is_wp_error( $cancelled ) ) {
+					return $cancelled;
+				}
+				$this->report_url_replace_progress( $progress_callback, $table, 'batch-start', $rows_updated, $last_key );
 				$where_sql = $this->build_url_match_sql( $text_columns, $sources );
 				if ( is_wp_error( $where_sql ) ) {
 					return $where_sql;
@@ -372,7 +384,9 @@ class Database_Service {
 				} elseif ( ! $single_key && 0 === $batch_updates ) {
 					break;
 				}
+				$this->report_url_replace_progress( $progress_callback, $table, 'batch-complete', $rows_updated, $last_key );
 			} while ( count( $rows ) === $batch_size );
+			$this->report_url_replace_progress( $progress_callback, $table, 'table-complete', $rows_updated, $last_key );
 		}
 
 		wp_cache_flush();
@@ -381,6 +395,19 @@ class Database_Service {
 			'tables_scanned' => $tables_count,
 			'rows_updated'   => $rows_updated,
 		);
+	}
+
+	private function report_url_replace_progress( $callback, $table, $phase, $rows_updated, $last_key = null ) {
+		if ( is_callable( $callback ) ) {
+			call_user_func( $callback, array( 'table' => (string) $table, 'phase' => (string) $phase, 'rows_updated' => (int) $rows_updated, 'last_key' => $last_key ) );
+		}
+	}
+
+	private function check_url_replace_cancellation( $callback, $table, $last_key ) {
+		if ( ! is_callable( $callback ) || ! call_user_func( $callback, array( 'table' => (string) $table, 'last_key' => $last_key ) ) ) {
+			return true;
+		}
+		return new WP_Error( 'ag_sync_bridge_operation_cancelled', __( 'Import cancellation was requested during URL replacement. Restore the pre-import backup before treating the site as healthy.', 'ag-sync-bridge' ), array( 'cancelled' => true, 'rollback_required' => true, 'stage' => 'url_replace' ) );
 	}
 
 	private function get_fast_replace_columns( $table, array $text_columns ) {
@@ -393,10 +420,15 @@ class Database_Service {
 		return in_array( 'row_data', $text_columns, true ) ? array( 'row_data' ) : array();
 	}
 
-	private function replace_plain_text_columns( $table, array $columns, array $replacements ) {
+	private function replace_plain_text_columns( $table, array $columns, array $replacements, $progress_callback = null, $cancellation_check = null ) {
 		global $wpdb;
 
 		$rows_updated = 0;
+		$primary_keys = $this->get_primary_keys( $table );
+		$single_key   = 1 === count( $primary_keys ) ? reset( $primary_keys ) : '';
+		if ( ! $single_key ) {
+			return new WP_Error( 'ag_sync_bridge_url_replace_fast_key_missing', __( 'Fast URL replacement requires a single primary key.', 'ag-sync-bridge' ), array( 'table' => $table ) );
+		}
 
 		foreach ( $columns as $column ) {
 			foreach ( $replacements as $source => $target ) {
@@ -404,28 +436,32 @@ class Database_Service {
 					continue;
 				}
 
-				$sql = $wpdb->prepare(
-					'UPDATE ' . $this->quote_identifier( $table ) .
-					' SET ' . $this->quote_identifier( $column ) . ' = REPLACE(' . $this->quote_identifier( $column ) . ', %s, %s)' .
-					' WHERE ' . $this->quote_identifier( $column ) . ' LIKE %s',
-					$source,
-					$target,
-					'%' . $wpdb->esc_like( $source ) . '%'
-				);
-
-				$result = $wpdb->query( $sql );
-				if ( false === $result ) {
-					return new WP_Error(
-						'ag_sync_bridge_url_replace_fast_failed',
-						$wpdb->last_error ? $wpdb->last_error : __( 'Fast URL replacement failed.', 'ag-sync-bridge' ),
-						array(
-							'table'  => $table,
-							'column' => $column,
-						)
-					);
-				}
-
-				$rows_updated += (int) $result;
+				$last_key = null;
+				do {
+					$cancelled = $this->check_url_replace_cancellation( $cancellation_check, $table, $last_key );
+					if ( is_wp_error( $cancelled ) ) {
+						return $cancelled;
+					}
+					$this->report_url_replace_progress( $progress_callback, $table, 'fast-batch-start', $rows_updated, $last_key );
+					$where = $this->quote_identifier( $column ) . ' LIKE ' . $this->prepare_sql_value( '%' . $wpdb->esc_like( $source ) . '%' );
+					if ( null !== $last_key ) {
+						$where = $this->quote_identifier( $single_key ) . ' > ' . $this->prepare_sql_value( $last_key ) . ' AND (' . $where . ')';
+					}
+					$ids = $wpdb->get_col( 'SELECT ' . $this->quote_identifier( $single_key ) . ' FROM ' . $this->quote_identifier( $table ) . ' WHERE ' . $where . ' ORDER BY ' . $this->quote_identifier( $single_key ) . ' ASC LIMIT ' . self::URL_REPLACE_BATCH_SIZE );
+					$ids = is_array( $ids ) ? array_values( array_filter( $ids, 'is_scalar' ) ) : array();
+					if ( empty( $ids ) ) {
+						break;
+					}
+					$id_sql = implode( ', ', array_map( array( $this, 'prepare_sql_value' ), $ids ) );
+					$sql = $wpdb->prepare( 'UPDATE ' . $this->quote_identifier( $table ) . ' SET ' . $this->quote_identifier( $column ) . ' = REPLACE(' . $this->quote_identifier( $column ) . ', %s, %s) WHERE ' . $this->quote_identifier( $single_key ) . ' IN (' . $id_sql . ')', $source, $target );
+					$result = $wpdb->query( $sql );
+					if ( false === $result ) {
+						return new WP_Error( 'ag_sync_bridge_url_replace_fast_failed', $wpdb->last_error ? $wpdb->last_error : __( 'Fast URL replacement failed.', 'ag-sync-bridge' ), array( 'table' => $table, 'column' => $column ) );
+					}
+					$rows_updated += (int) $result;
+					$last_key = end( $ids );
+					$this->report_url_replace_progress( $progress_callback, $table, 'fast-batch-complete', $rows_updated, $last_key );
+				} while ( count( $ids ) === self::URL_REPLACE_BATCH_SIZE );
 			}
 		}
 
