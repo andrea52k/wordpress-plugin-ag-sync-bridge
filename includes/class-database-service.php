@@ -609,6 +609,7 @@ class Database_Service {
 			0,
 			array(
 				'--single-transaction',
+				'--hex-blob',
 				'--skip-comments',
 				'--add-drop-table',
 				'--no-tablespaces',
@@ -902,11 +903,7 @@ class Database_Service {
 
 				foreach ( $fields as $field ) {
 					$value = $row[ $field->name ];
-					if ( null === $value ) {
-						$values[] = 'NULL';
-					} else {
-						$values[] = "'" . $mysqli->real_escape_string( (string) $value ) . "'";
-					}
+					$values[] = $this->format_php_export_value( $mysqli, $field, $value );
 				}
 
 				$row_sql       = '(' . implode( ',', $values ) . ')';
@@ -941,6 +938,28 @@ class Database_Service {
 
 			$offset += $batch_size;
 		}
+	}
+
+	private function format_php_export_value( $mysqli, $field, $value ) {
+		if ( null === $value ) {
+			return 'NULL';
+		}
+
+		if ( $this->is_binary_mysql_field( $field ) ) {
+			return '0x' . strtoupper( bin2hex( (string) $value ) );
+		}
+
+		return "'" . $mysqli->real_escape_string( (string) $value ) . "'";
+	}
+
+	private function is_binary_mysql_field( $field ) {
+		$type = isset( $field->type ) ? (int) $field->type : -1;
+		if ( in_array( $type, array( 249, 250, 251, 252 ), true ) ) {
+			return true;
+		}
+
+		$binary_charset = isset( $field->charsetnr ) && 63 === (int) $field->charsetnr;
+		return $binary_charset && in_array( $type, array( 15, 253, 254 ), true );
 	}
 
 	private function write_insert_batch( $handle, $table, array $column_names, array $batch ) {
@@ -1059,7 +1078,7 @@ class Database_Service {
 				$next_char = ( $index + 1 < $length ) ? $line[ $index + 1 ] : '';
 
 				if ( $in_string ) {
-					if ( $char === $quote && '\\' !== $prev_char && $quote !== $next_char ) {
+					if ( $char === $quote && ! $this->is_sql_quote_escaped( $line, $index ) && $quote !== $next_char ) {
 						$in_string = false;
 						$quote     = '';
 					}
@@ -1158,7 +1177,7 @@ class Database_Service {
 					$next_char  = ( $index + 1 < $length ) ? $line[ $index + 1 ] : '';
 
 					if ( $in_string ) {
-						if ( $char === $quote && '\\' !== $prev_char && $quote !== $next_char ) {
+						if ( $char === $quote && ! $this->is_sql_quote_escaped( $line, $index ) && $quote !== $next_char ) {
 							$in_string = false;
 							$quote     = '';
 						}
@@ -1327,7 +1346,7 @@ class Database_Service {
 			$next_char = ( $index + 1 < $length ) ? $sql[ $index + 1 ] : '';
 
 			if ( $in_string ) {
-				if ( $char === $quote && '\\' !== $prev_char && $quote !== $next_char ) {
+				if ( $char === $quote && ! $this->is_sql_quote_escaped( $sql, $index ) && $quote !== $next_char ) {
 					$in_string = false;
 					$quote     = '';
 				}
@@ -1384,7 +1403,7 @@ class Database_Service {
 			$current .= $char;
 
 			if ( $in_string ) {
-				if ( $char === $quote && '\\' !== $prev_char && $quote !== $next_char ) {
+				if ( $char === $quote && ! $this->is_sql_quote_escaped( $values_sql, $index ) && $quote !== $next_char ) {
 					$in_string = false;
 					$quote     = '';
 				}
@@ -1431,7 +1450,7 @@ class Database_Service {
 
 			if ( $in_string ) {
 				$current .= $char;
-				if ( $char === $quote && '\\' !== $prev_char && $quote !== $next_char ) {
+				if ( $char === $quote && ! $this->is_sql_quote_escaped( $row, $index ) && $quote !== $next_char ) {
 					$in_string = false;
 					$quote     = '';
 				}
@@ -1495,6 +1514,15 @@ class Database_Service {
 		}
 
 		return $result;
+	}
+
+	private function is_sql_quote_escaped( $sql, $quote_index ) {
+		$backslashes = 0;
+		for ( $index = (int) $quote_index - 1; $index >= 0 && '\\' === $sql[ $index ]; $index-- ) {
+			$backslashes++;
+		}
+
+		return 1 === ( $backslashes % 2 );
 	}
 
 	private function is_skipped_option_name( $option_name ) {

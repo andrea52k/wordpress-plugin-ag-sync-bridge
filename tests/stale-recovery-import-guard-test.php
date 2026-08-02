@@ -26,8 +26,11 @@ expect_recovery_guard( false !== strpos( $rest, "if ( \$recovery_import && ! \$a
 expect_recovery_guard( false !== strpos( $rest, "if ( \$recovery_import ) {\n\t\t\t\treturn new WP_Error( 'ag_sync_bridge_recovery_import_partial_forbidden'" ), 'Partial recovery imports must be rejected.' );
 expect_recovery_guard( false !== strpos( $rest, "'import' !== (string) array_get( \$current, 'kind', '' )" ), 'Recovery must not supersede a quarantined operation of another kind.' );
 expect_recovery_guard( false !== strpos( $rest, "'remote' !== (string) array_get( \$manifest, 'source_role', '' )" ) && false !== strpos( $rest, "\$source_site === untrailingslashit( site_url() )" ), 'Recovery must bind manifest role and URLs to this live peer.' );
-expect_recovery_guard( false !== strpos( $runtime, "'import' === \$kind && \$stale_quarantine" ), 'Runtime may supersede only stale quarantined imports.' );
+expect_recovery_guard( false !== strpos( $runtime, "\$allow_recovery_override && 'import' === \$kind" ), 'Runtime recovery override remains explicit and import-only.' );
 expect_recovery_guard( false !== strpos( $runtime, "\$operation['recovery_override']" ), 'Runtime must record the exceptional recovery reservation.' );
+expect_recovery_guard( false !== strpos( $runtime, "\$stale_quarantine || \$rollback_recovery" ), 'Explicit recovery may supersede a rollback-required import.' );
+expect_recovery_guard( false !== strpos( $runtime, "\$operation['recovery_of_status']" ) && false !== strpos( $runtime, "\$operation['recovery_of_updated_at']" ), 'Recovery reservation must audit the superseded status and timestamp.' );
+expect_recovery_guard( false !== strpos( $rest, "'rollback_required' !== \$status && ! \$stale_quarantine" ), 'REST recovery validation must accept rollback-required state without weakening normal imports.' );
 expect_recovery_guard( false !== strpos( $file_system, 'public function read_package_manifest( $package_path )' ), 'REST recovery validation must be allowed to read the package manifest.' );
 expect_recovery_guard( false !== strpos( $file_system, "\$this->config->get( 'role', 'local' )" ), 'Remote cleanup must ignore a local current_operation imported through the database.' );
 expect_recovery_guard( false !== strpos( $rest_source, "'/maintenance/storage-audit'" ) && false !== strpos( $rest_source, 'public function storage_audit()' ), 'Storage audit must expose a dedicated read-only authenticated route.' );

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.57
+
+- Consente a un recovery import completo, prodotto dallo stesso live, di sostituire anche un import in `rollback_required`, conservando riferimenti e audit dell'operazione sostituita; gli import normali restano bloccati.
+- Aggiunge un opt-in firmato `recovery_hotfix` per aggiornare il bridge durante un `rollback_required` di import, con warning e audit espliciti.
+- Preserva BLOB e colonne binarie nei dump con `--hex-blob` e letterali esadecimali nel fallback PHP.
+- Corregge il riconoscimento delle quote SQL contando la parita dei backslash consecutivi.
+
 ## 0.1.56
 
 - Mantiene il fix del cleanup remoto usando l'accesso configurazione compatibile con tutti i runtime e i test.

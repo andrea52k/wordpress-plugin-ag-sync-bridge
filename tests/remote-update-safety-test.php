@@ -22,11 +22,12 @@ namespace AGSyncBridge {
 	class Config {
 		public function get_role() { return 'remote'; }
 	}
-	class Logger {}
+	class Logger { public function warning( $message, array $context = array() ) {} }
 	class Remote_Operation_Runtime {
 		public $status = 'complete';
 		public $heartbeat_stale = false;
-		public function inspect() { return array( 'id' => 'test-operation', 'status' => $this->status, 'heartbeat' => array( 'is_stale' => $this->heartbeat_stale ) ); }
+		public $kind = 'import';
+		public function inspect() { return array( 'id' => 'test-operation', 'kind' => $this->kind, 'status' => $this->status, 'heartbeat' => array( 'is_stale' => $this->heartbeat_stale ) ); }
 	}
 	class GitHub_Updater {
 		const OWNER = 'andrea52k';
@@ -42,6 +43,9 @@ namespace AGSyncBridge {
 		}
 		public function official_url( $url, $version ) {
 			return $this->is_official_asset_url( $url, $version );
+		}
+		public function recovery_hotfix_allowed( array $operation, $explicit ) {
+			return $this->is_recovery_hotfix_operation( $operation, $explicit );
 		}
 	}
 }
@@ -75,6 +79,9 @@ namespace {
 	$runtime->status = 'rollback_required';
 	$result = $service->update_from_github_release( '0.1.39', $sha, '0.1.38', 'UPDATE AG SYNC' );
 	expect_update( is_wp_error( $result ) && 'ag_sync_bridge_remote_update_operation_active' === $result->get_error_code(), 'rollback-required state blocks update' );
+	expect_update( ! $service->recovery_hotfix_allowed( array( 'kind' => 'import', 'status' => 'rollback_required' ), false ), 'rollback hotfix requires explicit signed opt-in' );
+	expect_update( $service->recovery_hotfix_allowed( array( 'kind' => 'import', 'status' => 'rollback_required' ), true ), 'explicit recovery hotfix allows only blocked imports' );
+	expect_update( ! $service->recovery_hotfix_allowed( array( 'kind' => 'snapshot', 'status' => 'rollback_required' ), true ), 'recovery hotfix cannot bypass another operation kind' );
 	$runtime->status = 'reconcile_requested';
 	$runtime->heartbeat_stale = false;
 	$result = $service->update_from_github_release( '0.1.39', $sha, '0.1.38', 'UPDATE AG SYNC' );

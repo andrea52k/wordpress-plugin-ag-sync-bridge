@@ -142,7 +142,7 @@ class Http_Client {
 		return $this->request_json( 'POST', '/ag-sync-bridge/v1/operation/reconcile', $args );
 	}
 
-	public function update_remote_bridge( $version, $sha256, $expected_current_version, $confirmation ) {
+	public function update_remote_bridge( $version, $sha256, $expected_current_version, $confirmation, $recovery_hotfix = false ) {
 		return $this->request_json(
 			'POST',
 			'/ag-sync-bridge/v1/maintenance/update-bridge',
@@ -151,6 +151,7 @@ class Http_Client {
 				'sha256'                   => strtolower( (string) $sha256 ),
 				'expected_current_version' => (string) $expected_current_version,
 				'confirmation'             => (string) $confirmation,
+				'recovery_hotfix'          => $recovery_hotfix ? 1 : 0,
 			)
 		);
 	}

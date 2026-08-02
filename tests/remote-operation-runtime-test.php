@@ -3,8 +3,11 @@ declare( strict_types=1 );
 
 namespace {
 	define( 'ABSPATH', __DIR__ . '/' );
+	define( 'AG_SYNC_BRIDGE_VERSION', 'test' );
 
 	function __( $message ) { return $message; }
+	function get_option( $key, $default = false ) { return $default; }
+	function update_option( $key, $value, $autoload = null ) { return true; }
 	class WP_Error {
 		private $code;
 		public function __construct( $code ) { $this->code = $code; }
@@ -32,6 +35,7 @@ class Runtime_Test_Config extends \AGSyncBridge\Config {
 	private $dir;
 	public function __construct( $dir ) { $this->dir = $dir; }
 	public function get_data_dir( $subdir = '' ) { return rtrim( $this->dir, '/' ) . ( $subdir ? '/' . $subdir : '' ); }
+	public function set_state_value( $key, $value ) { return true; }
 }
 $root = sys_get_temp_dir() . '/agsync-runtime-' . bin2hex( random_bytes( 4 ) );
 $config = new Runtime_Test_Config( $root );
@@ -145,5 +149,11 @@ file_put_contents( $state_path, json_encode( $state ) );
 $quarantined = $runtime->request_reconciliation( 'five', 'import', $state['updated_at'], 'Worker verified absent.', 60 );
 $resumed = $runtime->finalize( 'five', 'cancelled', array( 'rollback_required' => true ) );
 expect_true( 'rollback_required' === $resumed['status'], 'quarantined worker finalization preserves rollback requirement' );
+expect_true( is_wp_error( $runtime->reserve( 'import', array( 'id' => 'normal-after-rollback' ) ) ), 'normal import remains blocked by rollback-required state' );
+$rollback_recovery = $runtime->reserve( 'import', array( 'id' => 'rollback-recovery' ), true );
+expect_true( 'queued' === $rollback_recovery['status'], 'explicit recovery import may supersede rollback-required import' );
+expect_true( 'five' === $rollback_recovery['recovery_of_operation_id'], 'rollback recovery records superseded operation id' );
+expect_true( 'rollback_required' === $rollback_recovery['recovery_of_status'], 'rollback recovery records superseded status' );
+expect_true( ! empty( $rollback_recovery['recovery_of_updated_at'] ) && ! empty( $rollback_recovery['recovery_authorized_at'] ), 'rollback recovery records audit timestamps' );
 echo "remote operation runtime: ok\n";
 }

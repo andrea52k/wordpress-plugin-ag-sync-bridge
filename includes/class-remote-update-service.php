@@ -28,10 +28,11 @@ class Remote_Update_Service {
 		$this->runtime = $runtime;
 	}
 
-	public function update_from_github_release( $version, $expected_sha256, $expected_current_version, $confirmation ) {
+	public function update_from_github_release( $version, $expected_sha256, $expected_current_version, $confirmation, $recovery_hotfix = false ) {
 		$version                  = trim( (string) $version );
 		$expected_sha256          = strtolower( trim( (string) $expected_sha256 ) );
 		$expected_current_version = trim( (string) $expected_current_version );
+		$recovery_hotfix          = (bool) $recovery_hotfix;
 
 		if ( 'remote' !== $this->config->get_role() ) {
 			return new WP_Error( 'ag_sync_bridge_remote_update_wrong_role', __( 'Remote self-update is available only on a configured remote peer.', 'ag-sync-bridge' ), array( 'status' => 403 ) );
@@ -55,12 +56,31 @@ class Remote_Update_Service {
 		}
 		$status = (string) array_get( $operation, 'status', '' );
 		$stale_quarantine = 'reconcile_requested' === $status && (bool) array_get( array_get( $operation, 'heartbeat', array() ), 'is_stale', false );
-		if ( ! empty( $operation ) && ! $stale_quarantine && ! in_array( $status, array( 'complete', 'error', 'cancelled', 'reconciled' ), true ) ) {
+		$rollback_hotfix = $this->is_recovery_hotfix_operation( $operation, $recovery_hotfix );
+		if ( ! empty( $operation ) && ! $stale_quarantine && ! $rollback_hotfix && ! in_array( $status, array( 'complete', 'error', 'cancelled', 'reconciled' ), true ) ) {
 			return new WP_Error( 'ag_sync_bridge_remote_update_operation_active', __( 'Remote self-update is blocked while an async operation is active or unresolved.', 'ag-sync-bridge' ), array( 'status' => 409, 'operation' => $operation ) );
 		}
 		if ( $stale_quarantine ) {
 			$this->logger->warning( 'Allowing signed bridge update for stale quarantined operation.', array( 'operation_id' => array_get( $operation, 'id', '' ), 'status' => $status ) );
 		}
+		if ( $rollback_hotfix ) {
+			$this->logger->warning(
+				'Allowing explicitly signed recovery hotfix while an import requires rollback.',
+				array(
+					'operation_id' => (string) array_get( $operation, 'id', '' ),
+					'status'       => $status,
+					'from_version' => AG_SYNC_BRIDGE_VERSION,
+					'to_version'   => $version,
+				)
+			);
+		}
+
+		$recovery_audit = $rollback_hotfix ? array(
+			'recovery_hotfix'          => true,
+			'recovery_operation_id'    => (string) array_get( $operation, 'id', '' ),
+			'recovery_operation_kind'  => (string) array_get( $operation, 'kind', '' ),
+			'recovery_operation_status'=> $status,
+		) : array();
 
 		$this->load_wordpress_update_dependencies();
 		if ( ! function_exists( 'get_filesystem_method' ) || 'direct' !== get_filesystem_method() ) {
@@ -104,45 +124,45 @@ class Remote_Update_Service {
 			}
 
 			$this->write_audit_state(
-				array(
+				array_merge( array(
 					'status'       => 'installing',
 					'requested_at' => gmdate( 'c' ),
 					'from_version' => AG_SYNC_BRIDGE_VERSION,
 					'to_version'   => $version,
 					'sha256'       => $actual_sha256,
-				)
+				), $recovery_audit )
 			);
 
 			$was_active = is_plugin_active( plugin_basename( AG_SYNC_BRIDGE_PLUGIN_FILE ) );
 			$upgrader   = new \Plugin_Upgrader( new \Automatic_Upgrader_Skin() );
 			$result     = $upgrader->install( $temp_file, array( 'overwrite_package' => true ) );
 			if ( is_wp_error( $result ) ) {
-				$this->write_audit_state( array( 'status' => 'error', 'finished_at' => gmdate( 'c' ), 'message' => $result->get_error_message(), 'to_version' => $version ) );
+				$this->write_audit_state( array_merge( array( 'status' => 'error', 'finished_at' => gmdate( 'c' ), 'message' => $result->get_error_message(), 'to_version' => $version ), $recovery_audit ) );
 				return $result;
 			}
 			if ( ! $result ) {
 				$error = new WP_Error( 'ag_sync_bridge_remote_update_install_failed', __( 'WordPress did not install the remote update package.', 'ag-sync-bridge' ), array( 'status' => 500 ) );
-				$this->write_audit_state( array( 'status' => 'error', 'finished_at' => gmdate( 'c' ), 'message' => $error->get_error_message(), 'to_version' => $version ) );
+				$this->write_audit_state( array_merge( array( 'status' => 'error', 'finished_at' => gmdate( 'c' ), 'message' => $error->get_error_message(), 'to_version' => $version ), $recovery_audit ) );
 				return $error;
 			}
 
 			wp_clean_plugins_cache( true );
 			$disk_version = $this->read_installed_version();
 			if ( $version !== $disk_version ) {
-				$this->write_audit_state( array( 'status' => 'error', 'finished_at' => gmdate( 'c' ), 'message' => 'postcheck_version_mismatch', 'to_version' => $version, 'disk_version' => $disk_version ) );
+				$this->write_audit_state( array_merge( array( 'status' => 'error', 'finished_at' => gmdate( 'c' ), 'message' => 'postcheck_version_mismatch', 'to_version' => $version, 'disk_version' => $disk_version ), $recovery_audit ) );
 				return new WP_Error( 'ag_sync_bridge_remote_update_postcheck', __( 'Installed plugin version does not match the requested release.', 'ag-sync-bridge' ), array( 'status' => 500, 'disk_version' => $disk_version ) );
 			}
 
 			if ( $was_active && ! is_plugin_active( plugin_basename( AG_SYNC_BRIDGE_PLUGIN_FILE ) ) ) {
 				$activation = activate_plugin( plugin_basename( AG_SYNC_BRIDGE_PLUGIN_FILE ), '', false, true );
 				if ( is_wp_error( $activation ) ) {
-					$this->write_audit_state( array( 'status' => 'error', 'finished_at' => gmdate( 'c' ), 'message' => 'reactivation_failed', 'to_version' => $version, 'disk_version' => $disk_version ) );
+					$this->write_audit_state( array_merge( array( 'status' => 'error', 'finished_at' => gmdate( 'c' ), 'message' => 'reactivation_failed', 'to_version' => $version, 'disk_version' => $disk_version ), $recovery_audit ) );
 					return new WP_Error( 'ag_sync_bridge_remote_update_reactivation', __( 'Plugin files updated but automatic reactivation failed.', 'ag-sync-bridge' ), array( 'status' => 500, 'activation_error' => $activation->get_error_message(), 'disk_version' => $disk_version ) );
 				}
 			}
 
 			$runtime_recycle = $this->recycle_php_runtime();
-			$audit = array(
+			$audit = array_merge( array(
 				'status'       => 'updated',
 				'finished_at'  => gmdate( 'c' ),
 				'from_version' => AG_SYNC_BRIDGE_VERSION,
@@ -150,7 +170,7 @@ class Remote_Update_Service {
 				'sha256'       => $actual_sha256,
 				'active'       => is_plugin_active( plugin_basename( AG_SYNC_BRIDGE_PLUGIN_FILE ) ),
 				'runtime_recycle' => $runtime_recycle,
-			);
+			), $recovery_audit );
 			$this->write_audit_state( $audit );
 			$this->logger->warning( 'AG Sync Bridge remotely updated from verified GitHub release.', $audit );
 			return $audit;
@@ -159,6 +179,12 @@ class Remote_Update_Service {
 				@unlink( $temp_file );
 			}
 		}
+	}
+
+	protected function is_recovery_hotfix_operation( array $operation, $recovery_hotfix ) {
+		return (bool) $recovery_hotfix
+			&& 'rollback_required' === (string) array_get( $operation, 'status', '' )
+			&& 'import' === (string) array_get( $operation, 'kind', '' );
 	}
 
 	protected function fetch_release( $version ) {

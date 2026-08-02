@@ -23,26 +23,39 @@ class Remote_Operation_Runtime {
 		$this->logger = $logger;
 	}
 
-	public function reserve( $kind, array $operation, $allow_stale_recovery = false ) {
-		return $this->locked( function ( array $current ) use ( $kind, $operation, $allow_stale_recovery ) {
+	public function reserve( $kind, array $operation, $allow_recovery_override = false ) {
+		return $this->locked( function ( array $current ) use ( $kind, $operation, $allow_recovery_override ) {
+			$current_status = (string) array_get( $current, 'status', '' );
 			$stale_quarantine = 'import' === (string) array_get( $current, 'kind', '' )
-				&& 'reconcile_requested' === (string) array_get( $current, 'status', '' )
+				&& 'reconcile_requested' === $current_status
 				&& ( strtotime( (string) array_get( $current, 'heartbeat_at', '' ) ) < ( time() - self::DEFAULT_STALE_AFTER ) );
-			if ( $allow_stale_recovery && 'import' === $kind && $stale_quarantine ) {
+			$rollback_recovery = 'import' === (string) array_get( $current, 'kind', '' ) && 'rollback_required' === $current_status;
+			if ( $allow_recovery_override && 'import' === $kind && ( $stale_quarantine || $rollback_recovery ) ) {
 				$operation['recovery_of_operation_id'] = (string) array_get( $current, 'id', '' );
 				$operation['recovery_of_snapshot']     = (string) array_get( $current, 'snapshot', '' );
+				$operation['recovery_of_status']       = $current_status;
+				$operation['recovery_of_updated_at']   = (string) array_get( $current, 'updated_at', '' );
 				$operation['recovery_override']        = true;
-			} else {
-			if ( 'rollback_required' === (string) array_get( $current, 'status', '' ) ) {
-				return new WP_Error(
-					'ag_sync_bridge_remote_recovery_required',
-					__( 'The previous remote operation requires verified recovery before another operation can start.', 'ag-sync-bridge' ),
-					array( 'status' => 409, 'operation' => $current )
+				$operation['recovery_authorized_at']   = gmdate( 'c' );
+				$this->logger->warning(
+					'Allowing explicit recovery import to supersede a blocked remote import.',
+					array(
+						'recovery_operation_id' => (string) array_get( $operation, 'id', '' ),
+						'recovery_of_operation_id' => $operation['recovery_of_operation_id'],
+						'recovery_of_status' => $current_status,
+					)
 				);
-			}
-			if ( ! empty( $current ) && ! $this->is_terminal( $current ) ) {
-				return new WP_Error( 'ag_sync_bridge_remote_operation_busy', __( 'A remote AG Sync operation is already active.', 'ag-sync-bridge' ), array( 'status' => 409, 'operation' => $current ) );
-			}
+			} else {
+				if ( 'rollback_required' === $current_status ) {
+					return new WP_Error(
+						'ag_sync_bridge_remote_recovery_required',
+						__( 'The previous remote operation requires verified recovery before another operation can start.', 'ag-sync-bridge' ),
+						array( 'status' => 409, 'operation' => $current )
+					);
+				}
+				if ( ! empty( $current ) && ! $this->is_terminal( $current ) ) {
+					return new WP_Error( 'ag_sync_bridge_remote_operation_busy', __( 'A remote AG Sync operation is already active.', 'ag-sync-bridge' ), array( 'status' => 409, 'operation' => $current ) );
+				}
 			}
 			$operation['kind'] = $kind;
 			$operation['status'] = 'queued';

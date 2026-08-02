@@ -487,6 +487,9 @@ if ( defined( 'WP_CLI' ) && WP_CLI ) {
 		 *
 		 * --confirm=<text>
 		 * : Exact confirmation: UPDATE AG SYNC
+		 *
+		 * [--recovery-hotfix]
+		 * : Explicitly allow a signed bridge hotfix while a remote import is in rollback_required.
 		 */
 		public function remote_update_bridge( $args, $assoc_args ) {
 			unset( $args );
@@ -495,6 +498,7 @@ if ( defined( 'WP_CLI' ) && WP_CLI ) {
 			$version = trim( (string) array_get( $assoc_args, 'version', '' ) );
 			$sha256  = strtolower( trim( (string) array_get( $assoc_args, 'sha256', '' ) ) );
 			$confirm = (string) array_get( $assoc_args, 'confirm', '' );
+			$recovery_hotfix = ! empty( $assoc_args['recovery-hotfix'] );
 			if ( AG_SYNC_BRIDGE_VERSION !== $version ) {
 				\WP_CLI::error( 'Target version must exactly match the AG Sync version installed on this local site.' );
 			}
@@ -513,7 +517,7 @@ if ( defined( 'WP_CLI' ) && WP_CLI ) {
 			}
 
 			\WP_CLI::log( sprintf( 'Updating remote AG Sync Bridge %s -> %s from verified GitHub asset.', $current, $version ) );
-			$result = $client->update_remote_bridge( $version, $sha256, $current, $confirm );
+			$result = $client->update_remote_bridge( $version, $sha256, $current, $confirm, $recovery_hotfix );
 			if ( is_wp_error( $result ) ) {
 				\WP_CLI::error( $result->get_error_message() );
 			}

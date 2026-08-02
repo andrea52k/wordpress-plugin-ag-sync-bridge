@@ -990,7 +990,7 @@ class Rest_Controller {
 					)
 				);
 			}
-			if ( $recovery_import && ! $this->is_valid_stale_recovery_import( $path ) ) {
+			if ( $recovery_import && ! $this->is_valid_recovery_import( $path ) ) {
 				return new WP_Error( 'ag_sync_bridge_recovery_import_forbidden', __( 'Recovery import requires a full snapshot created by this exact live site.', 'ag-sync-bridge' ), array( 'status' => 409 ) );
 			}
 		} else {
@@ -1117,13 +1117,19 @@ class Rest_Controller {
 	}
 
 	/**
-	 * A recovery import may supersede a stale quarantined import only when the
-	 * package was exported by this exact live peer. This prevents the escape
-	 * hatch from becoming a general-purpose bypass of reconciliation.
+	 * A recovery import may supersede a stale quarantined or rollback-required
+	 * import only when the package was exported by this exact live peer. This
+	 * prevents the escape hatch from becoming a general-purpose bypass.
 	 */
-	private function is_valid_stale_recovery_import( $path ) {
+	private function is_valid_recovery_import( $path ) {
 		$current = $this->runtime->inspect();
-		if ( ! is_array( $current ) || 'import' !== (string) array_get( $current, 'kind', '' ) || 'reconcile_requested' !== (string) array_get( $current, 'status', '' ) || empty( array_get( array_get( $current, 'heartbeat', array() ), 'is_stale', false ) ) ) {
+		if ( ! is_array( $current ) || 'import' !== (string) array_get( $current, 'kind', '' ) ) {
+			return false;
+		}
+
+		$status = (string) array_get( $current, 'status', '' );
+		$stale_quarantine = 'reconcile_requested' === $status && ! empty( array_get( array_get( $current, 'heartbeat', array() ), 'is_stale', false ) );
+		if ( 'rollback_required' !== $status && ! $stale_quarantine ) {
 			return false;
 		}
 
@@ -1134,7 +1140,18 @@ class Rest_Controller {
 
 		$source_site = untrailingslashit( (string) array_get( $manifest, 'source_site_url', '' ) );
 		$source_home = untrailingslashit( (string) array_get( $manifest, 'source_home_url', '' ) );
-		return $source_site === untrailingslashit( site_url() ) && $source_home === untrailingslashit( home_url() );
+		$valid = $source_site === untrailingslashit( site_url() ) && $source_home === untrailingslashit( home_url() );
+		if ( $valid ) {
+			$this->logger->warning(
+				'Validated explicit live-origin recovery import for a blocked operation.',
+				array(
+					'recovery_of_operation_id' => (string) array_get( $current, 'id', '' ),
+					'recovery_of_status'       => $status,
+					'snapshot'                 => basename( $path ),
+				)
+			);
+		}
+		return $valid;
 	}
 
 	public function run_async_import_snapshot( $operation_id, $path, $sha256, $import_contract = array() ) {
@@ -1525,7 +1542,8 @@ class Rest_Controller {
 			sanitize_text_field( (string) $request->get_param( 'version' ) ),
 			sanitize_text_field( (string) $request->get_param( 'sha256' ) ),
 			sanitize_text_field( (string) $request->get_param( 'expected_current_version' ) ),
-			(string) $request->get_param( 'confirmation' )
+			(string) $request->get_param( 'confirmation' ),
+			(bool) $request->get_param( 'recovery_hotfix' )
 		);
 		return is_wp_error( $result ) ? $result : new WP_REST_Response( $result );
 	}
