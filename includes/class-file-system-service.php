@@ -205,13 +205,17 @@ class File_System_Service {
 	}
 
 	/** Delete only one checksum- and manifest-bound snapshot plus its sidecar. */
-	public function delete_exact_snapshot( $basename, $sha256, $manifest_id, $manifest_sha256 ) {
+	public function delete_exact_snapshot( $basename, $sha256, $manifest_id, $manifest_sha256, $storage = 'snapshots' ) {
 		$basename = (string) $basename;
+		$storage  = (string) $storage;
 		if ( $basename !== basename( $basename ) || sanitize_file_name( $basename ) !== $basename || '.zip' !== strtolower( substr( $basename, -4 ) ) ) {
 			throw new \RuntimeException( 'Exact snapshot basename is invalid.' );
 		}
-		$path = $this->find_package( $basename, 'snapshots' );
-		$root = realpath( $this->get_snapshot_dir() );
+		if ( ! in_array( $storage, array( 'snapshots', 'backups' ), true ) ) {
+			throw new \RuntimeException( 'Exact snapshot storage is invalid.' );
+		}
+		$path = $this->find_package( $basename, $storage );
+		$root = realpath( 'backups' === $storage ? $this->get_backup_dir() : $this->get_snapshot_dir() );
 		$real = $path ? realpath( $path ) : false;
 		if ( false === $root || false === $real || 0 !== strpos( normalize_path( $real ), trailingslashit( normalize_path( $root ) ) ) ) {
 			throw new \RuntimeException( 'Exact snapshot is missing or outside snapshot storage.' );
