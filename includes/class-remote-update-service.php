@@ -53,8 +53,13 @@ class Remote_Update_Service {
 		if ( is_wp_error( $operation ) ) {
 			return $operation;
 		}
-		if ( ! empty( $operation ) && ! in_array( (string) array_get( $operation, 'status', '' ), array( 'complete', 'error', 'cancelled', 'reconciled' ), true ) ) {
+		$status = (string) array_get( $operation, 'status', '' );
+		$stale_quarantine = 'reconcile_requested' === $status && (bool) array_get( array_get( $operation, 'heartbeat', array() ), 'is_stale', false );
+		if ( ! empty( $operation ) && ! $stale_quarantine && ! in_array( $status, array( 'complete', 'error', 'cancelled', 'reconciled' ), true ) ) {
 			return new WP_Error( 'ag_sync_bridge_remote_update_operation_active', __( 'Remote self-update is blocked while an async operation is active or unresolved.', 'ag-sync-bridge' ), array( 'status' => 409, 'operation' => $operation ) );
+		}
+		if ( $stale_quarantine ) {
+			$this->logger->warning( 'Allowing signed bridge update for stale quarantined operation.', array( 'operation_id' => array_get( $operation, 'id', '' ), 'status' => $status ) );
 		}
 
 		$this->load_wordpress_update_dependencies();

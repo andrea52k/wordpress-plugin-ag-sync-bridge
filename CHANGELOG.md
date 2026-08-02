@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.50
+
+- Allows a signed, verified bridge update only when an import is already quarantined and its heartbeat is stale.
+
 ## 0.1.49
 
 - Added durable checkpoints and heartbeat reporting throughout full-import URL replacement.

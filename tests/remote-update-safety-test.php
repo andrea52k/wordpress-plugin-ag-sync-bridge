@@ -25,7 +25,8 @@ namespace AGSyncBridge {
 	class Logger {}
 	class Remote_Operation_Runtime {
 		public $status = 'complete';
-		public function inspect() { return array( 'status' => $this->status ); }
+		public $heartbeat_stale = false;
+		public function inspect() { return array( 'id' => 'test-operation', 'status' => $this->status, 'heartbeat' => array( 'is_stale' => $this->heartbeat_stale ) ); }
 	}
 	class GitHub_Updater {
 		const OWNER = 'andrea52k';
@@ -74,7 +75,15 @@ namespace {
 	$runtime->status = 'rollback_required';
 	$result = $service->update_from_github_release( '0.1.39', $sha, '0.1.38', 'UPDATE AG SYNC' );
 	expect_update( is_wp_error( $result ) && 'ag_sync_bridge_remote_update_operation_active' === $result->get_error_code(), 'rollback-required state blocks update' );
+	$runtime->status = 'reconcile_requested';
+	$runtime->heartbeat_stale = false;
+	$result = $service->update_from_github_release( '0.1.39', $sha, '0.1.38', 'UPDATE AG SYNC' );
+	expect_update( is_wp_error( $result ) && 'ag_sync_bridge_remote_update_operation_active' === $result->get_error_code(), 'fresh quarantine blocks update' );
+	$runtime->heartbeat_stale = true;
+	$update_source = file_get_contents( dirname( __DIR__ ) . '/includes/class-remote-update-service.php' );
+	expect_update( false !== strpos( $update_source, "'reconcile_requested' === \$status" ) && false !== strpos( $update_source, "'is_stale'" ), 'Only a stale quarantine may allow a signed emergency update.' );
 	$runtime->status = 'complete';
+	$runtime->heartbeat_stale = false;
 	expect_update(
 		$service->official_url( 'https://github.com/andrea52k/wordpress-plugin-ag-sync-bridge/releases/download/v0.1.39/ag-sync-bridge.zip', '0.1.39' ),
 		'official asset URL accepted'
@@ -83,7 +92,6 @@ namespace {
 		! $service->official_url( 'https://example.com/ag-sync-bridge.zip', '0.1.39' ),
 		'arbitrary asset URL rejected'
 	);
-	$update_source = file_get_contents( dirname( __DIR__ ) . '/includes/class-remote-update-service.php' );
 	expect_update( false !== strpos( $update_source, '.lsphp_restart.txt' ) && false !== strpos( $update_source, 'opcache_reset' ), 'runtime recycle is required after update' );
 	$valid_path = sys_get_temp_dir() . '/agsync-update-valid-' . bin2hex( random_bytes( 4 ) ) . '.zip';
 	$zip = new ZipArchive();
