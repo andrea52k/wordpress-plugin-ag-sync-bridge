@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.59
+
+- Limit full database exports to the active WordPress table prefix so stale tables from another environment cannot overwrite remapped target tables during import.
+- Fail closed when the PHP SQL fallback reaches end-of-file with an incomplete statement instead of silently accepting a truncated import.
+
 ## 0.1.58
 
 - Release MySQL `LOCK TABLES` state after the PHP import fallback before environment restore and prefix remapping.

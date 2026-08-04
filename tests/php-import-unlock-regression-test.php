@@ -6,7 +6,8 @@ namespace {
 	function __( $message ) { return $message; }
 	function array_get( $array, $key, $default = null ) { return is_array( $array ) && array_key_exists( $key, $array ) ? $array[ $key ] : $default; }
 	class WP_Error {
-		public function __construct( $code = '', $message = '', $data = null ) {}
+		public $code;
+		public function __construct( $code = '', $message = '', $data = null ) { $this->code = $code; }
 	}
 }
 
@@ -46,6 +47,15 @@ namespace AGSyncBridge {
 
 	expect_import_unlock( true === $result, 'PHP import should complete when the final dump statement omits UNLOCK TABLES.' );
 	expect_import_unlock( 'UNLOCK TABLES' === end( $wpdb->queries ), 'PHP import must release table locks before returning to prefix remap.' );
+
+	$wpdb->queries = array();
+	$truncated = tempnam( sys_get_temp_dir(), 'agsb-truncated-' );
+	file_put_contents( $truncated, "INSERT INTO `wp_options` VALUES (1, 'unterminated\n" );
+	$result = $method->invoke( $service, $truncated, 'wp_' );
+	unlink( $truncated );
+	expect_import_unlock( $result instanceof \WP_Error, 'PHP import must reject an incomplete final SQL statement.' );
+	expect_import_unlock( 'ag_sync_bridge_import_incomplete_statement' === $result->code, 'Incomplete SQL must return the dedicated fail-closed error.' );
+	expect_import_unlock( 'UNLOCK TABLES' === end( $wpdb->queries ), 'Incomplete SQL rejection must release table locks.' );
 
 	echo "php import unlock regression: ok\n";
 }

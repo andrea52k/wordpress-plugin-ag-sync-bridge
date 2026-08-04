@@ -619,7 +619,12 @@ class Database_Service {
 			)
 		);
 
-		$command     = $this->build_shell_command( array_merge( $args, array( DB_NAME ) ) );
+		$tables = $this->get_export_tables();
+		if ( is_wp_error( $tables ) ) {
+			return $tables;
+		}
+
+		$command     = $this->build_shell_command( array_merge( $args, array( DB_NAME ), $tables ) );
 		$descriptors = array(
 			1 => array( 'file', $file_path, 'w' ),
 			2 => array( 'pipe', 'w' ),
@@ -816,8 +821,12 @@ class Database_Service {
 
 		fwrite( $handle, "\n" );
 
-		$tables = $wpdb->get_col( 'SHOW TABLES' );
-		$tables = is_array( $tables ) ? $tables : array();
+		$tables = $this->get_export_tables();
+		if ( is_wp_error( $tables ) ) {
+			fclose( $handle );
+			$mysqli->close();
+			return $tables;
+		}
 
 		foreach ( $tables as $table ) {
 			if ( is_callable( $cancellation_check ) && call_user_func( $cancellation_check, 'database-export-php', false ) ) {
@@ -1123,7 +1132,16 @@ class Database_Service {
 			}
 		}
 
+		$incomplete_statement = '' !== trim( $statement ) || $in_string;
 		fclose( $handle );
+		if ( $incomplete_statement ) {
+			$wpdb->query( 'UNLOCK TABLES' );
+			return new WP_Error(
+				'ag_sync_bridge_import_incomplete_statement',
+				__( 'SQL import ended with an incomplete statement.', 'ag-sync-bridge' ),
+				array( 'query' => substr( trim( $statement ), 0, 500 ) )
+			);
+		}
 		$unlocked = $wpdb->query( 'UNLOCK TABLES' );
 		if ( false === $unlocked ) {
 			return new WP_Error(
@@ -1132,6 +1150,36 @@ class Database_Service {
 			);
 		}
 		return true;
+	}
+
+	private function get_export_tables() {
+		global $wpdb;
+
+		$prefix = (string) $wpdb->prefix;
+		if ( '' === $prefix || ! preg_match( '/^[A-Za-z0-9_]+$/', $prefix ) ) {
+			return new WP_Error(
+				'ag_sync_bridge_export_prefix_invalid',
+				__( 'The active WordPress table prefix is invalid.', 'ag-sync-bridge' )
+			);
+		}
+
+		$tables = $wpdb->get_col( 'SHOW TABLES' );
+		$tables = is_array( $tables ) ? array_values( array_filter(
+			$tables,
+			static function ( $table ) use ( $prefix ) {
+				return 0 === strpos( (string) $table, $prefix );
+			}
+		) ) : array();
+
+		if ( empty( $tables ) || ! in_array( $wpdb->options, $tables, true ) ) {
+			return new WP_Error(
+				'ag_sync_bridge_export_tables_missing',
+				__( 'No complete active-prefix WordPress table set was found for export.', 'ag-sync-bridge' )
+			);
+		}
+
+		sort( $tables, SORT_STRING );
+		return $tables;
 	}
 
 	private function prepare_sql_for_import( $file_path, $source_prefix, $target_prefix, $progress_callback = null ) {
