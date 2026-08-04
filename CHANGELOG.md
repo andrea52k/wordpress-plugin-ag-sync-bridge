@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.58
+
+- Release MySQL `LOCK TABLES` state after the PHP import fallback before environment restore and prefix remapping.
+- Release table locks on PHP import query failures so recovery checks can safely inspect the target.
+
 ## 0.1.57
 
 - Consente a un recovery import completo, prodotto dallo stesso live, di sostituire anche un import in `rollback_required`, conservando riferimenti e audit dell'operazione sostituita; gli import normali restano bloccati.

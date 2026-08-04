@@ -1108,6 +1108,10 @@ class Database_Service {
 
 					$result = $wpdb->query( $query );
 					if ( false === $result ) {
+						// A dump can leave the connection inside LOCK TABLES when a
+						// later statement fails. Release it before the caller performs
+						// environment restore or recovery queries on other tables.
+						$wpdb->query( 'UNLOCK TABLES' );
 						fclose( $handle );
 						return new WP_Error(
 							'ag_sync_bridge_import_query_failed',
@@ -1120,6 +1124,13 @@ class Database_Service {
 		}
 
 		fclose( $handle );
+		$unlocked = $wpdb->query( 'UNLOCK TABLES' );
+		if ( false === $unlocked ) {
+			return new WP_Error(
+				'ag_sync_bridge_import_unlock_failed',
+				$wpdb->last_error ? $wpdb->last_error : __( 'Unable to release database table locks after the PHP import.', 'ag-sync-bridge' )
+			);
+		}
 		return true;
 	}
 
