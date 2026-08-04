@@ -413,7 +413,7 @@ class Database_Service {
 	private function get_fast_replace_columns( $table, array $text_columns ) {
 		$table = strtolower( (string) $table );
 
-		if ( ! preg_match( '/(^|_)mpg_dataset_rows$/', $table ) ) {
+		if ( ! preg_match( '/(^|_)mpg_(?:runtime_)?dataset_rows$/', $table ) ) {
 			return array();
 		}
 
@@ -425,10 +425,10 @@ class Database_Service {
 
 		$rows_updated = 0;
 		$primary_keys = $this->get_primary_keys( $table );
-		$single_key   = 1 === count( $primary_keys ) ? reset( $primary_keys ) : '';
-		if ( ! $single_key ) {
-			return new WP_Error( 'ag_sync_bridge_url_replace_fast_key_missing', __( 'Fast URL replacement requires a single primary key.', 'ag-sync-bridge' ), array( 'table' => $table ) );
+		if ( empty( $primary_keys ) ) {
+			return new WP_Error( 'ag_sync_bridge_url_replace_fast_key_missing', __( 'Fast URL replacement requires a primary key.', 'ag-sync-bridge' ), array( 'table' => $table ) );
 		}
+		$key_select = implode( ', ', array_map( array( $this, 'quote_identifier' ), $primary_keys ) );
 
 		foreach ( $columns as $column ) {
 			foreach ( $replacements as $source => $target ) {
@@ -445,23 +445,38 @@ class Database_Service {
 					$this->report_url_replace_progress( $progress_callback, $table, 'fast-batch-start', $rows_updated, $last_key );
 					$where = $this->quote_identifier( $column ) . ' LIKE ' . $this->prepare_sql_value( '%' . $wpdb->esc_like( $source ) . '%' );
 					if ( null !== $last_key ) {
-						$where = $this->quote_identifier( $single_key ) . ' > ' . $this->prepare_sql_value( $last_key ) . ' AND (' . $where . ')';
+						$keyset_where = $this->build_primary_key_after_sql( $primary_keys, $last_key );
+						if ( is_wp_error( $keyset_where ) ) {
+							return $keyset_where;
+						}
+						$where = $keyset_where . ' AND (' . $where . ')';
 					}
-					$ids = $wpdb->get_col( 'SELECT ' . $this->quote_identifier( $single_key ) . ' FROM ' . $this->quote_identifier( $table ) . ' WHERE ' . $where . ' ORDER BY ' . $this->quote_identifier( $single_key ) . ' ASC LIMIT ' . self::URL_REPLACE_BATCH_SIZE );
-					$ids = is_array( $ids ) ? array_values( array_filter( $ids, 'is_scalar' ) ) : array();
-					if ( empty( $ids ) ) {
+					$key_rows = $wpdb->get_results( 'SELECT ' . $key_select . ' FROM ' . $this->quote_identifier( $table ) . ' WHERE ' . $where . ' ORDER BY ' . $key_select . ' ASC LIMIT ' . self::URL_REPLACE_BATCH_SIZE, ARRAY_A );
+					$key_rows = is_array( $key_rows ) ? array_values( $key_rows ) : array();
+					if ( empty( $key_rows ) ) {
 						break;
 					}
-					$id_sql = implode( ', ', array_map( array( $this, 'prepare_sql_value' ), $ids ) );
-					$sql = $wpdb->prepare( 'UPDATE ' . $this->quote_identifier( $table ) . ' SET ' . $this->quote_identifier( $column ) . ' = REPLACE(' . $this->quote_identifier( $column ) . ', %s, %s) WHERE ' . $this->quote_identifier( $single_key ) . ' IN (' . $id_sql . ')', $source, $target );
+					$key_where = $this->build_primary_key_rows_sql( $primary_keys, $key_rows );
+					if ( is_wp_error( $key_where ) ) {
+						return $key_where;
+					}
+					$replacement = 'REPLACE(' . $this->quote_identifier( $column ) . ', %s, %s)';
+					$assignments = array( $this->quote_identifier( $column ) . ' = ' . $replacement );
+					$prepare_values = array( $source, $target );
+					if ( $this->is_runtime_dataset_rows_table( $table ) && 'row_data' === $column ) {
+						$assignments[] = $this->quote_identifier( 'row_sha256' ) . ' = SHA2(' . $replacement . ', 256)';
+						$prepare_values[] = $source;
+						$prepare_values[] = $target;
+					}
+					$sql = $wpdb->prepare( 'UPDATE ' . $this->quote_identifier( $table ) . ' SET ' . implode( ', ', $assignments ) . ' WHERE ' . $key_where, $prepare_values );
 					$result = $wpdb->query( $sql );
 					if ( false === $result ) {
 						return new WP_Error( 'ag_sync_bridge_url_replace_fast_failed', $wpdb->last_error ? $wpdb->last_error : __( 'Fast URL replacement failed.', 'ag-sync-bridge' ), array( 'table' => $table, 'column' => $column ) );
 					}
 					$rows_updated += (int) $result;
-					$last_key = end( $ids );
+					$last_key = end( $key_rows );
 					$this->report_url_replace_progress( $progress_callback, $table, 'fast-batch-complete', $rows_updated, $last_key );
-				} while ( count( $ids ) === self::URL_REPLACE_BATCH_SIZE );
+				} while ( count( $key_rows ) === self::URL_REPLACE_BATCH_SIZE );
 			}
 		}
 
@@ -477,6 +492,54 @@ class Database_Service {
 		}
 
 		return $rows_updated;
+	}
+
+	private function is_runtime_dataset_rows_table( $table ) {
+		return (bool) preg_match( '/(^|_)mpg_runtime_dataset_rows$/', strtolower( (string) $table ) );
+	}
+
+	private function build_primary_key_after_sql( array $primary_keys, $last_key ) {
+		$last_key = is_array( $last_key ) ? $last_key : array( reset( $primary_keys ) => $last_key );
+		$branches = array();
+
+		foreach ( array_values( $primary_keys ) as $index => $primary_key ) {
+			if ( ! array_key_exists( $primary_key, $last_key ) ) {
+				return new WP_Error( 'ag_sync_bridge_url_replace_fast_key_invalid', __( 'Fast URL replacement lost its primary-key checkpoint.', 'ag-sync-bridge' ), array( 'key' => $primary_key ) );
+			}
+			$parts = array();
+			for ( $prefix = 0; $prefix < $index; $prefix++ ) {
+				$equal_key = $primary_keys[ $prefix ];
+				$parts[] = $this->quote_identifier( $equal_key ) . ' = ' . $this->prepare_sql_value( $last_key[ $equal_key ] );
+			}
+			$parts[] = $this->quote_identifier( $primary_key ) . ' > ' . $this->prepare_sql_value( $last_key[ $primary_key ] );
+			$branches[] = '(' . implode( ' AND ', $parts ) . ')';
+		}
+
+		return '(' . implode( ' OR ', $branches ) . ')';
+	}
+
+	private function build_primary_key_rows_sql( array $primary_keys, array $key_rows ) {
+		$rows = array();
+
+		foreach ( $key_rows as $key_row ) {
+			if ( ! is_array( $key_row ) ) {
+				return new WP_Error( 'ag_sync_bridge_url_replace_fast_key_invalid', __( 'Fast URL replacement received an invalid primary-key row.', 'ag-sync-bridge' ) );
+			}
+			$parts = array();
+			foreach ( $primary_keys as $primary_key ) {
+				if ( ! array_key_exists( $primary_key, $key_row ) ) {
+					return new WP_Error( 'ag_sync_bridge_url_replace_fast_key_invalid', __( 'Fast URL replacement received an incomplete primary-key row.', 'ag-sync-bridge' ), array( 'key' => $primary_key ) );
+				}
+				$parts[] = $this->quote_identifier( $primary_key ) . ' = ' . $this->prepare_sql_value( $key_row[ $primary_key ] );
+			}
+			$rows[] = '(' . implode( ' AND ', $parts ) . ')';
+		}
+
+		if ( empty( $rows ) ) {
+			return new WP_Error( 'ag_sync_bridge_url_replace_fast_key_empty', __( 'Fast URL replacement received an empty primary-key batch.', 'ag-sync-bridge' ) );
+		}
+
+		return '(' . implode( ' OR ', $rows ) . ')';
 	}
 
 	private function build_url_match_sql( array $columns, array $sources ) {

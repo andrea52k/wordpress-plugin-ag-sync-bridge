@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.60
+
+- Use checkpointed set-based URL replacement for both MPG dataset tables and the versioned V4MPG runtime table, including composite primary keys.
+- Recompute `row_sha256` whenever `mpg_runtime_dataset_rows.row_data` is remapped so runtime integrity checks remain valid.
+
 ## 0.1.59
 
 - Limit full database exports to the active WordPress table prefix so stale tables from another environment cannot overwrite remapped target tables during import.

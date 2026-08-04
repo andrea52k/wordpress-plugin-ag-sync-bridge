@@ -28,8 +28,8 @@ expect_full_import_liveness(
 	'Fast URL replacement must emit a heartbeat before and after every micro-batch.'
 );
 expect_full_import_liveness(
-	false !== strpos( $database, "' IN (' . \$id_sql . ')'" ),
-	'Fast URL replacement must update only the selected keyset batch, never the full table at once.'
+	false !== strpos( $database, 'build_primary_key_rows_sql' ) && false !== strpos( $database, "' WHERE ' . \$key_where" ),
+	'Fast URL replacement must update only the selected primary-key batch, never the full table at once.'
 );
 expect_full_import_liveness(
 	substr_count( $database, 'report_url_replace_progress' ) >= 4,

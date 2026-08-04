@@ -19,14 +19,13 @@ namespace {
 		public $queries = array();
 		public function __construct() { $this->values = array_fill( 1, 501, 'http://localhost/page' ); }
 		public function esc_like( $value ) { return $value; }
-		public function prepare( $query, ...$values ) { foreach ( $values as $value ) { $query = preg_replace( '/%s/', "'" . str_replace( "'", "''", (string) $value ) . "'", $query, 1 ); } return $query; }
+		public function prepare( $query, ...$values ) { if ( 1 === count( $values ) && is_array( $values[0] ) ) { $values = $values[0]; } foreach ( $values as $value ) { $query = preg_replace( '/%s/', "'" . str_replace( "'", "''", (string) $value ) . "'", $query, 1 ); } return $query; }
 		public function get_col( $query ) {
 			if ( 'SHOW TABLES' === $query ) { return array( 'wp_mpg_dataset_rows' ); }
-			if ( false !== strpos( $query, 'SELECT `id` FROM `wp_mpg_dataset_rows`' ) ) { preg_match( "/`id` > '([0-9]+)'/", $query, $match ); $after = empty( $match ) ? 0 : (int) $match[1]; return array_slice( array_keys( array_filter( $this->values, static function ( $value, $id ) use ( $after ) { return $id > $after && false !== strpos( $value, 'localhost' ); }, ARRAY_FILTER_USE_BOTH ) ), 0, 500 ); }
 			return array();
 		}
-		public function get_results( $query ) { if ( false !== strpos( $query, 'SHOW FULL COLUMNS' ) ) { return array( array( 'Field' => 'id', 'Type' => 'bigint' ), array( 'Field' => 'row_data', 'Type' => 'longtext' ) ); } if ( false !== strpos( $query, 'SHOW KEYS' ) ) { return array( array( 'Column_name' => 'id' ) ); } return array(); }
-		public function query( $query ) { $this->queries[] = $query; preg_match( '/IN \(([^)]+)\)/', $query, $match ); if ( empty( $match ) ) { return false; } preg_match_all( '/\d+/', $match[1], $ids ); foreach ( $ids[0] as $id ) { $this->values[(int) $id] = str_replace( 'http://localhost', 'https://live.test', $this->values[(int) $id] ); } return count( $ids[0] ); }
+		public function get_results( $query ) { if ( false !== strpos( $query, 'SHOW FULL COLUMNS' ) ) { return array( array( 'Field' => 'id', 'Type' => 'bigint' ), array( 'Field' => 'row_data', 'Type' => 'longtext' ) ); } if ( false !== strpos( $query, 'SHOW KEYS' ) ) { return array( array( 'Column_name' => 'id' ) ); } if ( false !== strpos( $query, 'SELECT `id` FROM `wp_mpg_dataset_rows`' ) ) { preg_match( "/`id` > '([0-9]+)'/", $query, $match ); $after = empty( $match ) ? 0 : (int) $match[1]; return array_map( static function ( $id ) { return array( 'id' => $id ); }, array_slice( array_keys( array_filter( $this->values, static function ( $value, $id ) use ( $after ) { return $id > $after && false !== strpos( $value, 'localhost' ); }, ARRAY_FILTER_USE_BOTH ) ), 0, 500 ) ); } return array(); }
+		public function query( $query ) { $this->queries[] = $query; preg_match_all( "/`id` = '([0-9]+)'/", $query, $ids ); if ( empty( $ids[1] ) ) { return false; } foreach ( $ids[1] as $id ) { $this->values[(int) $id] = str_replace( 'http://localhost', 'https://live.test', $this->values[(int) $id] ); } return count( $ids[1] ); }
 	}
 }
 
@@ -44,7 +43,7 @@ namespace AGSyncBridge {
 
 	list( $result, $events, $wpdb ) = run_url_replace();
 	expect_url_liveness( ! \is_wp_error( $result ) && 501 === $result['rows_updated'], 'All 501 rows must be replaced.' );
-	expect_url_liveness( 2 === count( $wpdb->queries ) && 0 === count( array_filter( $wpdb->queries, static function ( $query ) { return false === strpos( $query, ' IN (' ); } ) ), 'Fast replacement must use exactly two keyset UPDATE ... IN batches.' );
+	expect_url_liveness( 2 === count( $wpdb->queries ) && 0 === count( array_filter( $wpdb->queries, static function ( $query ) { return false === strpos( $query, "`id` = '"); } ) ), 'Fast replacement must use exactly two keyset UPDATE batches.' );
 expect_url_liveness( count( array_filter( $events, static function ( $event ) { return 'fast-batch-start' === $event['phase']; } ) ) >= 2 && 2 === count( array_filter( $events, static function ( $event ) { return 'fast-batch-complete' === $event['phase']; } ) ), 'Every non-empty fast batch must emit start and completion progress.' );
 
 	$checks = 0;
