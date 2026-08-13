@@ -19,7 +19,7 @@ class Archive_Service {
 	 */
 	const MAX_ARCHIVE_BYTES = 10737418240; // 10 GiB compressed.
 	const MAX_ARCHIVE_ENTRIES = 200000;
-	const MAX_ARCHIVE_ENTRY_BYTES = 5368709120; // 5 GiB per member.
+	const MAX_ARCHIVE_ENTRY_BYTES = 8589934592; // 8 GiB per member.
 	const MAX_ARCHIVE_UNCOMPRESSED_BYTES = 21474836480; // 20 GiB expanded.
 	const MAX_MANIFEST_BYTES = 1048576; // 1 MiB.
 

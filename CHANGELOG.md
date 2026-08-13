@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.62
+
+- Raise the bounded per-entry extraction ceiling from 5 GiB to 8 GiB so a verified, ZIP64-backed `database.sql` from a large production site can pass package validation.
+- Keep the existing 10 GiB compressed archive and 20 GiB total expanded-data ceilings, entry-count limit, streaming extraction checks and manifest integrity gates unchanged.
+
 ## 0.1.61
 
 - Keep the exported database in a protected snapshot-side file until `ZipArchive::close()` completes, so concurrent runtime cleanup cannot remove it during long file archival.

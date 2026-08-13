@@ -128,6 +128,7 @@ namespace AGSyncBridge {
 		$entry_target = $fixture . '/entry-limit-target';
 		$entry_limit = $archive->extract_package( $full_zip, $entry_target, null, array( 'max_archive_entry_bytes' => 16 ) );
 		expect_archive_preflight( is_wp_error( $entry_limit ) && 'ag_sync_bridge_zip_entry_size' === $entry_limit->get_error_code(), 'Per-entry uncompressed size ceiling must be enforced.' );
+		expect_archive_preflight( 8589934592 === Archive_Service::MAX_ARCHIVE_ENTRY_BYTES, 'Default per-entry ceiling must permit the verified 6.5 GB production SQL dump while remaining bounded.' );
 		expect_archive_preflight( ! file_exists( $entry_target ), 'Rejected member size must not create an extraction directory.' );
 
 		$expansion_target = $fixture . '/expansion-limit-target';
