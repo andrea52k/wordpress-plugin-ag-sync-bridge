@@ -45,6 +45,9 @@ class Archive_Service {
 		if ( $this->is_cancel_requested( $cancellation_check, 'archive-prepare' ) ) {
 			return $this->cancellation_error( 'archive-prepare' );
 		}
+		if ( 'full' === (string) ( $manifest['snapshot_scope'] ?? '' ) && ( ! is_file( (string) $database_path ) || filesize( (string) $database_path ) < 1 ) ) {
+			return new WP_Error( 'ag_sync_bridge_full_snapshot_database_missing', __( 'A full snapshot requires a non-empty database export before archive creation.', 'ag-sync-bridge' ) );
+		}
 
 		$zip = new ZipArchive();
 		if ( true !== $zip->open( $package_path, ZipArchive::CREATE | ZipArchive::OVERWRITE ) ) {

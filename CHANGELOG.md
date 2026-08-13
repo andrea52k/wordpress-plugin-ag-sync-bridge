@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.61
+
+- Keep the exported database in a protected snapshot-side file until `ZipArchive::close()` completes, so concurrent runtime cleanup cannot remove it during long file archival.
+- Fail closed before and during full-package creation when the database dump is missing or empty; a file-only archive can no longer be labelled as a full snapshot.
+
 ## 0.1.60
 
 - Use checkpointed set-based URL replacement for both MPG dataset tables and the versioned V4MPG runtime table, including composite primary keys.

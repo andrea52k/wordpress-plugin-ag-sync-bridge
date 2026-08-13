@@ -81,6 +81,17 @@ class Export_Service {
 			return $cancelled;
 		}
 
+		$protected_database_sql = normalize_path( $package_data['path'] . '.database.sql' );
+		if ( ! is_file( $database_sql ) || filesize( $database_sql ) < 1 ) {
+			$this->file_system->cleanup_path( $temp_dir );
+			return new WP_Error( 'ag_sync_bridge_database_export_missing', __( 'Database export completed without a readable SQL artifact.', 'ag-sync-bridge' ) );
+		}
+		if ( file_exists( $protected_database_sql ) || ! rename( $database_sql, $protected_database_sql ) || ! is_file( $protected_database_sql ) || filesize( $protected_database_sql ) < 1 ) {
+			$this->file_system->cleanup_path( $temp_dir );
+			return new WP_Error( 'ag_sync_bridge_database_export_protection_failed', __( 'Unable to move the database export into protected snapshot storage.', 'ag-sync-bridge' ) );
+		}
+		$database_sql = $protected_database_sql;
+
 		$entries            = $this->file_system->get_export_entries();
 		$snapshot_integrity = $this->file_system->get_snapshot_integrity_for_export( $entries );
 		$manifest           = array(
@@ -104,20 +115,32 @@ class Export_Service {
 			'context'          => $context,
 		);
 
-		$archive_result = $this->archive->create_package(
-			$package_data['path'],
-			$database_sql,
-			$manifest,
-			$entries,
-			array( $this->file_system, 'should_exclude' ),
-			function ( $stage, $progress, array $details = array() ) use ( $progress_callback ) {
-				$mapped = null === $progress ? 60 : 35 + (int) round( max( 0, min( 100, (int) $progress ) ) * 0.55 );
-				$this->report_progress( $progress_callback, $stage, $mapped, $details );
-			},
-			$cancellation_check
-		);
+		$archive_result = null;
+		$database_cleanup_failed = false;
+		try {
+			$archive_result = $this->archive->create_package(
+				$package_data['path'],
+				$database_sql,
+				$manifest,
+				$entries,
+				array( $this->file_system, 'should_exclude' ),
+				function ( $stage, $progress, array $details = array() ) use ( $progress_callback ) {
+					$mapped = null === $progress ? 60 : 35 + (int) round( max( 0, min( 100, (int) $progress ) ) * 0.55 );
+					$this->report_progress( $progress_callback, $stage, $mapped, $details );
+				},
+				$cancellation_check
+			);
+		} finally {
+			if ( is_file( $database_sql ) && ! unlink( $database_sql ) ) {
+				$database_cleanup_failed = true;
+			}
+			$this->file_system->cleanup_path( $temp_dir );
+		}
 
-		$this->file_system->cleanup_path( $temp_dir );
+		if ( $database_cleanup_failed ) {
+			@unlink( $package_data['path'] );
+			return new WP_Error( 'ag_sync_bridge_database_export_cleanup_failed', __( 'Snapshot creation could not remove its protected database export.', 'ag-sync-bridge' ) );
+		}
 
 		if ( is_wp_error( $archive_result ) ) {
 			return $archive_result;
