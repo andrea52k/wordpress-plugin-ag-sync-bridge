@@ -63,11 +63,6 @@ class Database_Service {
 		@set_time_limit( 0 );
 
 		$file_path = normalize_path( $file_path );
-
-		if ( ! file_exists( $file_path ) ) {
-			return new WP_Error( 'ag_sync_bridge_missing_sql', __( 'Database SQL file not found.', 'ag-sync-bridge' ) );
-		}
-
 		$source_prefix = (string) array_get( $args, 'source_prefix', '' );
 		$target_prefix = (string) array_get( $args, 'target_prefix', '' );
 		$progress_callback = array_get( $args, 'progress_callback', null );
@@ -76,6 +71,10 @@ class Database_Service {
 			&& '' !== $source_prefix
 			&& hash_equals( $source_prefix, $target_prefix )
 		);
+		$is_zip_stream = 0 === strpos( $file_path, 'zip://' );
+		if ( ! file_exists( $file_path ) && ! ( $direct_same_site_restore && $is_zip_stream ) ) {
+			return new WP_Error( 'ag_sync_bridge_missing_sql', __( 'Database SQL file not found.', 'ag-sync-bridge' ) );
+		}
 		$prepared = $direct_same_site_restore
 			? array(
 				'path'                    => $file_path,
@@ -110,7 +109,7 @@ class Database_Service {
 		}
 
 		try {
-			if ( $this->can_use_cli_tools() ) {
+			if ( ! $direct_same_site_restore && $this->can_use_cli_tools() ) {
 				$result = $this->import_via_cli( $import_path, $progress_callback );
 				if ( ! is_wp_error( $result ) ) {
 					return array(

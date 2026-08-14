@@ -93,7 +93,7 @@ class Import_Service {
 		$source_prefix = $this->resolve_source_table_prefix( $manifest, $prepared['temp_dir'] );
 		$target_prefix = $this->database->get_table_prefix();
 		$trusted_same_site_php_restore = (
-			'php' === (string) array_get( $manifest, 'database_method', '' )
+			! empty( $prepared['stream_database_sql'] )
 			&& '' !== $source_prefix
 			&& hash_equals( $source_prefix, $target_prefix )
 			&& untrailingslashit( (string) array_get( $manifest, 'source_site_url', '' ) ) === untrailingslashit( (string) $target_site )
@@ -471,6 +471,23 @@ class Import_Service {
 			return $temp_dir;
 		}
 
+		$pre_manifest = $this->file_system->read_package_manifest( $package_path );
+		$stream_database_sql = false;
+		if ( ! empty( $args['recovery_import'] ) && is_array( $pre_manifest ) ) {
+			$target_site = untrailingslashit( (string) array_get( $args, 'target_site_url', site_url() ) );
+			$target_home = untrailingslashit( (string) array_get( $args, 'target_home_url', home_url() ) );
+			$source_prefix = (string) array_get( $pre_manifest, 'source_table_prefix', '' );
+			$database_stream = $this->database_zip_stream_path( $package_path );
+			$stream_database_sql = (
+				'remote' === (string) array_get( $pre_manifest, 'source_role', '' )
+				&& '' !== $source_prefix
+				&& hash_equals( $source_prefix, $this->database->get_table_prefix() )
+				&& untrailingslashit( (string) array_get( $pre_manifest, 'source_site_url', '' ) ) === $target_site
+				&& untrailingslashit( (string) array_get( $pre_manifest, 'source_home_url', '' ) ) === $target_home
+				&& $this->is_bridge_php_database_stream( $database_stream )
+			);
+		}
+
 		$result = $this->archive->extract_package(
 			$package_path,
 			$temp_dir,
@@ -482,6 +499,7 @@ class Import_Service {
 			},
 			array(
 				'expected_partial_paths' => is_array( array_get( $args, 'expected_partial_paths', array() ) ) ? array_get( $args, 'expected_partial_paths', array() ) : array(),
+				'skip_database_sql' => $stream_database_sql,
 			)
 		);
 		if ( is_wp_error( $result ) ) {
@@ -490,7 +508,7 @@ class Import_Service {
 		}
 
 		$manifest_path = normalize_path( $temp_dir . '/manifest.json' );
-		$database_sql  = normalize_path( $temp_dir . '/database.sql' );
+		$database_sql  = $stream_database_sql ? $this->database_zip_stream_path( $package_path ) : normalize_path( $temp_dir . '/database.sql' );
 
 		if ( ! file_exists( $manifest_path ) ) {
 			$this->file_system->cleanup_path( $temp_dir );
@@ -504,7 +522,7 @@ class Import_Service {
 		}
 
 		$is_partial = $this->is_partial_manifest( $manifest );
-		if ( ! $is_partial && ! file_exists( $database_sql ) ) {
+		if ( ! $is_partial && ! $stream_database_sql && ! file_exists( $database_sql ) ) {
 			$this->file_system->cleanup_path( $temp_dir );
 			return new WP_Error( 'ag_sync_bridge_invalid_package', __( 'Snapshot package is missing database.sql.', 'ag-sync-bridge' ) );
 		}
@@ -560,7 +578,25 @@ class Import_Service {
 			'temp_dir'    => $temp_dir,
 			'manifest'    => $manifest,
 			'database_sql'=> $database_sql,
+			'stream_database_sql' => $stream_database_sql,
 		);
+	}
+
+	private function database_zip_stream_path( $package_path ) {
+		return 'zip://' . normalize_path( $package_path ) . '#database.sql';
+	}
+
+	private function is_bridge_php_database_stream( $stream_path ) {
+		$handle = @fopen( $stream_path, 'rb' );
+		if ( false === $handle ) {
+			return false;
+		}
+		try {
+			$line = fgets( $handle );
+		} finally {
+			fclose( $handle );
+		}
+		return "-- AG Sync Bridge database export\n" === $line || "-- AG Sync Bridge database export\r\n" === $line;
 	}
 
 	private function resolve_source_table_prefix( array $manifest, $temp_dir ) {

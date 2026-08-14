@@ -1041,6 +1041,7 @@ class Rest_Controller {
 		$import_contract = array(
 			'allow_partial_import'   => $allow_partial_snapshot,
 			'expected_partial_paths' => $allow_partial_snapshot ? $expected_partial_paths : array(),
+			'recovery_import'        => $recovery_import,
 		);
 
 		if ( $async ) {
@@ -1201,6 +1202,7 @@ class Rest_Controller {
 				'target_home_url' => home_url(),
 				'allow_partial_import'   => $allow_partial_import,
 				'expected_partial_paths'=> $allow_partial_import ? $expected_partial_paths : array(),
+				'recovery_import'        => ! empty( $import_contract['recovery_import'] ),
 				'cancellation_check' => function ( $stage, $rollback_required ) use ( $operation_id ) {
 					return $this->runtime->is_cancel_requested( $operation_id );
 				},

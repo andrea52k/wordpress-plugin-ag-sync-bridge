@@ -183,7 +183,7 @@ class Archive_Service {
 			);
 		}
 
-		$result = $this->extract_entries( $zip, $package_path, $target_dir, $progress_callback, $inspection );
+		$result = $this->extract_entries( $zip, $package_path, $target_dir, $progress_callback, $inspection, $options );
 		$status = $zip->status;
 
 		$zip->close();
@@ -354,7 +354,7 @@ class Archive_Service {
 		);
 	}
 
-	private function extract_entries( ZipArchive $zip, $package_path, $target_dir, $progress_callback, array $inspection ) {
+	private function extract_entries( ZipArchive $zip, $package_path, $target_dir, $progress_callback, array $inspection, array $options = array() ) {
 		$last_report  = microtime( true );
 		$total_written = 0.0;
 		$entries      = $inspection['entries'];
@@ -363,6 +363,9 @@ class Archive_Service {
 
 		foreach ( $entries as $index => $entry ) {
 			$name   = $entry['name'];
+			if ( ! empty( $options['skip_database_sql'] ) && 'database.sql' === $name ) {
+				continue;
+			}
 			$target = $this->resolve_zip_entry_target( $target_dir, $name );
 
 			if ( is_wp_error( $target ) ) {

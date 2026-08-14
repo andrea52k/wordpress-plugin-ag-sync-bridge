@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.64
+
+- Same-site recovery now streams `database.sql` directly from the verified ZIP package, so it does not need enough hosting quota to materialize the multi-gigabyte SQL entry beside the archive.
+- The streaming path is restricted to explicit recovery imports whose package is a live-origin AG Sync PHP export with exact site URL, home URL, and table-prefix identity.
+
 ## 0.1.63
 
 - Recovery imports from a PHP-exported full backup of the exact same site now stream the verified SQL dump directly instead of creating a second multi-gigabyte temporary copy.
