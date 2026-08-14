@@ -1206,6 +1206,15 @@ class Database_Service {
 
 					$result = $wpdb->query( $query );
 					if ( false === $result ) {
+						// Capture the connection-level error before UNLOCK TABLES runs
+						// another query and can replace wpdb's diagnostic state.
+						$connection_errno = 0;
+						$connection_error = '';
+						if ( isset( $wpdb->dbh ) && is_object( $wpdb->dbh ) ) {
+							$connection_errno = isset( $wpdb->dbh->errno ) ? (int) $wpdb->dbh->errno : 0;
+							$connection_error = isset( $wpdb->dbh->error ) ? (string) $wpdb->dbh->error : '';
+						}
+						$import_error = $wpdb->last_error ? (string) $wpdb->last_error : $connection_error;
 						// A dump can leave the connection inside LOCK TABLES when a
 						// later statement fails. Release it before the caller performs
 						// environment restore or recovery queries on other tables.
@@ -1213,8 +1222,12 @@ class Database_Service {
 						fclose( $handle );
 						return new WP_Error(
 							'ag_sync_bridge_import_query_failed',
-							$wpdb->last_error ? $wpdb->last_error : __( 'Database import query failed.', 'ag-sync-bridge' ),
-							array( 'query' => substr( $query, 0, 500 ) )
+							$import_error ? $import_error : __( 'Database import query failed.', 'ag-sync-bridge' ),
+							array(
+								'query'       => substr( $query, 0, 500 ),
+								'mysql_errno' => $connection_errno,
+								'mysql_error' => $connection_error,
+							)
 						);
 					}
 				}

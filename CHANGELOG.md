@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.68
+
+- Preserve the native MySQL error number and message before releasing table locks when a streamed PHP import query fails, so recovery diagnostics identify the exact database refusal instead of returning a generic error.
+
 ## 0.1.67
 
 - Apply ZIP-wrapper preservation in the database import entry point (not the export entry point) and tighten the regression test to bind the check to the correct method body.
