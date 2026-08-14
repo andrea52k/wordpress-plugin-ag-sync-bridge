@@ -35,6 +35,8 @@ namespace AGSyncBridge {
 	$split_rows->setAccessible( true );
 	$normalize_empty_hex = $reflection->getMethod( 'normalize_empty_hex_literals' );
 	$normalize_empty_hex->setAccessible( true );
+	$open_at_offset = $reflection->getMethod( 'open_import_stream_at_offset' );
+	$open_at_offset->setAccessible( true );
 
 	$binary_field = (object) array( 'type' => 252, 'charsetnr' => 63 );
 	$text_field = (object) array( 'type' => 253, 'charsetnr' => 45 );
@@ -46,6 +48,13 @@ namespace AGSyncBridge {
 	$legacy_hex = "INSERT INTO `wp_table` VALUES (0x, 0X , 0x00, 'text,0x,value', \"text,0X,value\", `0x`);";
 	$normalized_hex = "INSERT INTO `wp_table` VALUES (X'', X'' , 0x00, 'text,0x,value', \"text,0X,value\", `0x`);";
 	expect_database_safety( $normalized_hex === $normalize_empty_hex->invoke( $service, $legacy_hex ), 'Legacy empty 0x tokens must be repaired without changing valid hex, strings or identifiers.' );
+	$resume_file = tempnam( sys_get_temp_dir(), 'agsb-resume-' );
+	file_put_contents( $resume_file, '0123456789abcdef' );
+	$resume_handle = $open_at_offset->invoke( $service, $resume_file, 10 );
+	expect_database_safety( is_resource( $resume_handle ), 'The importer must reopen a readable stream at a verified byte offset.' );
+	expect_database_safety( 'abcdef' === stream_get_contents( $resume_handle ), 'Resumed reads must start at the exact processed-byte boundary.' );
+	fclose( $resume_handle );
+	unlink( $resume_file );
 
 	$one_slash = "'x\\'";
 	$two_slashes = "'x\\\\'";

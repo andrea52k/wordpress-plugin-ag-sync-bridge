@@ -25,8 +25,10 @@ $import_method_end   = strpos( $database, 'public function get_table_prefix(', $
 $import_method       = false !== $import_method_start ? substr( $database, $import_method_start, false !== $import_method_end ? $import_method_end - $import_method_start : 5000 ) : '';
 expect_same_site_recovery( false !== strpos( $import_method, "0 === strpos( (string) \$file_path, 'zip://' )" ), 'Database import must identify the ZIP stream before filesystem normalization.' );
 expect_same_site_recovery( false !== strpos( $import_method, "str_replace( '\\\\', '/', (string) \$file_path ) : normalize_path" ), 'Database import must preserve the zip:// wrapper while normalizing ordinary paths normally.' );
-expect_same_site_recovery( 1 === substr_count( $database, "0 === strpos( (string) \$file_path, 'zip://' )" ), 'ZIP wrapper handling must not leak into unrelated database methods.' );
+expect_same_site_recovery( 2 === substr_count( $database, "0 === strpos( (string) \$file_path, 'zip://' )" ), 'ZIP wrapper handling must remain confined to import normalization and bounded stream resume.' );
 expect_same_site_recovery( false !== strpos( $import, "\$trusted_same_site_php_restore = ! empty( \$prepared['stream_database_sql'] )" ), 'The strict package-level decision must be carried unchanged into database import.' );
 expect_same_site_recovery( false !== strpos( $database, "'trusted_same_site_php_restore' => ! empty( \$args['trusted_same_site_php_restore'] )" ), 'Rejected streams must expose non-sensitive contract diagnostics.' );
+expect_same_site_recovery( false !== strpos( $import, "'expected_size_bytes' => \$trusted_same_site_php_restore" ), 'The signed database size must be passed only for the verified same-site ZIP stream.' );
+expect_same_site_recovery( false !== strpos( $database, 'open_import_stream_at_offset' ), 'The PHP importer must support bounded byte-exact stream resume.' );
 
 echo "same-site recovery disk regression: ok\n";

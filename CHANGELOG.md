@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.71
+
+- Resume a verified same-site ZIP database stream from the last processed byte when the hosting ZIP wrapper reports an early EOF, bounded to six reopen attempts and checked against the signed uncompressed database size.
+
 ## 0.1.70
 
 - Repair standalone empty `0x` value tokens while importing older PHP-export snapshots, using a quote-aware parser so valid hexadecimal values and text containing the same characters remain unchanged.

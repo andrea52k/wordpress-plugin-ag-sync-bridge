@@ -34,6 +34,7 @@ class Database_Service {
 
 		$file_path = normalize_path( $file_path );
 		$progress_callback = array_get( $args, 'progress_callback', null );
+		$expected_size_bytes = (int) array_get( $args, 'expected_size_bytes', 0 );
 		$cancellation_check = array_get( $args, 'cancellation_check', null );
 
 		if ( $this->can_use_cli_tools() ) {
@@ -132,7 +133,7 @@ class Database_Service {
 				$this->logger->warning( 'mysql import failed. Falling back to PHP importer.', array( 'error' => $result->get_error_message() ) );
 			}
 
-			$result = $this->import_via_php( $import_path, $target_prefix, $progress_callback );
+			$result = $this->import_via_php( $import_path, $target_prefix, $progress_callback, $expected_size_bytes );
 			if ( ! is_wp_error( $result ) ) {
 				return array(
 					'method'        => 'php',
@@ -1133,7 +1134,7 @@ class Database_Service {
 		return ' ORDER BY ' . implode( ',', $quoted );
 	}
 
-	private function import_via_php( $file_path, $target_prefix = '', $progress_callback = null ) {
+	private function import_via_php( $file_path, $target_prefix = '', $progress_callback = null, $expected_size_bytes = 0 ) {
 		global $wpdb;
 
 		$charset = $this->get_mysql_charset();
@@ -1143,19 +1144,23 @@ class Database_Service {
 			$wpdb->query( "SET collation_connection = '" . esc_sql( $this->get_mysql_collation() ) . "'" );
 		}
 
-		$handle = fopen( $file_path, 'rb' );
-		if ( ! $handle ) {
-			return new WP_Error( 'ag_sync_bridge_import_open', __( 'Unable to open SQL import file.', 'ag-sync-bridge' ) );
+		$handle = $this->open_import_stream_at_offset( $file_path, 0 );
+		if ( is_wp_error( $handle ) ) {
+			return $handle;
 		}
 
 		$statement = '';
 		$in_string = false;
 		$quote     = '';
 		$last_report = microtime( true );
+		$bytes_processed = 0;
+		$stream_reopens = 0;
 
+		while ( true ) {
 		while ( false !== ( $line = fgets( $handle ) ) ) {
+			$bytes_processed += strlen( $line );
 			if ( is_callable( $progress_callback ) && ( microtime( true ) - $last_report ) >= 5 ) {
-				call_user_func( $progress_callback, 'database-import-php', null, array( 'bytes_processed' => (int) ftell( $handle ) ) );
+				call_user_func( $progress_callback, 'database-import-php', null, array( 'bytes_processed' => $bytes_processed, 'stream_reopens' => $stream_reopens ) );
 				$last_report = microtime( true );
 			}
 			$trimmed = trim( $line );
@@ -1236,6 +1241,37 @@ class Database_Service {
 			}
 		}
 
+			if ( $expected_size_bytes > 0 && $bytes_processed < $expected_size_bytes ) {
+				fclose( $handle );
+				if ( $stream_reopens >= 6 ) {
+					return new WP_Error(
+						'ag_sync_bridge_import_stream_truncated',
+						__( 'The verified database stream ended early after repeated resume attempts.', 'ag-sync-bridge' ),
+						array(
+							'bytes_processed' => $bytes_processed,
+							'expected_size_bytes' => $expected_size_bytes,
+							'stream_reopens' => $stream_reopens,
+						)
+					);
+				}
+				$handle = $this->open_import_stream_at_offset( $file_path, $bytes_processed );
+				if ( is_wp_error( $handle ) ) {
+					return $handle;
+				}
+				$stream_reopens++;
+				$this->logger->warning(
+					'Resuming a verified database ZIP stream after an early EOF.',
+					array(
+						'bytes_processed' => $bytes_processed,
+						'expected_size_bytes' => $expected_size_bytes,
+						'stream_reopens' => $stream_reopens,
+					)
+				);
+				continue;
+			}
+			break;
+		}
+
 		$incomplete_statement = '' !== trim( $statement ) || $in_string;
 		fclose( $handle );
 		if ( $incomplete_statement ) {
@@ -1254,6 +1290,39 @@ class Database_Service {
 			);
 		}
 		return true;
+	}
+
+	private function open_import_stream_at_offset( $file_path, $offset ) {
+		$attempt_limit = 0 === strpos( (string) $file_path, 'zip://' ) ? 6 : 1;
+		$offset        = max( 0, (int) $offset );
+
+		for ( $attempt = 1; $attempt <= $attempt_limit; $attempt++ ) {
+			$handle = fopen( $file_path, 'rb' );
+			if ( ! $handle ) {
+				continue;
+			}
+
+			$remaining = $offset;
+			while ( $remaining > 0 ) {
+				$chunk = fread( $handle, min( 8388608, $remaining ) );
+				if ( false === $chunk || '' === $chunk ) {
+					fclose( $handle );
+					continue 2;
+				}
+				$remaining -= strlen( $chunk );
+			}
+
+			return $handle;
+		}
+
+		return new WP_Error(
+			'ag_sync_bridge_import_stream_resume_failed',
+			__( 'Unable to open the verified SQL stream at the required resume offset.', 'ag-sync-bridge' ),
+			array(
+				'offset' => $offset,
+				'attempts' => $attempt_limit,
+			)
+		);
 	}
 
 	/**

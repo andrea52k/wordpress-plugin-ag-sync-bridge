@@ -5,6 +5,7 @@ namespace {
 	define( 'ABSPATH', __DIR__ . '/' );
 	function __( $message ) { return $message; }
 	function array_get( $array, $key, $default = null ) { return is_array( $array ) && array_key_exists( $key, $array ) ? $array[ $key ] : $default; }
+	function is_wp_error( $value ) { return $value instanceof WP_Error; }
 	class WP_Error {
 		public $code;
 		public $message;

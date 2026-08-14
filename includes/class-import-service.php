@@ -127,6 +127,7 @@ class Import_Service {
 						'source_prefix' => $source_prefix,
 						'target_prefix' => $target_prefix,
 						'trusted_same_site_php_restore' => $trusted_same_site_php_restore,
+						'expected_size_bytes' => $trusted_same_site_php_restore ? (int) array_get( array_get( $manifest, 'database', array() ), 'size_bytes', 0 ) : 0,
 						'progress_callback' => array_get( $args, 'progress_callback', null ),
 					)
 				);
