@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.69
+
+- Serialize empty binary and BLOB/TEXT fallback values as the valid empty hexadecimal literal `X''`; the previous bare `0x` token caused MySQL error 1054 during full recovery imports.
+
 ## 0.1.68
 
 - Preserve the native MySQL error number and message before releasing table locks when a streamed PHP import query fails, so recovery diagnostics identify the exact database refusal instead of returning a generic error.

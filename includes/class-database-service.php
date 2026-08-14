@@ -1044,7 +1044,8 @@ class Database_Service {
 		}
 
 		if ( $this->is_binary_mysql_field( $field ) ) {
-			return '0x' . strtoupper( bin2hex( (string) $value ) );
+			$hex = strtoupper( bin2hex( (string) $value ) );
+			return '' === $hex ? "X''" : '0x' . $hex;
 		}
 
 		return "'" . $mysqli->real_escape_string( (string) $value ) . "'";

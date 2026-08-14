@@ -38,6 +38,7 @@ namespace AGSyncBridge {
 	$text_field = (object) array( 'type' => 253, 'charsetnr' => 45 );
 	$binary_value = "\x00\xFFquote'\\tail";
 	expect_database_safety( '0x00FF71756F7465275C7461696C' === $format->invoke( $service, new Fake_Mysqli_Escaper(), $binary_field, $binary_value ), 'PHP fallback must emit byte-exact hexadecimal BLOB literals.' );
+	expect_database_safety( "X''" === $format->invoke( $service, new Fake_Mysqli_Escaper(), $binary_field, '' ), 'Empty BLOB/TEXT fallback values must use a valid empty hexadecimal literal.' );
 	expect_database_safety( "'text\\'value'" === $format->invoke( $service, new Fake_Mysqli_Escaper(), $text_field, "text'value" ), 'Text fields must retain escaped SQL string output.' );
 	expect_database_safety( 'NULL' === $format->invoke( $service, new Fake_Mysqli_Escaper(), $binary_field, null ), 'NULL binary values must remain NULL.' );
 
