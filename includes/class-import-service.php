@@ -92,13 +92,9 @@ class Import_Service {
 		$target_home   = array_get( $args, 'target_home_url', array_get( $current_state, 'home', home_url() ) );
 		$source_prefix = $this->resolve_source_table_prefix( $manifest, $prepared['temp_dir'] );
 		$target_prefix = $this->database->get_table_prefix();
-		$trusted_same_site_php_restore = (
-			! empty( $prepared['stream_database_sql'] )
-			&& '' !== $source_prefix
-			&& hash_equals( $source_prefix, $target_prefix )
-			&& untrailingslashit( (string) array_get( $manifest, 'source_site_url', '' ) ) === untrailingslashit( (string) $target_site )
-			&& untrailingslashit( (string) array_get( $manifest, 'source_home_url', '' ) ) === untrailingslashit( (string) $target_home )
-		);
+		// prepare_package() sets this only after the live origin, site/home URLs,
+		// table prefix and AG Sync PHP-export marker all match exactly.
+		$trusted_same_site_php_restore = ! empty( $prepared['stream_database_sql'] );
 		$source_active_plugins = array();
 		$sync_active_plugins   = false;
 		$rollback_required     = false;

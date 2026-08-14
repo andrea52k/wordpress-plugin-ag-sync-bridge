@@ -74,7 +74,16 @@ class Database_Service {
 		);
 		$is_zip_stream = 0 === strpos( $file_path, 'zip://' );
 		if ( ! file_exists( $file_path ) && ! ( $direct_same_site_restore && $is_zip_stream ) ) {
-			return new WP_Error( 'ag_sync_bridge_missing_sql', __( 'Database SQL file not found.', 'ag-sync-bridge' ) );
+			return new WP_Error(
+				'ag_sync_bridge_missing_sql',
+				__( 'Database SQL file not found.', 'ag-sync-bridge' ),
+				array(
+					'is_zip_stream' => $is_zip_stream,
+					'trusted_same_site_php_restore' => ! empty( $args['trusted_same_site_php_restore'] ),
+					'source_prefix' => $source_prefix,
+					'target_prefix' => $target_prefix,
+				)
+			);
 		}
 		$prepared = $direct_same_site_restore
 			? array(

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.66
+
+- Treat the single strict package-level streaming decision as the recovery authorization instead of recomputing the same origin contract after extraction.
+- Add fail-closed diagnostic context when a recovery SQL stream is rejected before import.
+
 ## 0.1.65
 
 - Preserve the `zip://` stream wrapper prefix when opening a verified recovery database entry; ordinary filesystem path normalization would otherwise collapse the wrapper URL and reject the stream before import.
