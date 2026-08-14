@@ -71,9 +71,26 @@ class Database_Service {
 		$source_prefix = (string) array_get( $args, 'source_prefix', '' );
 		$target_prefix = (string) array_get( $args, 'target_prefix', '' );
 		$progress_callback = array_get( $args, 'progress_callback', null );
-		$prepared      = $this->prepare_sql_for_import( $file_path, $source_prefix, $target_prefix, $progress_callback );
+		$direct_same_site_restore = (
+			! empty( $args['trusted_same_site_php_restore'] )
+			&& '' !== $source_prefix
+			&& hash_equals( $source_prefix, $target_prefix )
+		);
+		$prepared = $direct_same_site_restore
+			? array(
+				'path'                    => $file_path,
+				'cleanup_path'            => '',
+				'prefix_remapped'         => false,
+				'sandbox_lines_removed'   => 0,
+				'transient_rows_removed'  => 0,
+				'direct_same_site_restore'=> true,
+			)
+			: $this->prepare_sql_for_import( $file_path, $source_prefix, $target_prefix, $progress_callback );
 		if ( is_wp_error( $prepared ) ) {
 			return $prepared;
+		}
+		if ( $direct_same_site_restore ) {
+			$this->logger->info( 'Using the verified same-site PHP dump directly to avoid a second multi-gigabyte SQL copy.' );
 		}
 
 		$import_path  = array_get( $prepared, 'path', $file_path );

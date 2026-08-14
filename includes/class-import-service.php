@@ -92,6 +92,13 @@ class Import_Service {
 		$target_home   = array_get( $args, 'target_home_url', array_get( $current_state, 'home', home_url() ) );
 		$source_prefix = $this->resolve_source_table_prefix( $manifest, $prepared['temp_dir'] );
 		$target_prefix = $this->database->get_table_prefix();
+		$trusted_same_site_php_restore = (
+			'php' === (string) array_get( $manifest, 'database_method', '' )
+			&& '' !== $source_prefix
+			&& hash_equals( $source_prefix, $target_prefix )
+			&& untrailingslashit( (string) array_get( $manifest, 'source_site_url', '' ) ) === untrailingslashit( (string) $target_site )
+			&& untrailingslashit( (string) array_get( $manifest, 'source_home_url', '' ) ) === untrailingslashit( (string) $target_home )
+		);
 		$source_active_plugins = array();
 		$sync_active_plugins   = false;
 		$rollback_required     = false;
@@ -123,6 +130,7 @@ class Import_Service {
 					array(
 						'source_prefix' => $source_prefix,
 						'target_prefix' => $target_prefix,
+						'trusted_same_site_php_restore' => $trusted_same_site_php_restore,
 						'progress_callback' => array_get( $args, 'progress_callback', null ),
 					)
 				);

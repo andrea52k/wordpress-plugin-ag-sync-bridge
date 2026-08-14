@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.63
+
+- Recovery imports from a PHP-exported full backup of the exact same site now stream the verified SQL dump directly instead of creating a second multi-gigabyte temporary copy.
+- The direct path is fail-closed: it requires identical source/target prefixes and exact source/target site and home URLs; normal cross-site imports still use the existing rewrite/filter preparation.
+
 ## 0.1.62
 
 - Raise the bounded per-entry extraction ceiling from 5 GiB to 8 GiB so a verified, ZIP64-backed `database.sql` from a large production site can pass package validation.
