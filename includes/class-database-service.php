@@ -32,8 +32,7 @@ class Database_Service {
 		@set_time_limit( 0 );
 		@ini_set( 'memory_limit', '-1' );
 
-		$is_zip_stream_input = 0 === strpos( (string) $file_path, 'zip://' );
-		$file_path = $is_zip_stream_input ? str_replace( '\\', '/', (string) $file_path ) : normalize_path( $file_path );
+		$file_path = normalize_path( $file_path );
 		$progress_callback = array_get( $args, 'progress_callback', null );
 		$cancellation_check = array_get( $args, 'cancellation_check', null );
 
@@ -63,7 +62,8 @@ class Database_Service {
 	public function import_from_file( $file_path, array $args = array() ) {
 		@set_time_limit( 0 );
 
-		$file_path = normalize_path( $file_path );
+		$is_zip_stream_input = 0 === strpos( (string) $file_path, 'zip://' );
+		$file_path = $is_zip_stream_input ? str_replace( '\\', '/', (string) $file_path ) : normalize_path( $file_path );
 		$source_prefix = (string) array_get( $args, 'source_prefix', '' );
 		$target_prefix = (string) array_get( $args, 'target_prefix', '' );
 		$progress_callback = array_get( $args, 'progress_callback', null );

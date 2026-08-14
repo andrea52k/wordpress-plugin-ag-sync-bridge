@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.67
+
+- Apply ZIP-wrapper preservation in the database import entry point (not the export entry point) and tighten the regression test to bind the check to the correct method body.
+
 ## 0.1.66
 
 - Treat the single strict package-level streaming decision as the recovery authorization instead of recomputing the same origin contract after extraction.

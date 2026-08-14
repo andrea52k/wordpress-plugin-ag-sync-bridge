@@ -20,8 +20,12 @@ expect_same_site_recovery( false !== strpos( $database, "'cleanup_path'         
 expect_same_site_recovery( false !== strpos( $database, ': $this->prepare_sql_for_import(' ), 'All other imports must retain SQL preparation.' );
 expect_same_site_recovery( false !== strpos( $import, "'skip_database_sql' => \$stream_database_sql" ), 'Recovery extraction must skip the multi-gigabyte database entry.' );
 expect_same_site_recovery( false !== strpos( $import, "'#database.sql'" ), 'Recovery must bind the ZIP stream to the exact database.sql entry.' );
-expect_same_site_recovery( false !== strpos( $database, "0 === strpos( (string) \$file_path, 'zip://' )" ), 'Database import must identify the ZIP stream before filesystem normalization.' );
-expect_same_site_recovery( false !== strpos( $database, "str_replace( '\\\\', '/', (string) \$file_path ) : normalize_path" ), 'Database import must preserve the zip:// wrapper while normalizing ordinary paths normally.' );
+$import_method_start = strpos( $database, 'public function import_from_file(' );
+$import_method_end   = strpos( $database, 'public function get_table_prefix(', $import_method_start );
+$import_method       = false !== $import_method_start ? substr( $database, $import_method_start, false !== $import_method_end ? $import_method_end - $import_method_start : 5000 ) : '';
+expect_same_site_recovery( false !== strpos( $import_method, "0 === strpos( (string) \$file_path, 'zip://' )" ), 'Database import must identify the ZIP stream before filesystem normalization.' );
+expect_same_site_recovery( false !== strpos( $import_method, "str_replace( '\\\\', '/', (string) \$file_path ) : normalize_path" ), 'Database import must preserve the zip:// wrapper while normalizing ordinary paths normally.' );
+expect_same_site_recovery( 1 === substr_count( $database, "0 === strpos( (string) \$file_path, 'zip://' )" ), 'ZIP wrapper handling must not leak into unrelated database methods.' );
 expect_same_site_recovery( false !== strpos( $import, "\$trusted_same_site_php_restore = ! empty( \$prepared['stream_database_sql'] )" ), 'The strict package-level decision must be carried unchanged into database import.' );
 expect_same_site_recovery( false !== strpos( $database, "'trusted_same_site_php_restore' => ! empty( \$args['trusted_same_site_php_restore'] )" ), 'Rejected streams must expose non-sensitive contract diagnostics.' );
 
