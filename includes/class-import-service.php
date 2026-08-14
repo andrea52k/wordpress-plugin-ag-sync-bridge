@@ -94,7 +94,7 @@ class Import_Service {
 		$target_prefix = $this->database->get_table_prefix();
 		// prepare_package() sets this only after the live origin, site/home URLs,
 		// table prefix and AG Sync PHP-export marker all match exactly.
-		$trusted_same_site_php_restore = ! empty( $prepared['stream_database_sql'] );
+		$trusted_verified_database_stream = ! empty( $prepared['stream_database_sql'] );
 		$source_active_plugins = array();
 		$sync_active_plugins   = false;
 		$rollback_required     = false;
@@ -126,8 +126,8 @@ class Import_Service {
 					array(
 						'source_prefix' => $source_prefix,
 						'target_prefix' => $target_prefix,
-						'trusted_same_site_php_restore' => $trusted_same_site_php_restore,
-						'expected_size_bytes' => $trusted_same_site_php_restore ? (int) array_get( array_get( $manifest, 'database', array() ), 'size_bytes', 0 ) : 0,
+						'trusted_verified_database_stream' => $trusted_verified_database_stream,
+						'expected_size_bytes' => $trusted_verified_database_stream ? (int) array_get( array_get( $manifest, 'database', array() ), 'size_bytes', 0 ) : 0,
 						'progress_callback' => array_get( $args, 'progress_callback', null ),
 					)
 				);
@@ -470,18 +470,17 @@ class Import_Service {
 
 		$pre_manifest = $this->file_system->read_package_manifest( $package_path );
 		$stream_database_sql = false;
-		if ( ! empty( $args['recovery_import'] ) && is_array( $pre_manifest ) ) {
-			$target_site = untrailingslashit( (string) array_get( $args, 'target_site_url', site_url() ) );
-			$target_home = untrailingslashit( (string) array_get( $args, 'target_home_url', home_url() ) );
-			$source_prefix = (string) array_get( $pre_manifest, 'source_table_prefix', '' );
+		if ( is_array( $pre_manifest ) && '' !== (string) $expected_sha256 ) {
+			$database_meta   = is_array( array_get( $pre_manifest, 'database', array() ) ) ? array_get( $pre_manifest, 'database', array() ) : array();
+			$source_prefix   = (string) array_get( $pre_manifest, 'source_table_prefix', '' );
 			$database_stream = $this->database_zip_stream_path( $package_path );
 			$stream_database_sql = (
-				'remote' === (string) array_get( $pre_manifest, 'source_role', '' )
-				&& '' !== $source_prefix
-				&& hash_equals( $source_prefix, $this->database->get_table_prefix() )
-				&& untrailingslashit( (string) array_get( $pre_manifest, 'source_site_url', '' ) ) === $target_site
-				&& untrailingslashit( (string) array_get( $pre_manifest, 'source_home_url', '' ) ) === $target_home
-				&& $this->is_bridge_php_database_stream( $database_stream )
+				! $this->is_partial_manifest( $pre_manifest )
+				&& preg_match( '/^[A-Za-z0-9_]+$/', $source_prefix )
+				&& 'database.sql' === (string) array_get( $database_meta, 'filename', '' )
+				&& (int) array_get( $database_meta, 'size_bytes', 0 ) > 0
+				&& preg_match( '/^[a-f0-9]{64}$/', strtolower( (string) array_get( $database_meta, 'sha256', '' ) ) )
+				&& $this->is_readable_database_stream( $database_stream )
 			);
 		}
 
@@ -583,17 +582,17 @@ class Import_Service {
 		return 'zip://' . normalize_path( $package_path ) . '#database.sql';
 	}
 
-	private function is_bridge_php_database_stream( $stream_path ) {
+	private function is_readable_database_stream( $stream_path ) {
 		$handle = @fopen( $stream_path, 'rb' );
 		if ( false === $handle ) {
 			return false;
 		}
 		try {
-			$line = fgets( $handle );
+			$byte = fread( $handle, 1 );
 		} finally {
 			fclose( $handle );
 		}
-		return "-- AG Sync Bridge database export\n" === $line || "-- AG Sync Bridge database export\r\n" === $line;
+		return false !== $byte && '' !== $byte;
 	}
 
 	private function resolve_source_table_prefix( array $manifest, $temp_dir ) {

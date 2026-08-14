@@ -37,6 +37,8 @@ namespace AGSyncBridge {
 	$normalize_empty_hex->setAccessible( true );
 	$open_at_offset = $reflection->getMethod( 'open_import_stream_at_offset' );
 	$open_at_offset->setAccessible( true );
+	$remap_prefix = $reflection->getMethod( 'remap_import_table_prefix' );
+	$remap_prefix->setAccessible( true );
 
 	$binary_field = (object) array( 'type' => 252, 'charsetnr' => 63 );
 	$text_field = (object) array( 'type' => 253, 'charsetnr' => 45 );
@@ -55,6 +57,9 @@ namespace AGSyncBridge {
 	expect_database_safety( 'abcdef' === stream_get_contents( $resume_handle ), 'Resumed reads must start at the exact processed-byte boundary.' );
 	fclose( $resume_handle );
 	unlink( $resume_file );
+	$source_sql = "INSERT INTO `wp_options` VALUES ('literal `wp_posts`', 'wp_value'); DROP TABLE `wp_posts`;";
+	$target_sql = "INSERT INTO `wpim_options` VALUES ('literal `wp_posts`', 'wp_value'); DROP TABLE `wpim_posts`;";
+	expect_database_safety( $target_sql === $remap_prefix->invoke( $service, $source_sql, 'wp_', 'wpim_' ), 'Streaming prefix remap must change table identifiers but preserve quoted data.' );
 
 	$one_slash = "'x\\'";
 	$two_slashes = "'x\\\\'";

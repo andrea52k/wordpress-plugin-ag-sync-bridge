@@ -68,39 +68,43 @@ class Database_Service {
 		$source_prefix = (string) array_get( $args, 'source_prefix', '' );
 		$target_prefix = (string) array_get( $args, 'target_prefix', '' );
 		$progress_callback = array_get( $args, 'progress_callback', null );
-		$direct_same_site_restore = (
-			! empty( $args['trusted_same_site_php_restore'] )
-			&& '' !== $source_prefix
-			&& hash_equals( $source_prefix, $target_prefix )
-		);
+		$trusted_verified_stream = ! empty( $args['trusted_verified_database_stream'] );
 		$is_zip_stream = 0 === strpos( $file_path, 'zip://' );
-		if ( ! file_exists( $file_path ) && ! ( $direct_same_site_restore && $is_zip_stream ) ) {
+		$valid_prefixes = preg_match( '/^[A-Za-z0-9_]+$/', $source_prefix ) && preg_match( '/^[A-Za-z0-9_]+$/', $target_prefix );
+		$direct_stream_import = $trusted_verified_stream && $is_zip_stream && $valid_prefixes;
+		if ( $trusted_verified_stream && ! $direct_stream_import ) {
+			return new WP_Error(
+				'ag_sync_bridge_verified_stream_contract_invalid',
+				__( 'The verified database stream has an invalid wrapper or table-prefix contract.', 'ag-sync-bridge' )
+			);
+		}
+		if ( ! file_exists( $file_path ) && ! $direct_stream_import ) {
 			return new WP_Error(
 				'ag_sync_bridge_missing_sql',
 				__( 'Database SQL file not found.', 'ag-sync-bridge' ),
 				array(
 					'is_zip_stream' => $is_zip_stream,
-					'trusted_same_site_php_restore' => ! empty( $args['trusted_same_site_php_restore'] ),
+					'trusted_verified_database_stream' => $trusted_verified_stream,
 					'source_prefix' => $source_prefix,
 					'target_prefix' => $target_prefix,
 				)
 			);
 		}
-		$prepared = $direct_same_site_restore
+		$prepared = $direct_stream_import
 			? array(
 				'path'                    => $file_path,
 				'cleanup_path'            => '',
 				'prefix_remapped'         => false,
 				'sandbox_lines_removed'   => 0,
 				'transient_rows_removed'  => 0,
-				'direct_same_site_restore'=> true,
+				'direct_verified_stream'   => true,
 			)
 			: $this->prepare_sql_for_import( $file_path, $source_prefix, $target_prefix, $progress_callback );
 		if ( is_wp_error( $prepared ) ) {
 			return $prepared;
 		}
-		if ( $direct_same_site_restore ) {
-			$this->logger->info( 'Using the verified same-site PHP dump directly to avoid a second multi-gigabyte SQL copy.' );
+		if ( $direct_stream_import ) {
+			$this->logger->info( 'Using the verified database ZIP stream directly to avoid a second multi-gigabyte SQL copy.', array( 'prefix_remap' => ! hash_equals( $source_prefix, $target_prefix ) ) );
 		}
 
 		$import_path  = array_get( $prepared, 'path', $file_path );
@@ -120,7 +124,7 @@ class Database_Service {
 		}
 
 		try {
-			if ( ! $direct_same_site_restore && $this->can_use_cli_tools() ) {
+			if ( ! $direct_stream_import && $this->can_use_cli_tools() ) {
 				$result = $this->import_via_cli( $import_path, $progress_callback );
 				if ( ! is_wp_error( $result ) ) {
 					return array(
@@ -133,7 +137,7 @@ class Database_Service {
 				$this->logger->warning( 'mysql import failed. Falling back to PHP importer.', array( 'error' => $result->get_error_message() ) );
 			}
 
-			$result = $this->import_via_php( $import_path, $target_prefix, $progress_callback, $expected_size_bytes );
+			$result = $this->import_via_php( $import_path, $target_prefix, $progress_callback, $expected_size_bytes, $source_prefix );
 			if ( ! is_wp_error( $result ) ) {
 				return array(
 					'method'        => 'php',
@@ -1134,7 +1138,7 @@ class Database_Service {
 		return ' ORDER BY ' . implode( ',', $quoted );
 	}
 
-	private function import_via_php( $file_path, $target_prefix = '', $progress_callback = null, $expected_size_bytes = 0 ) {
+	private function import_via_php( $file_path, $target_prefix = '', $progress_callback = null, $expected_size_bytes = 0, $source_prefix = '' ) {
 		global $wpdb;
 
 		$charset = $this->get_mysql_charset();
@@ -1203,6 +1207,7 @@ class Database_Service {
 						continue;
 					}
 
+					$query    = $this->remap_import_table_prefix( $query, $source_prefix, $target_prefix );
 					$filtered = $this->filter_import_statement( $query, $target_prefix );
 					$query    = array_get( $filtered, 'statement', $query );
 					$query    = $this->normalize_empty_hex_literals( $query );
@@ -1290,6 +1295,54 @@ class Database_Service {
 			);
 		}
 		return true;
+	}
+
+	private function remap_import_table_prefix( $statement, $source_prefix, $target_prefix ) {
+		if ( '' === $source_prefix || '' === $target_prefix || hash_equals( $source_prefix, $target_prefix ) ) {
+			return $statement;
+		}
+
+		$length   = strlen( (string) $statement );
+		$output   = '';
+		$in_quote = false;
+		$quote    = '';
+
+		for ( $index = 0; $index < $length; $index++ ) {
+			$char = $statement[ $index ];
+			if ( $in_quote ) {
+				$output .= $char;
+				$next_char = ( $index + 1 < $length ) ? $statement[ $index + 1 ] : '';
+				if ( $char === $quote && ! $this->is_sql_quote_escaped( $statement, $index ) && $quote !== $next_char ) {
+					$in_quote = false;
+					$quote    = '';
+				}
+				continue;
+			}
+
+			if ( in_array( $char, array( '\'', '"' ), true ) ) {
+				$in_quote = true;
+				$quote    = $char;
+				$output  .= $char;
+				continue;
+			}
+
+			if ( '`' === $char ) {
+				$closing = strpos( $statement, '`', $index + 1 );
+				if ( false !== $closing ) {
+					$identifier = substr( $statement, $index + 1, $closing - $index - 1 );
+					if ( preg_match( '/^' . preg_quote( $source_prefix, '/' ) . '([A-Za-z0-9_]+)$/', $identifier, $matches ) ) {
+						$identifier = $target_prefix . $matches[1];
+					}
+					$output .= '`' . $identifier . '`';
+					$index = $closing;
+					continue;
+				}
+			}
+
+			$output .= $char;
+		}
+
+		return $output;
 	}
 
 	private function open_import_stream_at_offset( $file_path, $offset ) {

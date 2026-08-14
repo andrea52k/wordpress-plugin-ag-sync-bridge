@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.72
+
+- Stream any checksum-bound full `database.sql` entry directly from its validated snapshot, including local-to-live pushes, and remap backtick-quoted table prefixes statement by statement without changing quoted data.
+- Retain the signed-size resume guard from 0.1.71 so cross-site imports also recover from premature hosting ZIP EOF without a multi-gigabyte temporary SQL copy.
+
 ## 0.1.71
 
 - Resume a verified same-site ZIP database stream from the last processed byte when the hosting ZIP wrapper reports an early EOF, bounded to six reopen attempts and checked against the signed uncompressed database size.
