@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.70
+
+- Repair standalone empty `0x` value tokens while importing older PHP-export snapshots, using a quote-aware parser so valid hexadecimal values and text containing the same characters remain unchanged.
+
 ## 0.1.69
 
 - Serialize empty binary and BLOB/TEXT fallback values as the valid empty hexadecimal literal `X''`; the previous bare `0x` token caused MySQL error 1054 during full recovery imports.

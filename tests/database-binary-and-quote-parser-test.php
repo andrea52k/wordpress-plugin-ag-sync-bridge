@@ -33,6 +33,8 @@ namespace AGSyncBridge {
 	$escaped->setAccessible( true );
 	$split_rows = $reflection->getMethod( 'split_sql_value_rows' );
 	$split_rows->setAccessible( true );
+	$normalize_empty_hex = $reflection->getMethod( 'normalize_empty_hex_literals' );
+	$normalize_empty_hex->setAccessible( true );
 
 	$binary_field = (object) array( 'type' => 252, 'charsetnr' => 63 );
 	$text_field = (object) array( 'type' => 253, 'charsetnr' => 45 );
@@ -41,6 +43,9 @@ namespace AGSyncBridge {
 	expect_database_safety( "X''" === $format->invoke( $service, new Fake_Mysqli_Escaper(), $binary_field, '' ), 'Empty BLOB/TEXT fallback values must use a valid empty hexadecimal literal.' );
 	expect_database_safety( "'text\\'value'" === $format->invoke( $service, new Fake_Mysqli_Escaper(), $text_field, "text'value" ), 'Text fields must retain escaped SQL string output.' );
 	expect_database_safety( 'NULL' === $format->invoke( $service, new Fake_Mysqli_Escaper(), $binary_field, null ), 'NULL binary values must remain NULL.' );
+	$legacy_hex = "INSERT INTO `wp_table` VALUES (0x, 0X , 0x00, 'text,0x,value', \"text,0X,value\", `0x`);";
+	$normalized_hex = "INSERT INTO `wp_table` VALUES (X'', X'' , 0x00, 'text,0x,value', \"text,0X,value\", `0x`);";
+	expect_database_safety( $normalized_hex === $normalize_empty_hex->invoke( $service, $legacy_hex ), 'Legacy empty 0x tokens must be repaired without changing valid hex, strings or identifiers.' );
 
 	$one_slash = "'x\\'";
 	$two_slashes = "'x\\\\'";

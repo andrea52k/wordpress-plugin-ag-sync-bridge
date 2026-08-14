@@ -1200,6 +1200,7 @@ class Database_Service {
 
 					$filtered = $this->filter_import_statement( $query, $target_prefix );
 					$query    = array_get( $filtered, 'statement', $query );
+					$query    = $this->normalize_empty_hex_literals( $query );
 
 					if ( '' === trim( $query ) ) {
 						continue;
@@ -1253,6 +1254,62 @@ class Database_Service {
 			);
 		}
 		return true;
+	}
+
+	/**
+	 * Repair the bare `0x` token emitted for zero-length BLOB/TEXT values by
+	 * older PHP-export snapshots. Only standalone value tokens outside quoted
+	 * strings or identifiers are changed; valid non-empty hex literals remain
+	 * byte-for-byte unchanged.
+	 */
+	private function normalize_empty_hex_literals( $statement ) {
+		$length    = strlen( (string) $statement );
+		$output    = '';
+		$in_quote  = false;
+		$quote     = '';
+
+		for ( $index = 0; $index < $length; $index++ ) {
+			$char = $statement[ $index ];
+
+			if ( $in_quote ) {
+				$output .= $char;
+				$next_char = ( $index + 1 < $length ) ? $statement[ $index + 1 ] : '';
+				if ( $char === $quote && ! $this->is_sql_quote_escaped( $statement, $index ) && $quote !== $next_char ) {
+					$in_quote = false;
+					$quote    = '';
+				}
+				continue;
+			}
+
+			if ( in_array( $char, array( '\'', '"', '`' ), true ) ) {
+				$in_quote = true;
+				$quote    = $char;
+				$output  .= $char;
+				continue;
+			}
+
+			if ( '0' === $char && $index + 1 < $length && in_array( $statement[ $index + 1 ], array( 'x', 'X' ), true ) ) {
+				$previous = $index - 1;
+				while ( $previous >= 0 && ctype_space( $statement[ $previous ] ) ) {
+					$previous--;
+				}
+				$next = $index + 2;
+				while ( $next < $length && ctype_space( $statement[ $next ] ) ) {
+					$next++;
+				}
+				$previous_char = $previous >= 0 ? $statement[ $previous ] : '';
+				$next_char     = $next < $length ? $statement[ $next ] : '';
+				if ( in_array( $previous_char, array( '(', ',' ), true ) && in_array( $next_char, array( ',', ')' ), true ) ) {
+					$output .= "X''";
+					$index++;
+					continue;
+				}
+			}
+
+			$output .= $char;
+		}
+
+		return $output;
 	}
 
 	private function get_export_tables() {
