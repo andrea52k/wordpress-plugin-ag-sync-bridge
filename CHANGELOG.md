@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.65
+
+- Preserve the `zip://` stream wrapper prefix when opening a verified recovery database entry; ordinary filesystem path normalization would otherwise collapse the wrapper URL and reject the stream before import.
+
 ## 0.1.64
 
 - Same-site recovery now streams `database.sql` directly from the verified ZIP package, so it does not need enough hosting quota to materialize the multi-gigabyte SQL entry beside the archive.

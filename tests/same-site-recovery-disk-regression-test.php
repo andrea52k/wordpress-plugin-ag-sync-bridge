@@ -20,5 +20,7 @@ expect_same_site_recovery( false !== strpos( $database, "'cleanup_path'         
 expect_same_site_recovery( false !== strpos( $database, ': $this->prepare_sql_for_import(' ), 'All other imports must retain SQL preparation.' );
 expect_same_site_recovery( false !== strpos( $import, "'skip_database_sql' => \$stream_database_sql" ), 'Recovery extraction must skip the multi-gigabyte database entry.' );
 expect_same_site_recovery( false !== strpos( $import, "'#database.sql'" ), 'Recovery must bind the ZIP stream to the exact database.sql entry.' );
+expect_same_site_recovery( false !== strpos( $database, "0 === strpos( (string) \$file_path, 'zip://' )" ), 'Database import must identify the ZIP stream before filesystem normalization.' );
+expect_same_site_recovery( false !== strpos( $database, "str_replace( '\\\\', '/', (string) \$file_path ) : normalize_path" ), 'Database import must preserve the zip:// wrapper while normalizing ordinary paths normally.' );
 
 echo "same-site recovery disk regression: ok\n";
