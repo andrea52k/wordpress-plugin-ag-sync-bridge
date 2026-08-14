@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.73
+
+- Refresh WordPress maintenance mode from database, URL-replacement, and file-import progress heartbeats so long full imports do not become publicly accessible after WordPress's ten-minute maintenance expiry.
+
 ## 0.1.72
 
 - Stream any checksum-bound full `database.sql` entry directly from its validated snapshot, including local-to-live pushes, and remap backtick-quoted table prefixes statement by statement without changing quoted data.

@@ -128,7 +128,13 @@ class Import_Service {
 						'target_prefix' => $target_prefix,
 						'trusted_verified_database_stream' => $trusted_verified_database_stream,
 						'expected_size_bytes' => $trusted_verified_database_stream ? (int) array_get( array_get( $manifest, 'database', array() ), 'size_bytes', 0 ) : 0,
-						'progress_callback' => array_get( $args, 'progress_callback', null ),
+						'progress_callback' => function ( $stage, $progress, array $details = array() ) use ( $args ) {
+							$this->refresh_maintenance_mode();
+							$callback = array_get( $args, 'progress_callback', null );
+							if ( is_callable( $callback ) ) {
+								call_user_func( $callback, $stage, $progress, $details );
+							}
+						},
 					)
 				);
 				if ( is_wp_error( $import_result ) ) {
@@ -211,6 +217,7 @@ class Import_Service {
 					$target_prefix,
 					array(
 						'progress_callback' => function ( array $details ) use ( $args ) {
+							$this->refresh_maintenance_mode();
 							$callback = array_get( $args, 'progress_callback', null );
 							if ( is_callable( $callback ) ) {
 								call_user_func( $callback, 'url-replace-' . sanitize_key( array_get( $details, 'phase', 'batch' ) ), 60, $details );
@@ -865,11 +872,11 @@ class Import_Service {
 
 	private function get_file_progress_callback( array $args ) {
 		$callback = array_get( $args, 'progress_callback', null );
-		if ( ! is_callable( $callback ) ) {
-			return null;
-		}
-		return static function ( array $details ) use ( $callback ) {
-			call_user_func( $callback, 'files-import', null, $details );
+		return function ( array $details ) use ( $callback ) {
+			$this->refresh_maintenance_mode();
+			if ( is_callable( $callback ) ) {
+				call_user_func( $callback, 'files-import', null, $details );
+			}
 		};
 	}
 
