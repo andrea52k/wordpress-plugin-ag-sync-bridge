@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.74
+
+- Keep the local-only outbound HTTP downloader out of the live peer bootstrap.
+  Live sites now use a fail-closed outbound adapter while continuing to accept
+  authenticated REST snapshots/imports, so a hosting scanner false positive
+  in the downloader cannot take public WordPress requests down.
+
 ## 0.1.73
 
 - Refresh WordPress maintenance mode from database, URL-replacement, and file-import progress heartbeats so long full imports do not become publicly accessible after WordPress's ten-minute maintenance expiry.

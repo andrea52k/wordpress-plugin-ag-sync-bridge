@@ -39,7 +39,7 @@ class Sync_Service {
 	private $importer;
 
 	/**
-	 * @var Http_Client
+	 * @var Http_Client|Remote_Http_Client
 	 */
 	private $http_client;
 
@@ -48,7 +48,7 @@ class Sync_Service {
 	 */
 	private $maintenance;
 
-	public function __construct( Config $config, Logger $logger, Lock_Manager $lock_manager, File_System_Service $file_system, Export_Service $exporter, Import_Service $importer, Http_Client $http_client, Local_Maintenance_Service $maintenance ) {
+	public function __construct( Config $config, Logger $logger, Lock_Manager $lock_manager, File_System_Service $file_system, Export_Service $exporter, Import_Service $importer, $http_client, Local_Maintenance_Service $maintenance ) {
 		$this->config       = $config;
 		$this->logger       = $logger;
 		$this->lock_manager = $lock_manager;

@@ -60,7 +60,7 @@ class Plugin {
 	private $importer;
 
 	/**
-	 * @var Http_Client
+	 * @var Http_Client|Remote_Http_Client
 	 */
 	private $http_client;
 
@@ -134,7 +134,13 @@ class Plugin {
 		$this->archive         = new Archive_Service( $this->config, $this->logger );
 		$this->exporter        = new Export_Service( $this->config, $this->logger, $this->file_system, $this->database, $this->archive );
 		$this->importer        = new Import_Service( $this->config, $this->logger, $this->file_system, $this->database, $this->archive );
-		$this->http_client     = new Http_Client( $this->config, $this->logger );
+		// A live peer accepts authenticated REST imports but never initiates an
+		// outbound sync.  Keeping the downloader/writer client out of the live
+		// bootstrap also prevents a hosting malware-scanner false positive in
+		// that local-only component from taking the public site down.
+		$this->http_client     = 'remote' === $this->config->get_role()
+			? new Remote_Http_Client( $this->logger )
+			: new Http_Client( $this->config, $this->logger );
 		$this->maintenance     = new Local_Maintenance_Service( $this->logger );
 		$this->sync            = new Sync_Service( $this->config, $this->logger, $this->lock_manager, $this->file_system, $this->exporter, $this->importer, $this->http_client, $this->maintenance );
 		$this->scheduler       = new Scheduler( $this->config, $this->logger, $this->sync );
