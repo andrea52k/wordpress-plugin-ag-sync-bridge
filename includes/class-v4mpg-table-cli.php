@@ -10,7 +10,7 @@ if ( defined( 'WP_CLI' ) && WP_CLI ) {
 		/** @var V4MPG_Table_Client */ private static $client;
 		private static $http; private static $importer; private static $file_system; private static $config;
 
-		public static function register( Config $config, Logger $logger, Auth $auth, Http_Client $http, Import_Service $importer, File_System_Service $file_system ) {
+		public static function register( Config $config, Logger $logger, Auth $auth, $http, Import_Service $importer, File_System_Service $file_system ) {
 			self::$client = new V4MPG_Table_Client( $config, $auth );
 			self::$http=$http;self::$importer=$importer;self::$file_system=$file_system;self::$config=$config;
 			\WP_CLI::add_command( 'agsync v4mpg', __CLASS__ );

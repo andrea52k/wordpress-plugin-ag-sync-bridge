@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.75
+
+- Allow the remote fail-closed outbound adapter to register the WP-CLI V4MPG
+  command without autoloading or requiring the local HTTP downloader class.
+
 ## 0.1.74
 
 - Keep the local-only outbound HTTP downloader out of the live peer bootstrap.

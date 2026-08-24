@@ -4,6 +4,7 @@ $root   = dirname( __DIR__ );
 $plugin = file_get_contents( $root . '/includes/class-plugin.php' );
 $sync   = file_get_contents( $root . '/includes/class-sync-service.php' );
 $stub   = file_get_contents( $root . '/includes/class-remote-http-client.php' );
+$v4cli  = file_get_contents( $root . '/includes/class-v4mpg-table-cli.php' );
 
 function expect_remote_http_isolation( $condition, $message ) {
 	if ( ! $condition ) {
@@ -26,6 +27,10 @@ expect_remote_http_isolation(
 	false !== strpos( $stub, 'ag_sync_bridge_remote_outbound_forbidden' )
 	&& false !== strpos( $stub, 'public function __call' ),
 	'Remote adapter must fail closed for every outbound method.'
+);
+expect_remote_http_isolation(
+	false === strpos( $v4cli, 'Http_Client $http' ),
+	'Remote WP-CLI registration must not autoload the local HTTP client.'
 );
 
 echo "remote http client isolation: ok\n";
