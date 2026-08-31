@@ -594,7 +594,7 @@ class Http_Client {
 		return $result;
 	}
 
-	public function trigger_remote_import( $snapshot_basename, $expected_sha256, $allow_partial_snapshot = false, $cancellation_check = null, $operation_callback = null, array $expected_partial_paths = array(), $recovery_import = false ) {
+	public function trigger_remote_import( $snapshot_basename, $expected_sha256, $allow_partial_snapshot = false, $cancellation_check = null, $operation_callback = null, array $expected_partial_paths = array(), $recovery_import = false, $status_callback = null ) {
 		$result = $this->request_json(
 			'POST',
 			'/ag-sync-bridge/v1/snapshot/import',
@@ -613,10 +613,12 @@ class Http_Client {
 		}
 
 		$operation_id = (string) $result['operation_id'];
+		$monitor_token = isset( $result['monitor_token'] ) ? (string) $result['monitor_token'] : '';
+		$monitor_path  = isset( $result['monitor_path'] ) ? (string) $result['monitor_path'] : '';
 		if ( is_callable( $operation_callback ) ) {
 			call_user_func( $operation_callback, $operation_id, 'import' );
 		}
-		return $this->wait_for_remote_import( $operation_id, $cancellation_check );
+		return $this->wait_for_remote_import( $operation_id, $cancellation_check, $monitor_token, $monitor_path, $status_callback );
 	}
 
 	private function wait_for_remote_snapshot( $operation_id, $cancellation_check = null ) {
@@ -714,7 +716,7 @@ class Http_Client {
 		return $error;
 	}
 
-	private function wait_for_remote_import( $operation_id, $cancellation_check = null ) {
+	private function wait_for_remote_import( $operation_id, $cancellation_check = null, $monitor_token = '', $monitor_path = '', $status_callback = null ) {
 		$started_at       = time();
 		$timeout          = max( 60, $this->config->get_request_timeout() );
 		$transient_errors = 0;
@@ -733,6 +735,14 @@ class Http_Client {
 			sleep( 5 );
 
 			$status = $this->request_json( 'GET', '/ag-sync-bridge/v1/operation/status' );
+			if ( is_wp_error( $status ) ) {
+				if ( 503 === $this->get_remote_http_error_status( $status ) && '' !== $monitor_token && '' !== $monitor_path ) {
+					$direct_status = $this->request_direct_import_status( $operation_id, $monitor_token, $monitor_path );
+					if ( ! is_wp_error( $direct_status ) ) {
+						$status = $direct_status;
+					}
+				}
+			}
 			if ( is_wp_error( $status ) ) {
 				if ( $this->is_retryable_remote_import_poll_error( $status ) ) {
 					$transient_errors++;
@@ -754,6 +764,9 @@ class Http_Client {
 			$operation = array_get( $status, 'remote_import_operation', array() );
 			if ( empty( $operation ) || (string) array_get( $operation, 'id', '' ) !== $operation_id ) {
 				continue;
+			}
+			if ( is_callable( $status_callback ) ) {
+				call_user_func( $status_callback, $operation );
 			}
 
 			$state = (string) array_get( $operation, 'status', '' );
@@ -803,6 +816,40 @@ class Http_Client {
 				'timeout'      => $timeout,
 			)
 		);
+	}
+
+	private function request_direct_import_status( $operation_id, $monitor_token, $monitor_path ) {
+		$monitor_path = (string) $monitor_path;
+		$required_suffix = '/plugins/ag-sync-bridge/direct-operation-status.php';
+		if ( '/' !== substr( $monitor_path, 0, 1 ) || false !== strpos( $monitor_path, '..' ) || false !== strpos( $monitor_path, '?' ) || false !== strpos( $monitor_path, '#' ) || $required_suffix !== substr( $monitor_path, -strlen( $required_suffix ) ) ) {
+			return new WP_Error( 'ag_sync_bridge_direct_monitor_path_invalid', __( 'Remote import monitor path is invalid.', 'ag-sync-bridge' ) );
+		}
+
+		$remote = wp_parse_url( $this->config->get_remote_url() );
+		if ( ! is_array( $remote ) || empty( $remote['scheme'] ) || empty( $remote['host'] ) || ! in_array( strtolower( (string) $remote['scheme'] ), array( 'http', 'https' ), true ) ) {
+			return new WP_Error( 'ag_sync_bridge_direct_monitor_url_invalid', __( 'Remote import monitor URL is invalid.', 'ag-sync-bridge' ) );
+		}
+		$url = strtolower( (string) $remote['scheme'] ) . '://' . (string) $remote['host'];
+		if ( ! empty( $remote['port'] ) ) {
+			$url .= ':' . absint( $remote['port'] );
+		}
+		$url .= $monitor_path;
+
+		$response = wp_remote_get(
+			$url,
+			array(
+				'headers' => array(
+					'X-AGSB-Operation-ID'    => (string) $operation_id,
+					'X-AGSB-Operation-Token' => (string) $monitor_token,
+					'Accept'                  => 'application/json',
+					'User-Agent'              => $this->get_user_agent(),
+				),
+				'timeout'     => min( 15, $this->config->get_request_timeout() ),
+				'redirection' => 0,
+			)
+		);
+
+		return $this->decode_json_response( $response );
 	}
 
 	private function upload_via_curl( $url, $route, $file_path, array $meta ) {

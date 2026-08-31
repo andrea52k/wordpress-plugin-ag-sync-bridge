@@ -1046,6 +1046,11 @@ class Rest_Controller {
 
 		if ( $async ) {
 			$operation_id = function_exists( 'wp_generate_uuid4' ) ? wp_generate_uuid4() : md5( uniqid( (string) wp_rand(), true ) );
+			try {
+				$monitor_token = rtrim( strtr( base64_encode( random_bytes( 32 ) ), '+/', '-_' ), '=' );
+			} catch ( \Throwable $error ) {
+				$monitor_token = rtrim( strtr( base64_encode( hash( 'sha256', wp_generate_password( 64, true, true ) . microtime( true ), true ) ), '+/', '-_' ), '=' );
+			}
 			$operation    = array(
 				'id'         => $operation_id,
 				'snapshot'   => $snapshot,
@@ -1061,6 +1066,11 @@ class Rest_Controller {
 			$operation = $this->runtime->reserve( 'import', $operation, $recovery_import );
 			if ( is_wp_error( $operation ) ) {
 				return $operation;
+			}
+			$monitor_expires_at = time() + max( 3600, $this->config->get_request_timeout() + 300 );
+			if ( ! $this->runtime->arm_direct_import_monitor( $operation_id, hash( 'sha256', $monitor_token ), $monitor_expires_at ) ) {
+				$this->runtime->finalize( $operation_id, 'error', array( 'stage' => 'monitor-arm-failed', 'message' => __( 'Unable to initialize the maintenance-safe import monitor.', 'ag-sync-bridge' ) ) );
+				return new WP_Error( 'ag_sync_bridge_direct_monitor_failed', __( 'Unable to initialize the maintenance-safe import monitor.', 'ag-sync-bridge' ), array( 'status' => 500 ) );
 			}
 			$this->config->set_state_value( 'remote_import_operation', $operation );
 			$this->logger->info( 'Remote async import queued.', $operation );
@@ -1091,6 +1101,8 @@ class Rest_Controller {
 				array(
 					'accepted'     => true,
 					'operation_id' => $operation_id,
+					'monitor_token' => $monitor_token,
+					'monitor_path' => (string) wp_parse_url( AG_SYNC_BRIDGE_PLUGIN_URL . 'direct-operation-status.php', PHP_URL_PATH ),
 					'snapshot'     => $snapshot,
 					'scope'        => $allow_partial_snapshot ? 'partial' : 'full',
 					'paths'        => $allow_partial_snapshot ? $expected_partial_paths : array(),

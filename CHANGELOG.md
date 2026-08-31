@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.76
+
+- Add an operation-scoped, token-authenticated direct status endpoint so a
+  local push can keep reading remote import heartbeats while WordPress is in
+  maintenance mode; REST polling falls back to it only after HTTP 503.
+- Mirror allowlisted remote progress into the local operation state without
+  persisting the raw monitor token.
+- Restore the documented `.htaccess` opt-in contract: generic full root-file
+  sync no longer exports or overwrites `.htaccess` when the option is off.
+
 ## 0.1.75
 
 - Allow the remote fail-closed outbound adapter to register the WP-CLI V4MPG

@@ -710,7 +710,19 @@ class Sync_Service {
 				$cancellation_check,
 				null,
 				$is_partial_push ? $partial_paths : array(),
-				$recover_stale_remote_import
+				$recover_stale_remote_import,
+				function ( array $remote_operation ) {
+					$remote_progress = max( 0, min( 100, (int) array_get( $remote_operation, 'progress', 0 ) ) );
+					$local_progress  = 85 + (int) floor( $remote_progress * 9 / 100 );
+					$remote_stage    = sanitize_key( (string) array_get( $remote_operation, 'stage', 'remote-import' ) );
+					$message         = sprintf(
+						/* translators: 1: remote import stage, 2: remote progress percentage. */
+						__( 'Import live: %1$s (%2$d%%)', 'ag-sync-bridge' ),
+						$remote_stage ?: 'remote-import',
+						$remote_progress
+					);
+					$this->update_operation( 'push', $local_progress, 'remote-' . ( $remote_stage ?: 'import' ), $message );
+				}
 			);
 			if ( is_wp_error( $remote_import ) ) {
 				$this->fail_operation( 'push', $remote_import );

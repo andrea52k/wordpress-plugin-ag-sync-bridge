@@ -3,6 +3,8 @@ namespace AGSyncBridge;
 
 use WP_Error;
 
+require_once __DIR__ . '/class-direct-operation-monitor.php';
+
 if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
@@ -17,10 +19,20 @@ class Remote_Operation_Runtime {
 
 	private $config;
 	private $logger;
+	private $direct_monitor;
 
 	public function __construct( Config $config, Logger $logger ) {
 		$this->config = $config;
 		$this->logger = $logger;
+		$this->direct_monitor = new Direct_Operation_Monitor();
+	}
+
+	public function arm_direct_import_monitor( $operation_id, $token_sha256, $expires_at ) {
+		$current = $this->get();
+		if ( ! is_array( $current ) || (string) array_get( $current, 'id', '' ) !== (string) $operation_id || 'import' !== (string) array_get( $current, 'kind', '' ) ) {
+			return false;
+		}
+		return $this->direct_monitor->arm( $operation_id, $token_sha256, $expires_at, $current );
 	}
 
 	public function reserve( $kind, array $operation, $allow_recovery_override = false ) {
@@ -325,6 +337,7 @@ class Remote_Operation_Runtime {
 				rewind( $handle );
 				fwrite( $handle, wp_json_encode( $result, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE ) );
 				fflush( $handle );
+				$this->direct_monitor->publish( $result );
 			}
 			return $result;
 		} finally {

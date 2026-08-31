@@ -306,6 +306,10 @@ Da `0.1.17`, cliccare `Bacheca > Aggiornamenti > Verifica di nuovo` forza anche 
 ## Limiti tecnici
 
 - Snapshot molto grandi possono richiedere tempi lunghi su hosting condiviso.
+- Da `0.1.76`, durante la manutenzione il polling di un import usa un endpoint
+  diretto read-only, autenticato con token casuale legato alla singola
+  operazione e senza bootstrap WordPress. Il token non viene persistito in
+  chiaro e il fallback si attiva solo quando il REST ordinario risponde 503.
 - Da `0.1.35`, identita URL, configurazione AG Sync e plugin attivi del target
   vengono ripristinati subito dopo l'import del database, prima delle fasi
   lunghe. Un worker terminato dall'hosting non lascia piu il live con
@@ -324,7 +328,8 @@ Da `0.1.17`, cliccare `Bacheca > Aggiornamenti > Verifica di nuovo` forza anche 
 - `--recover-stale-remote-import` e riservato al recupero di un import `reconcile_requested` e senza heartbeat: richiede `--use-existing-snapshot`, uno snapshot `full` prodotto dallo stesso live, un import asincrono e registra l'operazione sostituita. Il peer locale autenticato HMAC è già il soggetto autorizzato a inviare snapshot completi; questi controlli limitano il percorso eccezionale e ne rendono esplicito l'audit.
 - `--allow-partial-snapshot` esiste solo per recovery deliberate e puo omettere file dal live.
 - Il fallback PHP per import/export DB e piu lento di `mysqldump/mysql`.
-- `.htaccess` viene sovrascritto solo se abilitato.
+- Da `0.1.76`, `.htaccess` viene esportato e sovrascritto solo se abilitato;
+  il sync generico dei file root non puo piu aggirare questa opzione.
 - `wp-config.php` viene importato con merge dei valori ambiente-specifici del target.
 - La cartella del plugin stesso non viene sovrascritta durante il sync.
 - Nei dataset V4MPG vengono riscritti `.xlsx` e file testuali; vecchi formati binari come `.xls` vanno controllati manualmente.

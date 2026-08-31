@@ -1795,6 +1795,12 @@ class File_System_Service {
 		$files    = array();
 
 		foreach ( $this->get_allowed_root_text_files() as $basename ) {
+			// .htaccess has its own explicit opt-in contract. Keeping it out of
+			// generic root-text discovery prevents a full snapshot/import from
+			// bypassing include_htaccess and copying local rewrite bases live.
+			if ( '.htaccess' === $basename ) {
+				continue;
+			}
 			$path = $root_dir . '/' . $basename;
 			if ( is_file( $path ) ) {
 				$files[ $basename ] = normalize_path( $path );
