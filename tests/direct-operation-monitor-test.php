@@ -51,7 +51,8 @@ $client   = file_get_contents( $root . '/includes/class-http-client.php' );
 expect_direct_monitor( ! preg_match( '/(?:require|include)(?:_once)?[^;]*wp-load\.php/i', $endpoint ), 'Direct endpoint must not bootstrap WordPress.' );
 expect_direct_monitor( false !== strpos( $endpoint, 'HTTP_X_AGSB_OPERATION_TOKEN' ), 'Direct endpoint must require the operation token header.' );
 expect_direct_monitor( false !== strpos( $client, "503 === \$this->get_remote_http_error_status( \$status )" ), 'Client fallback must be limited to REST HTTP 503.' );
-expect_direct_monitor( 1 === substr_count( $client, '$this->request_direct_import_status( $operation_id, $monitor_token, $monitor_path )' ), 'Direct fallback must only be invoked by import polling.' );
+expect_direct_monitor( substr_count( $client, '$this->request_direct_import_status( $operation_id, $monitor_token, $monitor_path )' ) >= 2, 'Direct monitor must support both import polling and durable admin refresh.' );
+expect_direct_monitor( false !== strpos( $client, 'Config::OPTION_REMOTE_MONITOR' ), 'Client must persist durable local monitor metadata.' );
 expect_direct_monitor( false !== strpos( $client, 'call_user_func( $status_callback, $operation )' ), 'Authenticated direct status must reach the local progress callback.' );
 
 echo "direct-operation-monitor-test: ok\n";

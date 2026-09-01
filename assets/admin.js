@@ -122,6 +122,7 @@
     var operationPending = false;
     var operationResolved = false;
     var pollTimer = null;
+    var pollInFlight = false;
 
     function setPanelState(message, progress, logs, statusClass) {
       if (!panel || !statusText || !logBox || !progressBar) {
@@ -157,6 +158,10 @@
       if (!config.statusNonce || !config.ajaxUrl) {
         return Promise.resolve();
       }
+      if (pollInFlight) {
+        return Promise.resolve();
+      }
+      pollInFlight = true;
 
       return window.fetch(buildStatusUrl(), {
         credentials: "same-origin",
@@ -185,14 +190,26 @@
         var logs = payload.data.logs || [];
         var progress = typeof operation.progress === "number" ? operation.progress : 0;
         var message = operation.message || getLabel("working", "Operazione in corso...");
-
-        setPanelState(message, progress, logs);
+        var status = operation.status || "running";
+        if (status === "complete") {
+          operationResolved = true;
+          setPanelState(message, 100, logs, "ag-sync-bridge-operation-panel--success");
+          stopPolling();
+        } else if (["failed", "error", "cancelled", "rollback_required", "reconciled"].indexOf(status) !== -1) {
+          operationResolved = true;
+          setPanelState(message, progress, logs, "ag-sync-bridge-operation-panel--error");
+          stopPolling();
+        } else {
+          setPanelState(message, progress, logs);
+        }
       }).catch(function () {
         if (operationPending || operationResolved) {
           return;
         }
 
         setPanelState(getLabel("connectionError", "Impossibile leggere lo stato dell operazione."), 0, null, "ag-sync-bridge-operation-panel--error");
+      }).finally(function () {
+        pollInFlight = false;
       });
     }
 
@@ -274,9 +291,9 @@
         }).catch(function (error) {
           var payload = error.payload || {};
           var logs = payload.data && payload.data.logs ? payload.data.logs : null;
-          operationResolved = true;
-          setPanelState(error.message || getLabel("failed", "Operazione interrotta con errore."), 100, logs, "ag-sync-bridge-operation-panel--error");
-          stopPolling();
+          operationResolved = false;
+          setPanelState(error.message || getLabel("working", "Verifica dello stato remoto in corso..."), 85, logs);
+          pollStatus();
         }).finally(function () {
           activeRequest = null;
           operationPending = false;
@@ -284,5 +301,9 @@
         });
       });
     });
+
+    if (panel && !panel.hidden) {
+      startPolling();
+    }
   });
 }());

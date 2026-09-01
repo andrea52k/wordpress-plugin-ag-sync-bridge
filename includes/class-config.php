@@ -9,6 +9,7 @@ class Config {
 	const OPTION_SETTINGS    = 'ag_sync_bridge_settings';
 	const OPTION_STATE       = 'ag_sync_bridge_state';
 	const OPTION_RECENT_LOGS = 'ag_sync_bridge_recent_logs';
+	const OPTION_REMOTE_MONITOR = 'ag_sync_bridge_remote_monitor';
 
 	public function get_defaults() {
 		return array(
@@ -361,6 +362,7 @@ class Config {
 			self::OPTION_SETTINGS,
 			self::OPTION_STATE,
 			self::OPTION_RECENT_LOGS,
+			self::OPTION_REMOTE_MONITOR,
 		);
 	}
 

@@ -1067,7 +1067,7 @@ class Rest_Controller {
 			if ( is_wp_error( $operation ) ) {
 				return $operation;
 			}
-			$monitor_expires_at = time() + max( 3600, $this->config->get_request_timeout() + 300 );
+			$monitor_expires_at = time() + max( 28800, $this->config->get_request_timeout() + 300 );
 			if ( ! $this->runtime->arm_direct_import_monitor( $operation_id, hash( 'sha256', $monitor_token ), $monitor_expires_at ) ) {
 				$this->runtime->finalize( $operation_id, 'error', array( 'stage' => 'monitor-arm-failed', 'message' => __( 'Unable to initialize the maintenance-safe import monitor.', 'ag-sync-bridge' ) ) );
 				return new WP_Error( 'ag_sync_bridge_direct_monitor_failed', __( 'Unable to initialize the maintenance-safe import monitor.', 'ag-sync-bridge' ), array( 'status' => 500 ) );
@@ -1233,6 +1233,10 @@ class Rest_Controller {
 				'progress_callback' => function ( $stage, $progress, array $details = array() ) use ( $operation_id, $checkpoint_progress ) {
 					if ( 'package-extract' === $stage && null !== $progress ) {
 						$progress = 2 + (int) round( max( 0, min( 100, (int) $progress ) ) * 0.08 );
+					} elseif ( 'database-import-php' === $stage && (int) array_get( $details, 'expected_size_bytes', 0 ) > 0 ) {
+						$processed = max( 0, (int) array_get( $details, 'bytes_processed', 0 ) );
+						$expected  = max( 1, (int) array_get( $details, 'expected_size_bytes', 0 ) );
+						$progress  = 20 + (int) floor( min( 1, $processed / $expected ) * 35 );
 					} elseif ( null === $progress ) {
 						$current  = $this->runtime->get();
 						$progress = array_key_exists( $stage, $checkpoint_progress )
@@ -1479,24 +1483,31 @@ class Rest_Controller {
 			return new WP_Error( 'ag_sync_bridge_pending_import_missing', __( 'Pending import package is missing.', 'ag-sync-bridge' ), array( 'status' => 404 ) );
 		}
 
-		$sha256 = hash_file( 'sha256', $path );
-		$import_contract = array(
-			'allow_partial_import'   => 'partial' === (string) array_get( $operation, 'scope', 'full' ),
-			'expected_partial_paths' => array_get( $operation, 'paths', array() ),
-		);
-		$args   = array( $operation_id, $path, $sha256, $import_contract );
+		$args = array_get( $operation, 'schedule_args', array() );
+		$args = is_array( $args ) ? array_values( $args ) : array();
+		if ( 4 !== count( $args ) || $operation_id !== (string) array_get( $args, 0, '' ) || normalize_path( (string) array_get( $args, 1, '' ) ) !== $path ) {
+			return new WP_Error( 'ag_sync_bridge_pending_import_schedule_invalid', __( 'Pending import schedule contract is invalid.', 'ag-sync-bridge' ), array( 'status' => 409 ) );
+		}
 		$next   = wp_next_scheduled( Scheduler::HOOK_ASYNC_IMPORT, $args );
-		if ( $next ) {
-			wp_unschedule_event( $next, Scheduler::HOOK_ASYNC_IMPORT, $args );
+		if ( ! $next ) {
+			$scheduled = wp_schedule_single_event( time(), Scheduler::HOOK_ASYNC_IMPORT, $args );
+			if ( false === $scheduled ) {
+				return new WP_Error( 'ag_sync_bridge_pending_import_schedule_failed', __( 'Unable to dispatch the pending import worker.', 'ag-sync-bridge' ), array( 'status' => 500 ) );
+			}
 		}
 
-		$this->logger->warning( 'Running queued remote import through authenticated recovery.', array( 'operation_id' => $operation_id, 'snapshot' => $snapshot ) );
-		$this->run_async_import_snapshot( $operation_id, $path, $sha256, $import_contract );
+		$this->logger->warning( 'Dispatching queued remote import through authenticated recovery.', array( 'operation_id' => $operation_id, 'snapshot' => $snapshot ) );
+		if ( function_exists( 'spawn_cron' ) ) {
+			spawn_cron( time() );
+		}
 
 		return new WP_REST_Response(
 			array(
-				'remote_import_operation' => array_get( $this->config->get_state(), 'remote_import_operation', array() ),
-			)
+				'accepted'                => true,
+				'recovery_dispatched'     => true,
+				'remote_import_operation' => $operation,
+			),
+			202
 		);
 	}
 

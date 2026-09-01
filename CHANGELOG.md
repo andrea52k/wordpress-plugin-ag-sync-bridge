@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.78
+
+- Persist the signed remote-import monitor locally so wp-admin can keep showing live stage, heartbeat progress, and terminal state after the launching HTTP request ends.
+- Continue monitoring when the authenticated recovery request times out but the direct remote heartbeat proves that the import is still active.
+- Make the admin progress panel resume polling after page reloads and distinguish active, successful, and failed terminal states.
+- Dispatch queued recovery through WP-Cron with an immediate HTTP 202 response, and show database import progress from verified processed bytes.
+
 ## 0.1.77
 
 - Sposta l'aggiornamento locale di plugin, temi e traduzioni prima del lock e di qualsiasi operazione di push.

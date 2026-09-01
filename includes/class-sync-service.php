@@ -1222,6 +1222,38 @@ class Sync_Service {
 		$this->lock_manager->touch( $state );
 	}
 
+	/**
+	 * Refresh a remote import independently from the request that launched it.
+	 * This keeps wp-admin truthful after a proxy/FastCGI timeout.
+	 */
+	public function refresh_remote_import_monitor() {
+		if ( ! method_exists( $this->http_client, 'refresh_remote_import_monitor' ) ) {
+			return array();
+		}
+
+		$operation = $this->http_client->refresh_remote_import_monitor();
+		if ( is_wp_error( $operation ) || empty( $operation ) ) {
+			return $operation;
+		}
+
+		$remote_status = (string) array_get( $operation, 'status', '' );
+		$remote_stage = sanitize_key( (string) array_get( $operation, 'stage', 'remote-import' ) );
+		$remote_progress = max( 0, min( 100, (int) array_get( $operation, 'progress', 0 ) ) );
+		$local_progress = 85 + (int) floor( $remote_progress * 9 / 100 );
+		$message = sprintf( __( 'Import live: %1$s (%2$d%%)', 'ag-sync-bridge' ), $remote_stage ?: 'remote-import', $remote_progress );
+
+		if ( 'complete' === $remote_status ) {
+			$this->update_operation( 'push', 100, 'remote-complete', __( 'Import live completato.', 'ag-sync-bridge' ), 'complete' );
+		} elseif ( in_array( $remote_status, array( 'error', 'cancelled', 'rollback_required', 'reconciled' ), true ) ) {
+			$message = (string) array_get( $operation, 'message', $message );
+			$this->update_operation( 'push', $local_progress, 'remote-' . ( $remote_stage ?: 'error' ), $message, 'failed' );
+		} else {
+			$this->update_operation( 'push', $local_progress, 'remote-' . ( $remote_stage ?: 'import' ), $message, 'running' );
+		}
+
+		return $operation;
+	}
+
 	private function complete_operation( $operation, $message ) {
 		$this->update_operation( $operation, 100, 'complete', $message, 'complete' );
 	}

@@ -164,6 +164,7 @@ class Admin_Page {
 		}
 
 		check_ajax_referer( 'ag_sync_bridge_operation_status', 'nonce' );
+		$this->sync->refresh_remote_import_monitor();
 
 		wp_send_json_success(
 			array(

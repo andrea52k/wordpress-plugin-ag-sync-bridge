@@ -615,10 +615,79 @@ class Http_Client {
 		$operation_id = (string) $result['operation_id'];
 		$monitor_token = isset( $result['monitor_token'] ) ? (string) $result['monitor_token'] : '';
 		$monitor_path  = isset( $result['monitor_path'] ) ? (string) $result['monitor_path'] : '';
+		$this->persist_remote_import_monitor( $operation_id, $monitor_token, $monitor_path );
 		if ( is_callable( $operation_callback ) ) {
 			call_user_func( $operation_callback, $operation_id, 'import' );
 		}
 		return $this->wait_for_remote_import( $operation_id, $cancellation_check, $monitor_token, $monitor_path, $status_callback );
+	}
+
+	/**
+	 * Refresh the durable maintenance-safe monitor used by the admin screen.
+	 * The monitor secret is stored in its own non-autoloaded option and is never
+	 * included in the normal state payload returned to the browser.
+	 *
+	 * @return array|WP_Error Empty when no import monitor is active.
+	 */
+	public function refresh_remote_import_monitor() {
+		$monitor = get_option( Config::OPTION_REMOTE_MONITOR, array() );
+		$monitor = is_array( $monitor ) ? $monitor : array();
+		$operation_id = (string) array_get( $monitor, 'operation_id', '' );
+		$monitor_token = (string) array_get( $monitor, 'monitor_token', '' );
+		$monitor_path = (string) array_get( $monitor, 'monitor_path', '' );
+
+		if ( '' === $operation_id || '' === $monitor_token || '' === $monitor_path ) {
+			return array();
+		}
+
+		$status = $this->request_direct_import_status( $operation_id, $monitor_token, $monitor_path );
+		if ( is_wp_error( $status ) ) {
+			return $status;
+		}
+
+		$operation = array_get( $status, 'remote_import_operation', array() );
+		if ( ! is_array( $operation ) || $operation_id !== (string) array_get( $operation, 'id', '' ) ) {
+			return new WP_Error( 'ag_sync_bridge_remote_monitor_mismatch', __( 'Remote import monitor returned a different operation.', 'ag-sync-bridge' ) );
+		}
+
+		$monitor['last_checked_at'] = gmdate( 'c' );
+		$monitor['last_status'] = (string) array_get( $operation, 'status', '' );
+		update_option( Config::OPTION_REMOTE_MONITOR, $monitor, false );
+
+		if ( in_array( $monitor['last_status'], array( 'complete', 'error', 'cancelled', 'rollback_required', 'reconciled' ), true ) ) {
+			$this->config->set_state_value(
+				'last_remote_import_monitor',
+				array(
+					'operation_id' => $operation_id,
+					'status'       => $monitor['last_status'],
+					'stage'        => (string) array_get( $operation, 'stage', '' ),
+					'progress'     => (int) array_get( $operation, 'progress', 0 ),
+					'checked_at'   => $monitor['last_checked_at'],
+				)
+			);
+			delete_option( Config::OPTION_REMOTE_MONITOR );
+		}
+
+		return $operation;
+	}
+
+	private function persist_remote_import_monitor( $operation_id, $monitor_token, $monitor_path ) {
+		if ( '' === (string) $operation_id || '' === (string) $monitor_token || '' === (string) $monitor_path ) {
+			return;
+		}
+
+		update_option(
+			Config::OPTION_REMOTE_MONITOR,
+			array(
+				'operation_id' => (string) $operation_id,
+				'monitor_token' => (string) $monitor_token,
+				'monitor_path' => (string) $monitor_path,
+				'created_at'   => gmdate( 'c' ),
+				'last_checked_at' => '',
+				'last_status'  => 'queued',
+			),
+			false
+		);
 	}
 
 	private function wait_for_remote_snapshot( $operation_id, $cancellation_check = null ) {
@@ -640,6 +709,13 @@ class Http_Client {
 			$status = $this->request_json( 'GET', '/ag-sync-bridge/v1/operation/status' );
 			if ( is_wp_error( $status ) ) {
 				if ( $this->is_retryable_remote_import_poll_error( $status ) ) {
+					if ( ( time() - $last_activity_at ) > $stale_timeout ) {
+						return new WP_Error(
+							'ag_sync_bridge_remote_import_monitor_unreachable',
+							__( 'Remote import monitor stayed unreachable beyond the heartbeat timeout.', 'ag-sync-bridge' ),
+							array( 'operation_id' => $operation_id, 'stale_seconds' => time() - $last_activity_at )
+						);
+					}
 					$transient_errors++;
 					$this->logger->warning(
 						'Remote snapshot status polling hit a transient error. Retrying.',
@@ -718,7 +794,10 @@ class Http_Client {
 
 	private function wait_for_remote_import( $operation_id, $cancellation_check = null, $monitor_token = '', $monitor_path = '', $status_callback = null ) {
 		$started_at       = time();
-		$timeout          = max( 60, $this->config->get_request_timeout() );
+		$timeout          = max( 21600, $this->config->get_request_timeout() );
+		$stale_timeout    = max( 300, $this->config->get_request_timeout() );
+		$last_activity_at = time();
+		$last_heartbeat_sequence = -1;
 		$transient_errors = 0;
 		$queued_at        = null;
 		$recovery_sent    = false;
@@ -770,6 +849,11 @@ class Http_Client {
 			}
 
 			$state = (string) array_get( $operation, 'status', '' );
+			$heartbeat_sequence = (int) array_get( $operation, 'heartbeat_sequence', 0 );
+			if ( $heartbeat_sequence !== $last_heartbeat_sequence ) {
+				$last_heartbeat_sequence = $heartbeat_sequence;
+				$last_activity_at = time();
+			}
 			if ( 'queued' === $state ) {
 				$queued_at = $queued_at ?: time();
 				if ( ! $recovery_sent && ( time() - $queued_at ) >= 20 ) {
@@ -781,10 +865,24 @@ class Http_Client {
 						array( 'operation_id' => $operation_id )
 					);
 					if ( is_wp_error( $recovery ) ) {
-						return $recovery;
+						$direct_status = ( '' !== $monitor_token && '' !== $monitor_path )
+							? $this->request_direct_import_status( $operation_id, $monitor_token, $monitor_path )
+							: $recovery;
+						$direct_operation = is_wp_error( $direct_status ) ? array() : array_get( $direct_status, 'remote_import_operation', array() );
+						if ( is_array( $direct_operation ) && $operation_id === (string) array_get( $direct_operation, 'id', '' ) && in_array( (string) array_get( $direct_operation, 'status', '' ), array( 'queued', 'running', 'cancel_requested' ), true ) ) {
+							$this->logger->warning( 'Authenticated recovery request timed out, but the remote heartbeat is active; monitoring continues.', array( 'operation_id' => $operation_id, 'error' => $recovery->get_error_message() ) );
+							$operation = $direct_operation;
+							$state = (string) array_get( $operation, 'status', '' );
+							if ( is_callable( $status_callback ) ) {
+								call_user_func( $status_callback, $operation );
+							}
+						} else {
+							return $recovery;
+						}
+					} else {
+						$operation = array_get( $recovery, 'remote_import_operation', array() );
+						$state     = (string) array_get( $operation, 'status', '' );
 					}
-					$operation = array_get( $recovery, 'remote_import_operation', array() );
-					$state     = (string) array_get( $operation, 'status', '' );
 				}
 			}
 			if ( 'complete' === $state ) {
@@ -804,6 +902,14 @@ class Http_Client {
 					'ag_sync_bridge_remote_import_cancelled',
 					(string) array_get( $operation, 'message', __( 'Remote import was cancelled.', 'ag-sync-bridge' ) ),
 					$operation
+				);
+			}
+
+			if ( in_array( $state, array( 'queued', 'running', 'cancel_requested' ), true ) && ( time() - $last_activity_at ) > $stale_timeout ) {
+				return new WP_Error(
+					'ag_sync_bridge_remote_import_stalled',
+					__( 'Remote import heartbeat stopped before completion.', 'ag-sync-bridge' ),
+					array( 'operation_id' => $operation_id, 'stale_seconds' => time() - $last_activity_at )
 				);
 			}
 		}

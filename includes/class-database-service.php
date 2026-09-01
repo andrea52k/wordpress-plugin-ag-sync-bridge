@@ -1164,7 +1164,7 @@ class Database_Service {
 		while ( false !== ( $line = fgets( $handle ) ) ) {
 			$bytes_processed += strlen( $line );
 			if ( is_callable( $progress_callback ) && ( microtime( true ) - $last_report ) >= 5 ) {
-				call_user_func( $progress_callback, 'database-import-php', null, array( 'bytes_processed' => $bytes_processed, 'stream_reopens' => $stream_reopens ) );
+				call_user_func( $progress_callback, 'database-import-php', null, array( 'bytes_processed' => $bytes_processed, 'expected_size_bytes' => $expected_size_bytes, 'stream_reopens' => $stream_reopens ) );
 				$last_report = microtime( true );
 			}
 			$trimmed = trim( $line );
