@@ -146,14 +146,19 @@ class Import_Service {
 				}
 
 				/*
-				 * A full import has just replaced wp_usermeta. Restore target
-				 * session_tokens before invoking any post-import callback or
-				 * cancellation checkpoint, so a successful deploy never leaves
-				 * the live administrator authenticated with source-side state.
+				 * A full import has just replaced wp_usermeta and wp_options.
+				 * Restore target authentication and Google Site Kit state before
+				 * invoking any post-import callback or cancellation checkpoint,
+				 * so a successful deploy never exposes source-side credentials.
 				 */
 				$session_restore = $this->database->restore_user_sessions( array_get( $current_state, 'user_sessions', array() ) );
 				if ( is_wp_error( $session_restore ) ) {
 					return $this->with_failure_context( $session_restore, 'session_restore', true );
+				}
+
+				$google_site_kit_restore = $this->database->restore_google_site_kit_options( array_get( $current_state, 'google_site_kit_options', array() ) );
+				if ( is_wp_error( $google_site_kit_restore ) ) {
+					return $this->with_failure_context( $google_site_kit_restore, 'google_site_kit_restore', true );
 				}
 
 				$cancelled = $this->check_cancellation( $args, 'after_database_import', true );

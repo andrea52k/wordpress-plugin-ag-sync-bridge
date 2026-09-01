@@ -9,9 +9,10 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 class Database_Service {
-	const IMPORT_MAX_ALLOWED_PACKET = 268435456;
-	const IMPORT_NET_TIMEOUT        = 120;
-	const URL_REPLACE_BATCH_SIZE    = 500;
+	const IMPORT_MAX_ALLOWED_PACKET       = 268435456;
+	const IMPORT_NET_TIMEOUT              = 120;
+	const URL_REPLACE_BATCH_SIZE          = 500;
+	const GOOGLE_SITE_KIT_OPTION_PREFIX = 'googlesitekit_';
 
 	/**
 	 * @var Config
@@ -167,6 +168,11 @@ class Database_Service {
 			if ( is_wp_error( $user_sessions ) ) {
 				return $user_sessions;
 			}
+
+			$google_site_kit_options = $this->capture_google_site_kit_options();
+			if ( is_wp_error( $google_site_kit_options ) ) {
+				return $google_site_kit_options;
+			}
 		}
 
 		$state = array(
@@ -179,6 +185,7 @@ class Database_Service {
 		);
 		if ( $include_user_sessions ) {
 			$state['user_sessions'] = $user_sessions;
+			$state['google_site_kit_options'] = $google_site_kit_options;
 		}
 
 		return $state;
@@ -236,6 +243,57 @@ class Database_Service {
 		}
 
 		return $sessions;
+	}
+
+	/**
+	 * Capture Google Site Kit target configuration before database replacement.
+	 *
+	 * Values can contain credentials and are deliberately returned only to the
+	 * in-memory import state. Neither option names nor values are logged.
+	 *
+	 * @return array|WP_Error
+	 */
+	public function capture_google_site_kit_options() {
+		global $wpdb;
+
+		if ( ! $this->table_exists( $wpdb->options ) ) {
+			return new WP_Error(
+				'ag_sync_bridge_google_site_kit_capture_table_missing',
+				__( 'Unable to preserve target Google Site Kit settings because the WordPress options table is unavailable.', 'ag-sync-bridge' )
+			);
+		}
+
+		$wpdb->last_error = '';
+		$rows = $wpdb->get_results(
+			$wpdb->prepare(
+				'SELECT option_name, option_value, autoload FROM ' . $this->quote_identifier( $wpdb->options ) . ' WHERE option_name LIKE %s ORDER BY option_id ASC',
+				$wpdb->esc_like( self::GOOGLE_SITE_KIT_OPTION_PREFIX ) . '%'
+			),
+			ARRAY_A
+		);
+
+		if ( ! empty( $wpdb->last_error ) || ! is_array( $rows ) ) {
+			return new WP_Error(
+				'ag_sync_bridge_google_site_kit_capture_failed',
+				$wpdb->last_error ? (string) $wpdb->last_error : __( 'Unable to read target Google Site Kit settings before database import.', 'ag-sync-bridge' )
+			);
+		}
+
+		$options = array();
+		foreach ( $rows as $row ) {
+			$option_name = (string) array_get( $row, 'option_name', '' );
+			if ( 0 !== strpos( $option_name, self::GOOGLE_SITE_KIT_OPTION_PREFIX ) || ! array_key_exists( 'option_value', $row ) || ! array_key_exists( 'autoload', $row ) ) {
+				continue;
+			}
+
+			$options[] = array(
+				'option_name'  => $option_name,
+				'option_value' => (string) $row['option_value'],
+				'autoload'     => (string) $row['autoload'],
+			);
+		}
+
+		return $options;
 	}
 
 	public function get_active_plugins() {
@@ -296,10 +354,23 @@ class Database_Service {
 			}
 		}
 
+		$google_site_kit_restore = array(
+			'captured' => 0,
+			'restored' => 0,
+		);
+		if ( array_key_exists( 'google_site_kit_options', $state ) ) {
+			$google_site_kit_restore = $this->restore_google_site_kit_options( (array) $state['google_site_kit_options'] );
+			if ( is_wp_error( $google_site_kit_restore ) ) {
+				wp_cache_flush();
+				return $google_site_kit_restore;
+			}
+		}
+
 		wp_cache_flush();
 
 		return array(
-			'user_sessions' => $session_restore,
+			'user_sessions'           => $session_restore,
+			'google_site_kit_options' => $google_site_kit_restore,
 		);
 	}
 
@@ -428,6 +499,98 @@ class Database_Service {
 			'captured' => count( $sessions ),
 			'restored' => count( $resolved ),
 			'skipped'  => $skipped,
+		);
+	}
+
+	/**
+	 * Replace imported Google Site Kit options with target-side values.
+	 *
+	 * @param array $options Captured target options.
+	 * @return array|WP_Error
+	 */
+	public function restore_google_site_kit_options( array $options ) {
+		global $wpdb;
+
+		if ( ! $this->table_exists( $wpdb->options ) ) {
+			return new WP_Error(
+				'ag_sync_bridge_google_site_kit_restore_table_missing',
+				__( 'Unable to restore target Google Site Kit settings because the imported WordPress options table is unavailable.', 'ag-sync-bridge' )
+			);
+		}
+
+		$validated = array();
+		foreach ( $options as $option ) {
+			$option_name = (string) array_get( $option, 'option_name', '' );
+			if ( 0 !== strpos( $option_name, self::GOOGLE_SITE_KIT_OPTION_PREFIX ) || ! array_key_exists( 'option_value', $option ) || ! array_key_exists( 'autoload', $option ) ) {
+				return new WP_Error(
+					'ag_sync_bridge_google_site_kit_restore_state_invalid',
+					__( 'Captured Google Site Kit target state is invalid.', 'ag-sync-bridge' )
+				);
+			}
+
+			$validated[] = array(
+				'option_name'  => $option_name,
+				'option_value' => (string) $option['option_value'],
+				'autoload'     => (string) $option['autoload'],
+			);
+		}
+
+		if ( false === $wpdb->query( 'START TRANSACTION' ) ) {
+			return new WP_Error(
+				'ag_sync_bridge_google_site_kit_restore_transaction_failed',
+				$wpdb->last_error ? (string) $wpdb->last_error : __( 'Unable to start target Google Site Kit restoration.', 'ag-sync-bridge' )
+			);
+		}
+
+		$committed = false;
+		try {
+			$deleted = $wpdb->query(
+				$wpdb->prepare(
+					'DELETE FROM ' . $this->quote_identifier( $wpdb->options ) . ' WHERE option_name LIKE %s',
+					$wpdb->esc_like( self::GOOGLE_SITE_KIT_OPTION_PREFIX ) . '%'
+				)
+			);
+			if ( false === $deleted ) {
+				return new WP_Error(
+					'ag_sync_bridge_google_site_kit_source_cleanup_failed',
+					$wpdb->last_error ? (string) $wpdb->last_error : __( 'Unable to remove imported Google Site Kit settings.', 'ag-sync-bridge' )
+				);
+			}
+
+			foreach ( $validated as $option ) {
+				$inserted = $wpdb->query(
+					$wpdb->prepare(
+						'INSERT INTO ' . $this->quote_identifier( $wpdb->options ) . ' (option_name, option_value, autoload) VALUES (%s, %s, %s)',
+						$option['option_name'],
+						$option['option_value'],
+						$option['autoload']
+					)
+				);
+				if ( false === $inserted ) {
+					return new WP_Error(
+						'ag_sync_bridge_google_site_kit_restore_failed',
+						$wpdb->last_error ? (string) $wpdb->last_error : __( 'Unable to restore a target Google Site Kit setting.', 'ag-sync-bridge' )
+					);
+				}
+			}
+
+			if ( false === $wpdb->query( 'COMMIT' ) ) {
+				return new WP_Error(
+					'ag_sync_bridge_google_site_kit_restore_commit_failed',
+					$wpdb->last_error ? (string) $wpdb->last_error : __( 'Unable to commit target Google Site Kit restoration.', 'ag-sync-bridge' )
+				);
+			}
+
+			$committed = true;
+		} finally {
+			if ( ! $committed ) {
+				$wpdb->query( 'ROLLBACK' );
+			}
+		}
+
+		return array(
+			'captured' => count( $options ),
+			'restored' => count( $validated ),
 		);
 	}
 
