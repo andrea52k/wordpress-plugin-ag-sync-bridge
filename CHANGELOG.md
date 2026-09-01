@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.81
+
+- Preserve target-side WordPress administrator sessions across full database imports, while removing source-side session tokens from the imported database.
+
 ## 0.1.80
 
 - Make remote operation progress monotonic across stage changes and force successful terminal operations to report stage `complete` at 100%.

@@ -87,7 +87,11 @@ class Import_Service {
 
 		$manifest      = $prepared['manifest'];
 		$is_partial    = $this->is_partial_manifest( $manifest );
-		$current_state = $this->database->capture_environment_state();
+		$current_state = $this->database->capture_environment_state( ! $is_partial );
+		if ( is_wp_error( $current_state ) ) {
+			$this->file_system->cleanup_path( $prepared['temp_dir'] );
+			return $current_state;
+		}
 		$target_site   = array_get( $args, 'target_site_url', array_get( $current_state, 'siteurl', site_url() ) );
 		$target_home   = array_get( $args, 'target_home_url', array_get( $current_state, 'home', home_url() ) );
 		$source_prefix = $this->resolve_source_table_prefix( $manifest, $prepared['temp_dir'] );
@@ -141,6 +145,17 @@ class Import_Service {
 					return $this->with_failure_context( $import_result, 'database_import', true );
 				}
 
+				/*
+				 * A full import has just replaced wp_usermeta. Restore target
+				 * session_tokens before invoking any post-import callback or
+				 * cancellation checkpoint, so a successful deploy never leaves
+				 * the live administrator authenticated with source-side state.
+				 */
+				$session_restore = $this->database->restore_user_sessions( array_get( $current_state, 'user_sessions', array() ) );
+				if ( is_wp_error( $session_restore ) ) {
+					return $this->with_failure_context( $session_restore, 'session_restore', true );
+				}
+
 				$cancelled = $this->check_cancellation( $args, 'after_database_import', true );
 				if ( is_wp_error( $cancelled ) ) {
 					return $cancelled;
@@ -163,7 +178,10 @@ class Import_Service {
 				 * and plugin activation list when the worker is killed externally.
 				 * The final restore remains as an idempotent safety net.
 				 */
-				$this->database->restore_environment_state( $current_state );
+				$environment_restore = $this->database->restore_environment_state( $current_state );
+				if ( is_wp_error( $environment_restore ) ) {
+					return $this->with_failure_context( $environment_restore, 'environment_restore', true );
+				}
 				$cancelled = $this->check_cancellation( $args, 'after_environment_restore', true );
 				if ( is_wp_error( $cancelled ) ) {
 					return $cancelled;
@@ -325,7 +343,16 @@ class Import_Service {
 			);
 		} finally {
 			if ( ! $is_partial ) {
-				$this->database->restore_environment_state( $current_state );
+				$final_environment_restore = $this->database->restore_environment_state( $current_state );
+				if ( is_wp_error( $final_environment_restore ) ) {
+					$this->logger->error(
+						'Target environment or login-session restore failed during import cleanup.',
+						array(
+							'message' => $final_environment_restore->get_error_message(),
+							'data'    => $final_environment_restore->get_error_data(),
+						)
+					);
+				}
 			}
 
 			if ( $sync_active_plugins ) {

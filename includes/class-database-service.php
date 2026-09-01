@@ -160,8 +160,16 @@ class Database_Service {
 		return (string) $wpdb->prefix;
 	}
 
-	public function capture_environment_state() {
-		return array(
+	public function capture_environment_state( $include_user_sessions = true ) {
+		$user_sessions = array();
+		if ( $include_user_sessions ) {
+			$user_sessions = $this->capture_user_sessions();
+			if ( is_wp_error( $user_sessions ) ) {
+				return $user_sessions;
+			}
+		}
+
+		$state = array(
 			'settings'       => get_option( Config::OPTION_SETTINGS, array() ),
 			'state'          => get_option( Config::OPTION_STATE, array() ),
 			'recent_logs'    => get_option( Config::OPTION_RECENT_LOGS, array() ),
@@ -169,6 +177,65 @@ class Database_Service {
 			'siteurl'        => get_option( 'siteurl' ),
 			'home'           => get_option( 'home' ),
 		);
+		if ( $include_user_sessions ) {
+			$state['user_sessions'] = $user_sessions;
+		}
+
+		return $state;
+	}
+
+	/**
+	 * Capture target-side login sessions before a full database replacement.
+	 *
+	 * Sessions are keyed by user_login rather than user ID because a snapshot
+	 * can use a different numeric ID for the same WordPress account. The raw
+	 * serialized value and password hash (required by WordPress auth-cookie
+	 * validation) are kept in memory only and never added to the snapshot or
+	 * logs.
+	 *
+	 * @return array|WP_Error
+	 */
+	public function capture_user_sessions() {
+		global $wpdb;
+
+		if ( ! $this->table_exists( $wpdb->users ) || ! $this->table_exists( $wpdb->usermeta ) ) {
+			return new WP_Error(
+				'ag_sync_bridge_session_capture_tables_missing',
+				__( 'Unable to preserve target login sessions because the WordPress user tables are unavailable.', 'ag-sync-bridge' )
+			);
+		}
+
+		$wpdb->last_error = '';
+		$rows = $wpdb->get_results(
+			$wpdb->prepare(
+				'SELECT u.user_login, u.user_pass, um.meta_value FROM ' . $this->quote_identifier( $wpdb->users ) . ' u INNER JOIN ' . $this->quote_identifier( $wpdb->usermeta ) . ' um ON um.user_id = u.ID WHERE um.meta_key = %s ORDER BY um.umeta_id ASC',
+				'session_tokens'
+			),
+			ARRAY_A
+		);
+
+		if ( ! empty( $wpdb->last_error ) || ! is_array( $rows ) ) {
+			return new WP_Error(
+				'ag_sync_bridge_session_capture_failed',
+				$wpdb->last_error ? (string) $wpdb->last_error : __( 'Unable to read target login sessions before database import.', 'ag-sync-bridge' )
+			);
+		}
+
+		$sessions = array();
+		foreach ( $rows as $row ) {
+			$user_login = (string) array_get( $row, 'user_login', '' );
+			if ( '' === $user_login || ! array_key_exists( 'user_pass', $row ) || ! array_key_exists( 'meta_value', $row ) ) {
+				continue;
+			}
+
+			$sessions[] = array(
+				'user_login' => $user_login,
+				'user_pass'  => (string) $row['user_pass'],
+				'meta_value' => (string) $row['meta_value'],
+			);
+		}
+
+		return $sessions;
 	}
 
 	public function get_active_plugins() {
@@ -216,7 +283,152 @@ class Database_Service {
 			update_option( 'home', array_get( $state, 'home', '' ), false );
 		}
 
+		$session_restore = array(
+			'captured' => 0,
+			'restored' => 0,
+			'skipped'  => 0,
+		);
+		if ( array_key_exists( 'user_sessions', $state ) ) {
+			$session_restore = $this->restore_user_sessions( (array) $state['user_sessions'] );
+			if ( is_wp_error( $session_restore ) ) {
+				wp_cache_flush();
+				return $session_restore;
+			}
+		}
+
 		wp_cache_flush();
+
+		return array(
+			'user_sessions' => $session_restore,
+		);
+	}
+
+	/**
+	 * Remove source-side session tokens and restore the target-side sessions.
+	 *
+	 * Exact user_login matching keeps existing cookies bound to the same account
+	 * even when source and target user IDs differ. Accounts absent from the
+	 * imported database cannot have a usable WordPress login session and are
+	 * reported as skipped without attaching their tokens to another identity.
+	 *
+	 * @param array $sessions Captured target session rows.
+	 * @return array|WP_Error
+	 */
+	public function restore_user_sessions( array $sessions ) {
+		global $wpdb;
+
+		if ( ! $this->table_exists( $wpdb->users ) || ! $this->table_exists( $wpdb->usermeta ) ) {
+			return new WP_Error(
+				'ag_sync_bridge_session_restore_tables_missing',
+				__( 'Unable to restore target login sessions because the imported WordPress user tables are unavailable.', 'ag-sync-bridge' )
+			);
+		}
+
+		$resolved = array();
+		$skipped  = 0;
+		foreach ( $sessions as $session ) {
+			$user_login = (string) array_get( $session, 'user_login', '' );
+			if ( '' === $user_login || ! array_key_exists( 'user_pass', $session ) || ! array_key_exists( 'meta_value', $session ) ) {
+				$skipped++;
+				continue;
+			}
+
+			$wpdb->last_error = '';
+			$user_id = $wpdb->get_var(
+				$wpdb->prepare(
+					'SELECT ID FROM ' . $this->quote_identifier( $wpdb->users ) . ' WHERE user_login = %s LIMIT 1',
+					$user_login
+				)
+			);
+			if ( ! empty( $wpdb->last_error ) ) {
+				return new WP_Error( 'ag_sync_bridge_session_user_lookup_failed', (string) $wpdb->last_error );
+			}
+			if ( ! $user_id ) {
+				$skipped++;
+				continue;
+			}
+
+			$resolved[] = array(
+				'user_id'    => (int) $user_id,
+				'user_pass'  => (string) $session['user_pass'],
+				'meta_value' => (string) $session['meta_value'],
+			);
+		}
+
+		if ( false === $wpdb->query( 'START TRANSACTION' ) ) {
+			return new WP_Error(
+				'ag_sync_bridge_session_restore_transaction_failed',
+				$wpdb->last_error ? (string) $wpdb->last_error : __( 'Unable to start target login-session restoration.', 'ag-sync-bridge' )
+			);
+		}
+
+		$committed = false;
+		try {
+			foreach ( $resolved as $session ) {
+				$password_restored = $wpdb->query(
+					$wpdb->prepare(
+						'UPDATE ' . $this->quote_identifier( $wpdb->users ) . ' SET user_pass = %s WHERE ID = %d',
+						$session['user_pass'],
+						$session['user_id']
+					)
+				);
+				if ( false === $password_restored ) {
+					return new WP_Error(
+						'ag_sync_bridge_session_password_restore_failed',
+						$wpdb->last_error ? (string) $wpdb->last_error : __( 'Unable to restore target authentication state after database import.', 'ag-sync-bridge' )
+					);
+				}
+			}
+
+			$deleted = $wpdb->query(
+				$wpdb->prepare(
+					'DELETE FROM ' . $this->quote_identifier( $wpdb->usermeta ) . ' WHERE meta_key = %s',
+					'session_tokens'
+				)
+			);
+			if ( false === $deleted ) {
+				return new WP_Error(
+					'ag_sync_bridge_session_source_cleanup_failed',
+					$wpdb->last_error ? (string) $wpdb->last_error : __( 'Unable to remove source login sessions after database import.', 'ag-sync-bridge' )
+				);
+			}
+
+			foreach ( $resolved as $session ) {
+				$inserted = $wpdb->query(
+					$wpdb->prepare(
+						'INSERT INTO ' . $this->quote_identifier( $wpdb->usermeta ) . ' (user_id, meta_key, meta_value) VALUES (%d, %s, %s)',
+						$session['user_id'],
+						'session_tokens',
+						$session['meta_value']
+					)
+				);
+				if ( false === $inserted ) {
+					return new WP_Error(
+						'ag_sync_bridge_session_restore_failed',
+						$wpdb->last_error ? (string) $wpdb->last_error : __( 'Unable to restore a target login session after database import.', 'ag-sync-bridge' )
+					);
+				}
+			}
+
+			if ( false === $wpdb->query( 'COMMIT' ) ) {
+				return new WP_Error(
+					'ag_sync_bridge_session_restore_commit_failed',
+					$wpdb->last_error ? (string) $wpdb->last_error : __( 'Unable to commit target login-session restoration.', 'ag-sync-bridge' )
+				);
+			}
+
+			$committed = true;
+		} finally {
+			if ( ! $committed ) {
+				$wpdb->query( 'ROLLBACK' );
+			}
+		}
+
+		return array(
+			'captured' => count( $sessions ),
+			'restored' => count( $resolved ),
+			'skipped'  => $skipped,
+		);
 	}
 
 	public function sync_active_plugins( array $desired_plugins ) {
