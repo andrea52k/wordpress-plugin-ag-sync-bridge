@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.80
+
+- Make remote operation progress monotonic across stage changes and force successful terminal operations to report stage `complete` at 100%.
+
 ## 0.1.79
 
 - Read the verified SQL byte total in the database import path so the live import percentage advances through the 20-55% database interval instead of remaining at its fallback checkpoint.

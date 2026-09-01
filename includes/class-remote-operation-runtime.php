@@ -108,7 +108,10 @@ class Remote_Operation_Runtime {
 			unset( $changes['id'], $changes['kind'], $changes['status'], $changes['started_at'], $changes['finished_at'] );
 			$current = array_merge( $current, $changes );
 			$current['stage'] = sanitize_key( (string) $stage );
-			$current['progress'] = max( 0, min( 100, (int) $progress ) );
+			$current['progress'] = max(
+				(int) array_get( $current, 'progress', 0 ),
+				max( 0, min( 100, (int) $progress ) )
+			);
 			$current['updated_at'] = $now;
 			$current['heartbeat_at'] = $now;
 			$current['heartbeat_sequence'] = (int) array_get( $current, 'heartbeat_sequence', 0 ) + 1;
@@ -158,6 +161,8 @@ class Remote_Operation_Runtime {
 			} elseif ( 'complete' === $status ) {
 				unset( $changes['rollback_required'] );
 				unset( $changes['target_mutated'] );
+				$changes['progress'] = 100;
+				$changes['stage'] = 'complete';
 			}
 			$current = array_merge( $current, $changes, array( 'status' => $status, 'updated_at' => gmdate( 'c' ), 'finished_at' => gmdate( 'c' ) ) );
 			return $current;

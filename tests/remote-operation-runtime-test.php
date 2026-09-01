@@ -74,6 +74,7 @@ expect_true( 'running' === $runtime->claim( 'three' )['status'], 'claim third op
 $complete = $runtime->finalize( 'three', 'complete', array( 'rollback_required' => true ) );
 expect_true( 'complete' === $complete['status'], 'complete operation remains complete without cancellation' );
 expect_true( ! isset( $complete['rollback_required'] ), 'completed operation does not falsely require rollback' );
+expect_true( 100 === $complete['progress'] && 'complete' === $complete['stage'], 'completed operation reports a truthful terminal progress state' );
 
 $dirty_error = $runtime->reserve( 'import', array( 'id' => 'dirty-error' ) );
 $runtime->claim( 'dirty-error' );
@@ -91,6 +92,8 @@ $fourth = $runtime->reserve( 'import', array( 'id' => 'four' ) );
 $running = $runtime->claim( 'four' );
 $heartbeat = $runtime->heartbeat( 'four', 'database-import', 55, array( 'checkpoint' => 'after_database_import' ) );
 expect_true( 'database-import' === $heartbeat['stage'] && 55 === $heartbeat['progress'], 'heartbeat updates stage and progress' );
+$lower_heartbeat = $runtime->heartbeat( 'four', 'files-import', 50 );
+expect_true( 55 === $lower_heartbeat['progress'], 'heartbeat progress never moves backwards across stages' );
 expect_true( $heartbeat['heartbeat_sequence'] > $running['heartbeat_sequence'], 'heartbeat sequence advances' );
 $inspected = $runtime->inspect( 60 );
 expect_true( 'active' === $inspected['heartbeat']['liveness'] && ! $inspected['heartbeat']['is_stale'], 'fresh heartbeat is active' );
