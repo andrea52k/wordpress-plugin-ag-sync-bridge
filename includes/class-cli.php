@@ -288,6 +288,36 @@ if ( defined( 'WP_CLI' ) && WP_CLI ) {
 		}
 
 		/**
+		 * Updates and verifies plugins, themes and translations before push.
+		 *
+		 * ## OPTIONS
+		 *
+		 * [--paths=<paths>]
+		 * : Optional comma/newline separated paths for an explicit partial push.
+		 *
+		 * [--format=<format>]
+		 * : Use json for a machine-readable receipt.
+		 */
+		public function prepare_push( $args, $assoc_args ) {
+			unset( $args );
+			$paths = self::parse_path_list_arg( array_get( $assoc_args, 'paths', '' ) );
+			$paths = self::$file_system->normalize_partial_export_paths( $paths );
+			if ( is_wp_error( $paths ) ) {
+				\WP_CLI::error( $paths->get_error_message() );
+			}
+			$result = self::$sync->prepare_push( $paths );
+			if ( is_wp_error( $result ) ) {
+				\WP_CLI::error( $result->get_error_message() );
+			}
+			if ( 'json' === strtolower( (string) array_get( $assoc_args, 'format', '' ) ) ) {
+				\WP_CLI::line( wp_json_encode( $result, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE ) );
+				return;
+			}
+			\WP_CLI::log( wp_json_encode( $result, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE ) );
+			\WP_CLI::success( 'Pre-push updates completed and verified.' );
+		}
+
+		/**
 		 * Shows the non-mutating plan for a full or explicit partial push.
 		 *
 		 * ## OPTIONS

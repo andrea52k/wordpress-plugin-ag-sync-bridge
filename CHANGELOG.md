@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.77
+
+- Sposta l'aggiornamento locale di plugin, temi e traduzioni prima del lock e di qualsiasi operazione di push.
+- Aggiunge `wp agsync prepare_push` per eseguire e ispezionare il preflight separatamente.
+- Verifica lo stato reale dopo gli updater WordPress: i falsi fallimenti già riconciliati non bloccano più il deploy, mentre ogni aggiornamento residuo lo blocca.
+
 ## 0.1.76
 
 - Add an operation-scoped, token-authenticated direct status endpoint so a

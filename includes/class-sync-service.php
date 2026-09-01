@@ -535,6 +535,18 @@ class Sync_Service {
 	}
 
 	public function push_to_remote( array $args = array() ) {
+		$partial_paths = array_get( $args, 'partial_paths', array() );
+		$partial_paths = is_array( $partial_paths ) ? $partial_paths : array();
+		$partial_paths = $this->file_system->normalize_partial_export_paths( $partial_paths );
+		if ( is_wp_error( $partial_paths ) ) {
+			return $partial_paths;
+		}
+		$is_partial_push = ! empty( $partial_paths );
+		$maintenance     = $this->prepare_push( $partial_paths );
+		if ( is_wp_error( $maintenance ) ) {
+			return $maintenance;
+		}
+
 		$lock = $this->lock_manager->acquire( 'push' );
 		if ( is_wp_error( $lock ) ) {
 			return $lock;
@@ -551,13 +563,6 @@ class Sync_Service {
 			$skip_remote_backup    = $skip_remote_backup_arg || ! $remote_backups_enabled;
 			$allow_partial_snapshot = ! empty( $args['allow_partial_snapshot'] );
 			$recover_stale_remote_import = ! empty( $args['recover_stale_remote_import'] );
-			$partial_paths          = array_get( $args, 'partial_paths', array() );
-			$partial_paths          = is_array( $partial_paths ) ? $partial_paths : array();
-			$partial_paths          = $this->file_system->normalize_partial_export_paths( $partial_paths );
-			if ( is_wp_error( $partial_paths ) ) {
-				return $partial_paths;
-			}
-			$is_partial_push = ! empty( $partial_paths );
 			if ( $recover_stale_remote_import && ( ! $use_existing_snapshot || $is_partial_push || $allow_partial_snapshot ) ) {
 				return new WP_Error( 'ag_sync_bridge_recovery_import_contract_invalid', __( 'Stale-import recovery requires --use-existing-snapshot and one complete live-origin snapshot.', 'ag-sync-bridge' ) );
 			}
@@ -576,21 +581,6 @@ class Sync_Service {
 			if ( $is_partial_push && $use_existing_snapshot ) {
 				$error = new WP_Error( 'ag_sync_bridge_partial_push_existing_snapshot', __( 'Partial push cannot reuse an existing snapshot. Remove --use-existing-snapshot and create a fresh partial package.', 'ag-sync-bridge' ) );
 				return $error;
-			}
-
-			$maintenance_message = $is_partial_push
-				? __( 'Controlli essenziali del push parziale; aggiornamenti estranei allo scope esclusi...', 'ag-sync-bridge' )
-				: __( 'Controllo e aggiornamento locale di plugin, temi e traduzioni...', 'ag-sync-bridge' );
-			$this->update_operation( 'push', 1, 'local-maintenance', $maintenance_message );
-			$maintenance = $this->maintenance->prepare_for_push(
-				array(
-					'scope' => $is_partial_push ? 'partial' : 'full',
-					'paths' => $partial_paths,
-				)
-			);
-			if ( is_wp_error( $maintenance ) ) {
-				$this->fail_operation( 'push', $maintenance );
-				return $maintenance;
 			}
 
 			$this->logger->info( 'Push started.', array( 'remote_url' => $this->config->get_remote_url(), 'use_existing_snapshot' => $use_existing_snapshot, 'remote_backups_enabled' => $remote_backups_enabled, 'skip_remote_backup' => $skip_remote_backup, 'allow_partial_snapshot' => $allow_partial_snapshot, 'partial_paths' => $partial_paths, 'deployment_plan' => $deployment_plan, 'local_maintenance' => $maintenance ) );
@@ -761,6 +751,25 @@ class Sync_Service {
 		} finally {
 			$this->lock_manager->release();
 		}
+	}
+
+	/**
+	 * Updates and verifies local packages before a push lock or remote operation.
+	 *
+	 * @param array $partial_paths Already normalized partial deployment paths.
+	 * @return array|WP_Error
+	 */
+	public function prepare_push( array $partial_paths = array() ) {
+		$result = $this->maintenance->prepare_for_push(
+			array(
+				'scope' => empty( $partial_paths ) ? 'full' : 'partial',
+				'paths' => $partial_paths,
+			)
+		);
+		if ( ! is_wp_error( $result ) ) {
+			$this->config->set_state_value( 'last_push_preflight', $result );
+		}
+		return $result;
 	}
 
 	private function estimate_entry_size( $path ) {

@@ -26,6 +26,7 @@ namespace AGSyncBridge {
 	class Logger {
 		public $entries = array();
 		public function info( $message, $context = array() ) { $this->entries[] = array( $message, $context ); }
+		public function warning( $message, $context = array() ) { $this->entries[] = array( $message, $context ); }
 	}
 
 	require_once dirname( __DIR__ ) . '/includes/class-local-maintenance-service.php';
@@ -42,9 +43,9 @@ namespace AGSyncBridge {
 		protected function load_upgrader_dependencies() { $this->dependencies_loaded++; return true; }
 		protected function plugin_updates() { return $this->plugins; }
 		protected function theme_updates() { return $this->themes; }
-		protected function upgrade_plugins( array $plugins ) { $this->calls[] = array( 'plugins', $plugins ); return $this->plugin_result; }
-		protected function upgrade_themes( array $themes ) { $this->calls[] = array( 'themes', $themes ); return $this->theme_result; }
-		protected function upgrade_translations( array $translations ) { $this->calls[] = array( 'translations', $translations ); return $this->translation_result; }
+		protected function upgrade_plugins( array $plugins ) { $this->calls[] = array( 'plugins', $plugins ); if ( ! \is_wp_error( $this->plugin_result ) ) { $this->plugins = array(); } return $this->plugin_result; }
+		protected function upgrade_themes( array $themes ) { $this->calls[] = array( 'themes', $themes ); if ( ! \is_wp_error( $this->theme_result ) ) { $this->themes = array(); } return $this->theme_result; }
+		protected function upgrade_translations( array $translations ) { $this->calls[] = array( 'translations', $translations ); if ( ! \is_wp_error( $this->translation_result ) ) { $GLOBALS['maintenance_translations'] = array(); } return $this->translation_result; }
 	}
 
 	function expect( $condition, $message ) {
@@ -85,6 +86,15 @@ namespace AGSyncBridge {
 	expect( array( 'vendor/example.php' ) === $result['plugins']['updated'], 'Plugin update result should be recorded.' );
 	expect( array( 'example-theme' ) === $result['themes']['updated'], 'Theme update result should be recorded.' );
 	expect( array( 'plugin-example-it_IT' ) === $result['translations']['updated'], 'Translation update result should be recorded.' );
+	expect( true === $result['verified_clean'], 'A successful preflight must carry a verified-clean receipt.' );
+
+	$service = make_service( $logger );
+	$service->plugins = array( 'google-site-kit/google-site-kit.php' => (object) array( 'new_version' => '9.9.9' ) );
+	$service->plugin_result = array( 'google-site-kit/google-site-kit.php' => false );
+	$result = $service->prepare_for_push();
+	expect( ! \is_wp_error( $result ), 'A false raw updater result must be reconciled when no update remains pending.' );
+	expect( in_array( 'google-site-kit/google-site-kit.php', $result['plugins']['updated'], true ), 'Reconciled plugin must be recorded as updated: ' . var_export( $result['plugins']['updated'], true ) );
+	expect( 0 < count( $logger->entries ), 'A reconciled raw updater failure must be logged.' );
 
 	$service = make_service();
 	$service->plugins = array( 'click-to-chat-for-whatsapp/click-to-chat.php' => (object) array() );
@@ -120,8 +130,9 @@ namespace AGSyncBridge {
 	expect( empty( $service->calls ) && 0 === $service->dependencies_loaded, 'Malformed partial maintenance must not start package update work.' );
 
 	$sync_source = file_get_contents( dirname( __DIR__ ) . '/includes/class-sync-service.php' );
-	expect( false !== strpos( $sync_source, "'scope' => \$is_partial_push ? 'partial' : 'full'" ), 'Sync orchestration must pass the resolved deployment scope to maintenance.' );
+	expect( false !== strpos( $sync_source, "'scope' => empty( \$partial_paths ) ? 'full' : 'partial'" ), 'Sync orchestration must pass the resolved deployment scope to maintenance.' );
 	expect( false !== strpos( $sync_source, "'paths' => \$partial_paths" ), 'Sync orchestration must pass normalized partial paths to maintenance.' );
+	expect( strpos( $sync_source, '$this->prepare_push( $partial_paths )' ) < strpos( $sync_source, '$this->lock_manager->acquire( \'push\' )' ), 'Full maintenance must complete before the push lock is acquired.' );
 
 	echo "local maintenance service: ok\n";
 }

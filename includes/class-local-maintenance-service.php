@@ -84,12 +84,26 @@ class Local_Maintenance_Service {
 			return $plugin_result;
 		}
 		$summary['plugins']['updated'] = $plugin_result;
+		$this->refresh_plugin_updates();
+		$plugin_residue = array_intersect_key( $this->plugin_updates(), $plugin_updates );
+		if ( ! empty( $plugin_residue ) ) {
+			return $this->residual_updates_error( 'plugin', array_keys( $plugin_residue ) );
+		}
+		$summary['plugins']['updated']    = array_values( array_unique( array_merge( $plugin_result, array_keys( $plugin_updates ) ) ) );
+		$summary['plugins']['remaining']  = 0;
 
 		$theme_result = $this->upgrade_themes( array_keys( $theme_updates ) );
 		if ( is_wp_error( $theme_result ) ) {
 			return $theme_result;
 		}
 		$summary['themes']['updated'] = $theme_result;
+		$this->refresh_theme_updates();
+		$theme_residue = array_intersect_key( $this->theme_updates(), $theme_updates );
+		if ( ! empty( $theme_residue ) ) {
+			return $this->residual_updates_error( 'theme', array_keys( $theme_residue ) );
+		}
+		$summary['themes']['updated']   = array_values( array_unique( array_merge( $theme_result, array_keys( $theme_updates ) ) ) );
+		$summary['themes']['remaining'] = 0;
 
 		// Refresh language-pack metadata after code updates; new versions can
 		// declare newer translations than the first check returned.
@@ -104,6 +118,14 @@ class Local_Maintenance_Service {
 			return $translation_result;
 		}
 		$summary['translations']['updated'] = $translation_result;
+		$this->refresh_translation_updates();
+		$translation_residue = function_exists( 'wp_get_translation_updates' ) ? wp_get_translation_updates() : array();
+		$translation_residue = is_array( $translation_residue ) ? $translation_residue : array();
+		if ( ! empty( $translation_residue ) ) {
+			return $this->residual_updates_error( 'translation', $this->translation_identifiers( $translation_residue ) );
+		}
+		$summary['translations']['remaining'] = 0;
+		$summary['verified_clean']             = true;
 
 		if ( function_exists( 'wp_clean_plugins_cache' ) ) {
 			wp_clean_plugins_cache( true );
@@ -202,6 +224,26 @@ class Local_Maintenance_Service {
 		return is_object( $updates ) && is_array( $updates->response ) ? $updates->response : array();
 	}
 
+	protected function refresh_plugin_updates() {
+		if ( function_exists( 'wp_clean_plugins_cache' ) ) {
+			wp_clean_plugins_cache( true );
+		}
+		wp_update_plugins();
+	}
+
+	protected function refresh_theme_updates() {
+		if ( function_exists( 'wp_clean_themes_cache' ) ) {
+			wp_clean_themes_cache( true );
+		}
+		wp_update_themes();
+	}
+
+	protected function refresh_translation_updates() {
+		if ( function_exists( 'wp_update_languages' ) ) {
+			wp_update_languages();
+		}
+	}
+
 	/** @return array|WP_Error */
 	protected function upgrade_plugins( array $plugins ) {
 		if ( empty( $plugins ) ) {
@@ -248,12 +290,44 @@ class Local_Maintenance_Service {
 				$completed[] = (string) $identifier;
 				continue;
 			}
-			if ( is_wp_error( $result ) ) {
-				return new WP_Error( 'ag_sync_bridge_maintenance_failed', sprintf( __( 'The %1$s update failed for %2$s: %3$s', 'ag-sync-bridge' ), $kind, $identifier, $result->get_error_message() ), array( 'kind' => $kind, 'identifier' => $identifier ) );
-			}
-			return new WP_Error( 'ag_sync_bridge_maintenance_failed', sprintf( __( 'The %1$s update failed for %2$s.', 'ag-sync-bridge' ), $kind, $identifier ), array( 'kind' => $kind, 'identifier' => $identifier ) );
+			// WordPress upgraders occasionally return false/WP_Error after the
+			// package has actually reached the requested version. The caller
+			// refreshes authoritative update metadata and fails closed only when
+			// the identifier is still pending.
+			$this->logger->warning(
+				'Package updater returned an unconfirmed result; post-update state will decide.',
+				array(
+					'kind'       => $kind,
+					'identifier' => (string) $identifier,
+					'error'      => is_wp_error( $result ) ? $result->get_error_message() : '',
+				)
+			);
 		}
 
 		return $completed;
+	}
+
+	private function residual_updates_error( $kind, array $identifiers ) {
+		return new WP_Error(
+			'ag_sync_bridge_maintenance_residual_updates',
+			sprintf( __( 'Pre-push update verification failed: %1$s updates are still pending for %2$s.', 'ag-sync-bridge' ), $kind, implode( ', ', $identifiers ) ),
+			array( 'kind' => $kind, 'identifiers' => array_values( $identifiers ) )
+		);
+	}
+
+	private function translation_identifiers( array $translations ) {
+		$identifiers = array();
+		foreach ( $translations as $index => $translation ) {
+			$translation = (array) $translation;
+			$parts = array_filter(
+				array(
+					isset( $translation['type'] ) ? $translation['type'] : '',
+					isset( $translation['slug'] ) ? $translation['slug'] : '',
+					isset( $translation['language'] ) ? $translation['language'] : '',
+				)
+			);
+			$identifiers[] = empty( $parts ) ? (string) $index : implode( ':', $parts );
+		}
+		return $identifiers;
 	}
 }
