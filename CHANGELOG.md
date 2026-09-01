@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.79
+
+- Read the verified SQL byte total in the database import path so the live import percentage advances through the 20-55% database interval instead of remaining at its fallback checkpoint.
+
 ## 0.1.78
 
 - Persist the signed remote-import monitor locally so wp-admin can keep showing live stage, heartbeat progress, and terminal state after the launching HTTP request ends.

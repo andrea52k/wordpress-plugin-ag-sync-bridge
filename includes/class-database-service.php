@@ -34,7 +34,6 @@ class Database_Service {
 
 		$file_path = normalize_path( $file_path );
 		$progress_callback = array_get( $args, 'progress_callback', null );
-		$expected_size_bytes = (int) array_get( $args, 'expected_size_bytes', 0 );
 		$cancellation_check = array_get( $args, 'cancellation_check', null );
 
 		if ( $this->can_use_cli_tools() ) {
@@ -68,6 +67,7 @@ class Database_Service {
 		$source_prefix = (string) array_get( $args, 'source_prefix', '' );
 		$target_prefix = (string) array_get( $args, 'target_prefix', '' );
 		$progress_callback = array_get( $args, 'progress_callback', null );
+		$expected_size_bytes = (int) array_get( $args, 'expected_size_bytes', 0 );
 		$trusted_verified_stream = ! empty( $args['trusted_verified_database_stream'] );
 		$is_zip_stream = 0 === strpos( $file_path, 'zip://' );
 		$valid_prefixes = preg_match( '/^[A-Za-z0-9_]+$/', $source_prefix ) && preg_match( '/^[A-Za-z0-9_]+$/', $target_prefix );

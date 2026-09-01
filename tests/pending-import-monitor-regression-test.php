@@ -20,6 +20,11 @@ expect_pending_monitor( false === strpos( $handler, '$this->run_async_import_sna
 expect_pending_monitor( false !== strpos( $handler, "'recovery_dispatched'     => true" ) && false !== strpos( $handler, "202\n" ), 'Recovery must return an accepted 202 response.' );
 expect_pending_monitor( false !== strpos( $handler, "array_get( \$operation, 'schedule_args', array() )" ), 'Recovery must preserve the exact stored import contract.' );
 expect_pending_monitor( false !== strpos( $database, "'expected_size_bytes' => \$expected_size_bytes" ), 'Database heartbeat must expose its verified total byte count.' );
+$import_start = strpos( $database, 'public function import_from_file' );
+$import_end = strpos( $database, 'public function get_table_prefix', $import_start );
+$import_method = substr( $database, $import_start, $import_end - $import_start );
+expect_pending_monitor( false !== strpos( $import_method, "\$expected_size_bytes = (int) array_get( \$args, 'expected_size_bytes', 0 );" ), 'Database import must read the verified total byte count from its arguments.' );
+expect_pending_monitor( false !== strpos( $import_method, 'import_via_php( $import_path, $target_prefix, $progress_callback, $expected_size_bytes, $source_prefix )' ), 'Database import must pass the verified total into the PHP stream importer.' );
 expect_pending_monitor( false !== strpos( $rest, "20 + (int) floor( min( 1, \$processed / \$expected ) * 35 )" ), 'Database byte progress must map into the remote 20-55 percent interval.' );
 expect_pending_monitor( false !== strpos( $admin, 'if (panel && !panel.hidden)' ), 'Admin monitor must resume polling after page reload.' );
 expect_pending_monitor( false !== strpos( $admin, 'operationResolved = false;') && false !== strpos( $admin, 'pollStatus();' ), 'Transport failure must hand off to independent status polling.' );
