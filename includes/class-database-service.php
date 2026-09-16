@@ -13,6 +13,17 @@ class Database_Service {
 	const IMPORT_NET_TIMEOUT              = 120;
 	const URL_REPLACE_BATCH_SIZE          = 500;
 	const GOOGLE_SITE_KIT_OPTION_PREFIX = 'googlesitekit_';
+	const TARGET_ENVIRONMENT_OPTION_NAMES = array(
+		'fluentmail-settings',
+	);
+	const TARGET_ENVIRONMENT_OPTION_PREFIXES = array(
+		'_fluentmail_',
+		'_fluentsmtp_',
+		'_fluent_smtp_',
+		'_fsmtp_',
+		'litespeed.',
+		'litespeed_',
+	);
 
 	/**
 	 * @var Config
@@ -173,6 +184,11 @@ class Database_Service {
 			if ( is_wp_error( $google_site_kit_options ) ) {
 				return $google_site_kit_options;
 			}
+
+			$target_environment_options = $this->capture_target_environment_options();
+			if ( is_wp_error( $target_environment_options ) ) {
+				return $target_environment_options;
+			}
 		}
 
 		$state = array(
@@ -186,6 +202,7 @@ class Database_Service {
 		if ( $include_user_sessions ) {
 			$state['user_sessions'] = $user_sessions;
 			$state['google_site_kit_options'] = $google_site_kit_options;
+			$state['target_environment_options'] = $target_environment_options;
 		}
 
 		return $state;
@@ -296,6 +313,55 @@ class Database_Service {
 		return $options;
 	}
 
+	/**
+	 * Capture target-only mail and cache configuration before replacing the DB.
+	 *
+	 * SMTP credentials and LiteSpeed settings are environment-specific. They
+	 * must never travel from live to local or from local to live in a full sync.
+	 * Values remain in memory and are not written to snapshots or logs.
+	 *
+	 * @return array|WP_Error
+	 */
+	public function capture_target_environment_options() {
+		global $wpdb;
+
+		if ( ! $this->table_exists( $wpdb->options ) ) {
+			return new WP_Error(
+				'ag_sync_bridge_target_environment_capture_table_missing',
+				__( 'Unable to preserve target mail and cache settings because the WordPress options table is unavailable.', 'ag-sync-bridge' )
+			);
+		}
+
+		$where = $this->target_environment_options_where_clause();
+		$wpdb->last_error = '';
+		$rows = $wpdb->get_results(
+			'SELECT option_name, option_value, autoload FROM ' . $this->quote_identifier( $wpdb->options ) . ' WHERE ' . $where . ' ORDER BY option_id ASC',
+			ARRAY_A
+		);
+
+		if ( ! empty( $wpdb->last_error ) || ! is_array( $rows ) ) {
+			return new WP_Error(
+				'ag_sync_bridge_target_environment_capture_failed',
+				$wpdb->last_error ? (string) $wpdb->last_error : __( 'Unable to read target mail and cache settings before database import.', 'ag-sync-bridge' )
+			);
+		}
+
+		$options = array();
+		foreach ( $rows as $row ) {
+			$option_name = (string) array_get( $row, 'option_name', '' );
+			if ( ! $this->is_target_environment_option_name( $option_name ) || ! array_key_exists( 'option_value', $row ) || ! array_key_exists( 'autoload', $row ) ) {
+				continue;
+			}
+			$options[] = array(
+				'option_name'  => $option_name,
+				'option_value' => (string) $row['option_value'],
+				'autoload'     => (string) $row['autoload'],
+			);
+		}
+
+		return $options;
+	}
+
 	public function get_active_plugins() {
 		return $this->sanitize_active_plugins( get_option( 'active_plugins', array() ) );
 	}
@@ -366,11 +432,24 @@ class Database_Service {
 			}
 		}
 
+		$target_environment_restore = array(
+			'captured' => 0,
+			'restored' => 0,
+		);
+		if ( array_key_exists( 'target_environment_options', $state ) ) {
+			$target_environment_restore = $this->restore_target_environment_options( (array) $state['target_environment_options'] );
+			if ( is_wp_error( $target_environment_restore ) ) {
+				wp_cache_flush();
+				return $target_environment_restore;
+			}
+		}
+
 		wp_cache_flush();
 
 		return array(
 			'user_sessions'           => $session_restore,
 			'google_site_kit_options' => $google_site_kit_restore,
+			'target_environment_options' => $target_environment_restore,
 		);
 	}
 
@@ -592,6 +671,115 @@ class Database_Service {
 			'captured' => count( $options ),
 			'restored' => count( $validated ),
 		);
+	}
+
+	/**
+	 * Replace imported SMTP/LiteSpeed options with the target-side values.
+	 *
+	 * @param array $options Captured target options.
+	 * @return array|WP_Error
+	 */
+	public function restore_target_environment_options( array $options ) {
+		global $wpdb;
+
+		if ( ! $this->table_exists( $wpdb->options ) ) {
+			return new WP_Error(
+				'ag_sync_bridge_target_environment_restore_table_missing',
+				__( 'Unable to restore target mail and cache settings because the imported WordPress options table is unavailable.', 'ag-sync-bridge' )
+			);
+		}
+
+		$validated = array();
+		foreach ( $options as $option ) {
+			$option_name = (string) array_get( $option, 'option_name', '' );
+			if ( ! $this->is_target_environment_option_name( $option_name ) || ! array_key_exists( 'option_value', $option ) || ! array_key_exists( 'autoload', $option ) ) {
+				return new WP_Error(
+					'ag_sync_bridge_target_environment_restore_state_invalid',
+					__( 'Captured target mail or cache state is invalid.', 'ag-sync-bridge' )
+				);
+			}
+			$validated[] = array(
+				'option_name'  => $option_name,
+				'option_value' => (string) $option['option_value'],
+				'autoload'     => (string) $option['autoload'],
+			);
+		}
+
+		if ( false === $wpdb->query( 'START TRANSACTION' ) ) {
+			return new WP_Error(
+				'ag_sync_bridge_target_environment_restore_transaction_failed',
+				$wpdb->last_error ? (string) $wpdb->last_error : __( 'Unable to start target mail and cache restoration.', 'ag-sync-bridge' )
+			);
+		}
+
+		$committed = false;
+		try {
+			$deleted = $wpdb->query( 'DELETE FROM ' . $this->quote_identifier( $wpdb->options ) . ' WHERE ' . $this->target_environment_options_where_clause() );
+			if ( false === $deleted ) {
+				return new WP_Error(
+					'ag_sync_bridge_target_environment_source_cleanup_failed',
+					$wpdb->last_error ? (string) $wpdb->last_error : __( 'Unable to remove imported mail and cache settings.', 'ag-sync-bridge' )
+				);
+			}
+
+			foreach ( $validated as $option ) {
+				$inserted = $wpdb->query(
+					$wpdb->prepare(
+						'INSERT INTO ' . $this->quote_identifier( $wpdb->options ) . ' (option_name, option_value, autoload) VALUES (%s, %s, %s)',
+						$option['option_name'],
+						$option['option_value'],
+						$option['autoload']
+					)
+				);
+				if ( false === $inserted ) {
+					return new WP_Error(
+						'ag_sync_bridge_target_environment_restore_failed',
+						$wpdb->last_error ? (string) $wpdb->last_error : __( 'Unable to restore a target mail or cache setting.', 'ag-sync-bridge' )
+					);
+				}
+			}
+
+			if ( false === $wpdb->query( 'COMMIT' ) ) {
+				return new WP_Error(
+					'ag_sync_bridge_target_environment_restore_commit_failed',
+					$wpdb->last_error ? (string) $wpdb->last_error : __( 'Unable to commit target mail and cache restoration.', 'ag-sync-bridge' )
+				);
+			}
+			$committed = true;
+		} finally {
+			if ( ! $committed ) {
+				$wpdb->query( 'ROLLBACK' );
+			}
+		}
+
+		return array(
+			'captured' => count( $options ),
+			'restored' => count( $validated ),
+		);
+	}
+
+	private function is_target_environment_option_name( $option_name ) {
+		if ( in_array( $option_name, self::TARGET_ENVIRONMENT_OPTION_NAMES, true ) ) {
+			return true;
+		}
+		foreach ( self::TARGET_ENVIRONMENT_OPTION_PREFIXES as $prefix ) {
+			if ( 0 === strpos( $option_name, $prefix ) ) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private function target_environment_options_where_clause() {
+		global $wpdb;
+		$clauses = array();
+		foreach ( self::TARGET_ENVIRONMENT_OPTION_NAMES as $option_name ) {
+			$clauses[] = $wpdb->prepare( 'option_name = %s', $option_name );
+		}
+		foreach ( self::TARGET_ENVIRONMENT_OPTION_PREFIXES as $prefix ) {
+			$clauses[] = $wpdb->prepare( 'option_name LIKE %s', $wpdb->esc_like( $prefix ) . '%' );
+		}
+		return '(' . implode( ' OR ', $clauses ) . ')';
 	}
 
 	public function sync_active_plugins( array $desired_plugins ) {

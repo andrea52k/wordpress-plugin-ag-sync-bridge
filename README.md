@@ -20,7 +20,7 @@ Se devi modificare o gestire il plugin da un agente automatico, leggi prima:
 
 ## Versione
 
-Versione plugin: `0.1.57`
+Versione plugin: `0.1.83`
 
 Slug tecnico WordPress: `ag-sync-bridge`
 
@@ -35,6 +35,7 @@ Lo slug resta invariato per permettere aggiornamenti sicuri delle installazioni 
 - `wp-content/themes`
 - `wp-content/mu-plugins`
 - `wp-config.php` con merge sicuro dei valori ambiente-specifici sul target
+- impostazioni target di FluentSMTP e LiteSpeed preservate durante i full import
 - `.htaccess` opzionale
 - root text sicuri come `robots.txt`, `llms.txt`, `llms-full.txt`, `ads.txt`, `app-ads.txt` e `humans.txt`
 - Replace URL nei dataset V4MPG supportati (`.xlsx` e file testuali) durante l'import

@@ -161,6 +161,11 @@ class Import_Service {
 					return $this->with_failure_context( $google_site_kit_restore, 'google_site_kit_restore', true );
 				}
 
+				$target_environment_restore = $this->database->restore_target_environment_options( array_get( $current_state, 'target_environment_options', array() ) );
+				if ( is_wp_error( $target_environment_restore ) ) {
+					return $this->with_failure_context( $target_environment_restore, 'target_environment_restore', true );
+				}
+
 				$cancelled = $this->check_cancellation( $args, 'after_database_import', true );
 				if ( is_wp_error( $cancelled ) ) {
 					return $cancelled;
