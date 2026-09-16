@@ -321,6 +321,7 @@ class Sync_Service {
 				return $partial_paths;
 			}
 			$is_partial_pull = ! empty( $partial_paths );
+			$skip_local_backup = ! empty( $args['skip_local_backup'] );
 			$cancellation_check   = function ( $stage = '', $rollback_required = false ) {
 				unset( $stage );
 				return ! $rollback_required && $this->lock_manager->is_cancel_requested();
@@ -330,6 +331,12 @@ class Sync_Service {
 				return new WP_Error(
 					'ag_sync_bridge_partial_pull_existing_snapshot',
 					__( 'Partial pull cannot reuse an existing snapshot. Remove --use-existing-snapshot so the live creates a fresh package for the exact requested paths.', 'ag-sync-bridge' )
+				);
+			}
+			if ( $is_partial_pull && $skip_local_backup ) {
+				return new WP_Error(
+					'ag_sync_bridge_partial_pull_backup_required',
+					__( 'Partial pulls require a verified local backup and cannot skip it.', 'ag-sync-bridge' )
 				);
 			}
 
@@ -362,11 +369,15 @@ class Sync_Service {
 				'pull',
 				5,
 				'local-backup',
-				$is_partial_pull
+				$skip_local_backup
+					? __( 'Backup locale saltato su richiesta esplicita...', 'ag-sync-bridge' )
+					: ( $is_partial_pull
 					? __( 'Creazione backup locale parziale verificato...', 'ag-sync-bridge' )
-					: __( 'Creazione backup locale di sicurezza...', 'ag-sync-bridge' )
+					: __( 'Creazione backup locale di sicurezza...', 'ag-sync-bridge' ) )
 			);
-			$local_backup = $is_partial_pull
+			$local_backup = $skip_local_backup
+				? array( 'skipped' => true, 'reason' => 'explicit_cli_override' )
+				: ( $is_partial_pull
 				? $this->create_partial_backup(
 					$partial_paths,
 					'partial-pre-pull-backup',
@@ -383,7 +394,7 @@ class Sync_Service {
 						'trigger'            => $trigger ? $trigger . '-pull' : 'pull',
 						'cancellation_check' => $cancellation_check,
 					)
-				);
+				) );
 			if ( is_wp_error( $local_backup ) ) {
 				$this->fail_operation( 'pull', $local_backup );
 				return $local_backup;
@@ -410,7 +421,10 @@ class Sync_Service {
 				);
 			}
 
-			$this->logger->info( 'Local pre-pull backup completed.', array( 'backup' => array_get( $local_backup, 'basename', '' ) ) );
+			$this->logger->info(
+				$skip_local_backup ? 'Local pre-pull backup skipped by explicit CLI override.' : 'Local pre-pull backup completed.',
+				array( 'backup' => array_get( $local_backup, 'basename', '' ) )
+			);
 			$this->update_operation( 'pull', 20, 'remote-snapshot', $use_existing_snapshot ? __( 'Recupero snapshot disponibile dal live...', 'ag-sync-bridge' ) : __( 'Richiesta snapshot dal live...', 'ag-sync-bridge' ) );
 			$remote_snapshot = $use_existing_snapshot
 				? $this->http_client->get_latest_snapshot()

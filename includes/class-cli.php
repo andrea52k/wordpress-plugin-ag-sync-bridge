@@ -192,9 +192,19 @@ if ( defined( 'WP_CLI' ) && WP_CLI ) {
 		 *
 		 * [--paths=<paths>]
 		 * : Comma/newline separated relative paths for a fresh file-only partial pull. Cannot be combined with --use-existing-snapshot.
+		 *
+		 * [--skip-local-backup]
+		 * : Skip the automatic local pre-pull backup. Full pulls only.
+		 *
+		 * [--confirm-skip-local-backup=<text>]
+		 * : Must be exactly "SKIP LOCAL BACKUP" when --skip-local-backup is used.
 		 */
 		public function pull( $args, $assoc_args ) {
 			$paths = self::parse_path_list_arg( array_get( $assoc_args, 'paths', '' ) );
+			$skip_local_backup = ! empty( $assoc_args['skip-local-backup'] );
+			if ( $skip_local_backup && 'SKIP LOCAL BACKUP' !== (string) array_get( $assoc_args, 'confirm-skip-local-backup', '' ) ) {
+				\WP_CLI::error( 'Skipping the local pre-pull backup requires --confirm-skip-local-backup="SKIP LOCAL BACKUP".' );
+			}
 			if ( ! empty( $paths ) ) {
 				\WP_CLI::log( 'Partial pull paths: ' . implode( ', ', $paths ) );
 			}
@@ -202,6 +212,7 @@ if ( defined( 'WP_CLI' ) && WP_CLI ) {
 				array(
 					'use_existing_snapshot' => ! empty( $assoc_args['use-existing-snapshot'] ),
 					'partial_paths'         => $paths,
+					'skip_local_backup'     => $skip_local_backup,
 				)
 			);
 

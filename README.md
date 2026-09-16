@@ -220,6 +220,8 @@ wp agsync doctor --deep
 wp agsync snapshot --type=manual
 wp agsync snapshot --type=partial-test --paths=robots.txt
 wp agsync pull
+wp agsync pull --skip-local-backup --confirm-skip-local-backup="SKIP LOCAL BACKUP"
+wp agsync pull --use-existing-snapshot --skip-local-backup --confirm-skip-local-backup="SKIP LOCAL BACKUP"
 wp agsync push
 wp agsync push --paths=robots.txt
 wp agsync push --paths=.htaccess
