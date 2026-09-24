@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.84
+
+- Preserve target-side Google Site Kit user authentication metadata across full database imports, matching users by login and removing imported source credentials transactionally.
+
 ## 0.1.81
 
 - Preserve target-side WordPress administrator sessions across full database imports, while removing source-side session tokens from the imported database.

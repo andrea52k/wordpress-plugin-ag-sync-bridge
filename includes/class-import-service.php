@@ -161,6 +161,11 @@ class Import_Service {
 					return $this->with_failure_context( $google_site_kit_restore, 'google_site_kit_restore', true );
 				}
 
+				$google_site_kit_user_meta_restore = $this->database->restore_google_site_kit_user_meta( array_get( $current_state, 'google_site_kit_user_meta', array() ) );
+				if ( is_wp_error( $google_site_kit_user_meta_restore ) ) {
+					return $this->with_failure_context( $google_site_kit_user_meta_restore, 'google_site_kit_user_meta_restore', true );
+				}
+
 				$target_environment_restore = $this->database->restore_target_environment_options( array_get( $current_state, 'target_environment_options', array() ) );
 				if ( is_wp_error( $target_environment_restore ) ) {
 					return $this->with_failure_context( $target_environment_restore, 'target_environment_restore', true );

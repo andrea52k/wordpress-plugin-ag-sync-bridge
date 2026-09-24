@@ -13,6 +13,7 @@ class Database_Service {
 	const IMPORT_NET_TIMEOUT              = 120;
 	const URL_REPLACE_BATCH_SIZE          = 500;
 	const GOOGLE_SITE_KIT_OPTION_PREFIX = 'googlesitekit_';
+	const GOOGLE_SITE_KIT_USER_META_PREFIX = 'googlesitekit';
 	const TARGET_ENVIRONMENT_OPTION_NAMES = array(
 		'fluentmail-settings',
 	);
@@ -185,6 +186,11 @@ class Database_Service {
 				return $google_site_kit_options;
 			}
 
+			$google_site_kit_user_meta = $this->capture_google_site_kit_user_meta();
+			if ( is_wp_error( $google_site_kit_user_meta ) ) {
+				return $google_site_kit_user_meta;
+			}
+
 			$target_environment_options = $this->capture_target_environment_options();
 			if ( is_wp_error( $target_environment_options ) ) {
 				return $target_environment_options;
@@ -202,6 +208,7 @@ class Database_Service {
 		if ( $include_user_sessions ) {
 			$state['user_sessions'] = $user_sessions;
 			$state['google_site_kit_options'] = $google_site_kit_options;
+			$state['google_site_kit_user_meta'] = $google_site_kit_user_meta;
 			$state['target_environment_options'] = $target_environment_options;
 		}
 
@@ -311,6 +318,58 @@ class Database_Service {
 		}
 
 		return $options;
+	}
+
+	/**
+	 * Capture per-user Google Site Kit authentication state on the target.
+	 *
+	 * User IDs may differ after import, so rows are bound to user_login and the
+	 * blog-prefix-independent metadata suffix. Tokens remain in memory only.
+	 *
+	 * @return array|WP_Error
+	 */
+	public function capture_google_site_kit_user_meta() {
+		global $wpdb;
+
+		if ( ! $this->table_exists( $wpdb->users ) || ! $this->table_exists( $wpdb->usermeta ) ) {
+			return new WP_Error(
+				'ag_sync_bridge_google_site_kit_user_meta_capture_tables_missing',
+				__( 'Unable to preserve target Google Site Kit user authentication because the WordPress user tables are unavailable.', 'ag-sync-bridge' )
+			);
+		}
+
+		$meta_prefix = $wpdb->prefix . self::GOOGLE_SITE_KIT_USER_META_PREFIX;
+		$wpdb->last_error = '';
+		$rows = $wpdb->get_results(
+			$wpdb->prepare(
+				'SELECT u.user_login, um.meta_key, um.meta_value FROM ' . $this->quote_identifier( $wpdb->users ) . ' u INNER JOIN ' . $this->quote_identifier( $wpdb->usermeta ) . ' um ON um.user_id = u.ID WHERE um.meta_key LIKE %s ORDER BY u.user_login ASC, um.umeta_id ASC',
+				$wpdb->esc_like( $meta_prefix ) . '%'
+			),
+			ARRAY_A
+		);
+
+		if ( ! empty( $wpdb->last_error ) || ! is_array( $rows ) ) {
+			return new WP_Error(
+				'ag_sync_bridge_google_site_kit_user_meta_capture_failed',
+				$wpdb->last_error ? (string) $wpdb->last_error : __( 'Unable to read target Google Site Kit user authentication before database import.', 'ag-sync-bridge' )
+			);
+		}
+
+		$captured = array();
+		foreach ( $rows as $row ) {
+			$user_login = (string) array_get( $row, 'user_login', '' );
+			$meta_key = (string) array_get( $row, 'meta_key', '' );
+			if ( '' === $user_login || 0 !== strpos( $meta_key, $meta_prefix ) || ! array_key_exists( 'meta_value', $row ) ) {
+				continue;
+			}
+			$captured[] = array(
+				'user_login'     => $user_login,
+				'meta_key_suffix' => substr( $meta_key, strlen( $wpdb->prefix ) ),
+				'meta_value'     => (string) $row['meta_value'],
+			);
+		}
+
+		return $captured;
 	}
 
 	/**
@@ -432,6 +491,19 @@ class Database_Service {
 			}
 		}
 
+		$google_site_kit_user_meta_restore = array(
+			'captured' => 0,
+			'restored' => 0,
+			'skipped'  => 0,
+		);
+		if ( array_key_exists( 'google_site_kit_user_meta', $state ) ) {
+			$google_site_kit_user_meta_restore = $this->restore_google_site_kit_user_meta( (array) $state['google_site_kit_user_meta'] );
+			if ( is_wp_error( $google_site_kit_user_meta_restore ) ) {
+				wp_cache_flush();
+				return $google_site_kit_user_meta_restore;
+			}
+		}
+
 		$target_environment_restore = array(
 			'captured' => 0,
 			'restored' => 0,
@@ -449,6 +521,7 @@ class Database_Service {
 		return array(
 			'user_sessions'           => $session_restore,
 			'google_site_kit_options' => $google_site_kit_restore,
+			'google_site_kit_user_meta' => $google_site_kit_user_meta_restore,
 			'target_environment_options' => $target_environment_restore,
 		);
 	}
@@ -670,6 +743,115 @@ class Database_Service {
 		return array(
 			'captured' => count( $options ),
 			'restored' => count( $validated ),
+		);
+	}
+
+	/**
+	 * Replace imported Site Kit user metadata with target-side credentials.
+	 *
+	 * @param array $rows Captured rows keyed by stable user login.
+	 * @return array|WP_Error
+	 */
+	public function restore_google_site_kit_user_meta( array $rows ) {
+		global $wpdb;
+
+		if ( ! $this->table_exists( $wpdb->users ) || ! $this->table_exists( $wpdb->usermeta ) ) {
+			return new WP_Error(
+				'ag_sync_bridge_google_site_kit_user_meta_restore_tables_missing',
+				__( 'Unable to restore target Google Site Kit user authentication because the imported user tables are unavailable.', 'ag-sync-bridge' )
+			);
+		}
+
+		$resolved = array();
+		$skipped = 0;
+		foreach ( $rows as $row ) {
+			$user_login = (string) array_get( $row, 'user_login', '' );
+			$suffix = (string) array_get( $row, 'meta_key_suffix', '' );
+			if ( '' === $user_login || 0 !== strpos( $suffix, self::GOOGLE_SITE_KIT_USER_META_PREFIX ) || ! array_key_exists( 'meta_value', $row ) ) {
+				return new WP_Error(
+					'ag_sync_bridge_google_site_kit_user_meta_restore_state_invalid',
+					__( 'Captured Google Site Kit user authentication state is invalid.', 'ag-sync-bridge' )
+				);
+			}
+
+			$wpdb->last_error = '';
+			$user_id = $wpdb->get_var(
+				$wpdb->prepare(
+					'SELECT ID FROM ' . $this->quote_identifier( $wpdb->users ) . ' WHERE user_login = %s LIMIT 1',
+					$user_login
+				)
+			);
+			if ( ! empty( $wpdb->last_error ) ) {
+				return new WP_Error( 'ag_sync_bridge_google_site_kit_user_lookup_failed', (string) $wpdb->last_error );
+			}
+			if ( ! $user_id ) {
+				$skipped++;
+				continue;
+			}
+
+			$resolved[] = array(
+				'user_id'    => (int) $user_id,
+				'meta_key'   => $wpdb->prefix . $suffix,
+				'meta_value' => (string) $row['meta_value'],
+			);
+		}
+
+		if ( false === $wpdb->query( 'START TRANSACTION' ) ) {
+			return new WP_Error(
+				'ag_sync_bridge_google_site_kit_user_meta_restore_transaction_failed',
+				$wpdb->last_error ? (string) $wpdb->last_error : __( 'Unable to start target Google Site Kit user-authentication restoration.', 'ag-sync-bridge' )
+			);
+		}
+
+		$committed = false;
+		try {
+			$deleted = $wpdb->query(
+				$wpdb->prepare(
+					'DELETE FROM ' . $this->quote_identifier( $wpdb->usermeta ) . ' WHERE meta_key LIKE %s',
+					$wpdb->esc_like( $wpdb->prefix . self::GOOGLE_SITE_KIT_USER_META_PREFIX ) . '%'
+				)
+			);
+			if ( false === $deleted ) {
+				return new WP_Error(
+					'ag_sync_bridge_google_site_kit_user_meta_source_cleanup_failed',
+					$wpdb->last_error ? (string) $wpdb->last_error : __( 'Unable to remove imported Google Site Kit user authentication.', 'ag-sync-bridge' )
+				);
+			}
+
+			foreach ( $resolved as $row ) {
+				$inserted = $wpdb->query(
+					$wpdb->prepare(
+						'INSERT INTO ' . $this->quote_identifier( $wpdb->usermeta ) . ' (user_id, meta_key, meta_value) VALUES (%d, %s, %s)',
+						$row['user_id'],
+						$row['meta_key'],
+						$row['meta_value']
+					)
+				);
+				if ( false === $inserted ) {
+					return new WP_Error(
+						'ag_sync_bridge_google_site_kit_user_meta_restore_failed',
+						$wpdb->last_error ? (string) $wpdb->last_error : __( 'Unable to restore target Google Site Kit user authentication.', 'ag-sync-bridge' )
+					);
+				}
+			}
+
+			if ( false === $wpdb->query( 'COMMIT' ) ) {
+				return new WP_Error(
+					'ag_sync_bridge_google_site_kit_user_meta_restore_commit_failed',
+					$wpdb->last_error ? (string) $wpdb->last_error : __( 'Unable to commit target Google Site Kit user-authentication restoration.', 'ag-sync-bridge' )
+				);
+			}
+			$committed = true;
+		} finally {
+			if ( ! $committed ) {
+				$wpdb->query( 'ROLLBACK' );
+			}
+		}
+
+		return array(
+			'captured' => count( $rows ),
+			'restored' => count( $resolved ),
+			'skipped'  => $skipped,
 		);
 	}
 
