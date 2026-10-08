@@ -1,0 +1,85 @@
+<?php
+namespace AGSyncBridge {
+ class Config {private $storage;public function __construct($storage){$this->storage=$storage;}public function get_storage_dir(){return $this->storage;}public function get_role(){return 'remote';}}
+ class Logger {}
+ class Remote_Operation_Runtime {public function __construct($config,$logger){}}
+ class FullTextDb {
+  public $prefix;public $cas_fault=false;private $inner;
+  public function __construct($inner,$prefix){$this->inner=$inner;$this->prefix=$prefix;}
+  public function __get($key){return $this->inner->$key;}
+  public function __call($name,$args){return $this->inner->$name(...$args);}
+  public function query($sql){if($this->cas_fault&&strpos($sql,'UPDATE `'.$this->prefix.'mpg_runtime_dataset_rows` SET row_data=')===0)return 0;return $this->inner->query($sql);}
+ }
+}
+namespace {
+ $expected_root=getenv('AG_SYNC_E2E_WP_ROOT');$host=(string)wp_parse_url(home_url(),PHP_URL_HOST);
+ if(!defined('WP_CLI')||!WP_CLI||!$expected_root||realpath(ABSPATH)!==realpath($expected_root)||!($host==='localhost'||$host==='127.0.0.1'||substr($host,-10)==='.localhost'))throw new \RuntimeException('Explicit local E2E root required.');
+ require_once dirname(__DIR__).'/includes/class-v4mpg-table-deploy-service.php';
+ global $wpdb;
+ $prefix='agsb_fte2e_'.bin2hex(random_bytes(4)).'_';
+ $tables=array_map(static fn($suffix)=>$prefix.$suffix,['mpg_runtime_dataset_versions','mpg_runtime_dataset_rows','mpg_runtime_projects','mpg_projects','mpg_location_index']);
+ $storage=sys_get_temp_dir().'/agsb-fte2e-'.bin2hex(random_bytes(4));wp_mkdir_p($storage.'/temp');
+ $expect=static function($ok,$message){if(!$ok)throw new \RuntimeException($message);};
+ $json=static fn($value)=>wp_json_encode($value,JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE);
+ $cell_hash=static fn($value)=>hash('sha256',null===$value?"v4mpg-content-v1\0null":"v4mpg-content-v1\0text\0".$value);
+ $ordered=static function($rows){$ctx=hash_init('sha256');foreach($rows as $row)hash_update($ctx,$row['row_index']."\0".$row['url_path']."\0".$row['row_sha256']."\n");return hash_final($ctx);};
+ try {
+  $wpdb->query("CREATE TABLE `{$tables[0]}` (id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,project_id BIGINT NOT NULL,dataset_id VARCHAR(64) NOT NULL,version_key VARCHAR(190) NOT NULL,source_sha256 CHAR(64) NOT NULL,dataset_sha256 CHAR(64) NOT NULL,header_sha256 CHAR(64) NOT NULL,header_json LONGTEXT NOT NULL,urls_sha256 CHAR(64) NOT NULL,urls_json LONGTEXT NOT NULL,url_change_count INT NOT NULL,row_count INT NOT NULL,column_count INT NOT NULL,status VARCHAR(32) NOT NULL,created_at DATETIME NULL,validated_at DATETIME NULL,activated_at DATETIME NULL,UNIQUE KEY project_version(project_id,version_key)) ENGINE=InnoDB");
+  $wpdb->query("CREATE TABLE `{$tables[1]}` (version_id BIGINT NOT NULL,project_id BIGINT NOT NULL,row_index INT NOT NULL,url_path VARCHAR(255) NOT NULL,city VARCHAR(120) NOT NULL,province VARCHAR(120) NOT NULL,row_data LONGTEXT NOT NULL,row_sha256 CHAR(64) NOT NULL,PRIMARY KEY(version_id,row_index)) ENGINE=InnoDB");
+  $wpdb->query("CREATE TABLE `{$tables[2]}` (project_id BIGINT NOT NULL PRIMARY KEY,active_version_id BIGINT NOT NULL,enabled TINYINT NOT NULL) ENGINE=InnoDB");
+  $wpdb->query("CREATE TABLE `{$tables[3]}` (id BIGINT NOT NULL PRIMARY KEY,headers LONGTEXT NOT NULL,urls_array LONGTEXT NOT NULL,updated_at BIGINT NOT NULL,sitemap_filename VARCHAR(190) NOT NULL) ENGINE=InnoDB");
+  $wpdb->query("CREATE TABLE `{$tables[4]}` (id BIGINT NOT NULL PRIMARY KEY,project_id BIGINT NOT NULL,dataset_token VARCHAR(64) NOT NULL,province VARCHAR(120) NOT NULL,city VARCHAR(120) NOT NULL,url VARCHAR(255) NOT NULL) ENGINE=InnoDB");
+  $expect(!$wpdb->last_error,'Fixture schema failed.');
+  $allowed=\AGSyncBridge\V4MPG_Table_Deploy_Service::ALLOWED_CONTENT_FIELDS;
+  $protected=['city','provincia','regione','city-link','link','imm-1','schema_id','schema_url','related_service_links_html','hub_link_html','geo_context','url_slug'];
+  $headers=array_merge($allowed,$protected);$header_json=$json($headers);$urls=['/fixture-alfa/','/fixture-beta/','/fixture-gamma/'];$urls_json=$json($urls);$rows=[];
+  foreach(['Alfa','Beta','Gamma'] as $i=>$city){
+   $values=[];foreach($headers as $position=>$field)$values[]=$position<count($allowed)&&$position%3===0?null:'Originale '.$city.' '.$field.' più attività <strong>utili</strong> {{token}}';
+   $data=$json($values);$rows[]=['version_id'=>42,'project_id'=>910001,'row_index'=>$i,'url_path'=>$urls[$i],'city'=>$city,'province'=>'Test','row_data'=>$data,'row_sha256'=>hash('sha256',$data)];
+  }
+  $base_digest=$ordered($rows);$source=hash('sha256','full-text-e2e-source');
+  $wpdb->insert($tables[0],['id'=>42,'project_id'=>910001,'dataset_id'=>'e2e','version_key'=>'base','source_sha256'=>$source,'dataset_sha256'=>$base_digest,'header_sha256'=>hash('sha256',$header_json),'header_json'=>$header_json,'urls_sha256'=>hash('sha256',$urls_json),'urls_json'=>$urls_json,'url_change_count'=>0,'row_count'=>3,'column_count'=>count($headers),'status'=>'active']);
+  foreach($rows as $row)$wpdb->insert($tables[1],$row);
+  $wpdb->insert($tables[2],['project_id'=>910001,'active_version_id'=>42,'enabled'=>1]);
+  $wpdb->insert($tables[3],['id'=>910001,'headers'=>$header_json,'urls_array'=>$urls_json,'updated_at'=>1,'sitemap_filename'=>'']);
+  foreach($rows as $i=>$row)$wpdb->insert($tables[4],['id'=>$i+1,'project_id'=>910001,'dataset_token'=>'g'.($i+1),'province'=>'Test','city'=>$row['city'],'url'=>$row['url_path']]);
+  $expect(!$wpdb->last_error,'Fixture data failed.');
+  $read_base=static fn()=>$wpdb->get_results("SELECT * FROM `{$tables[1]}` WHERE version_id=42 ORDER BY row_index",ARRAY_A);
+  $original_rows=$read_base();$original_pointer=$wpdb->get_row("SELECT * FROM `{$tables[2]}`",ARRAY_A);
+  $adapter=new \AGSyncBridge\FullTextDb($wpdb,$prefix);$service=new \AGSyncBridge\V4MPG_Table_Deploy_Service(new \AGSyncBridge\Config($storage),new \AGSyncBridge\Logger(),$adapter);
+  $reflection=new \ReflectionClass($service);$methods=[];
+  foreach(['read_active','validate_candidate','insert_candidate','materialize_delta_rows'] as $method){$methods[$method]=$reflection->getMethod($method);$methods[$method]->setAccessible(true);}
+  $previous=$methods['read_active']->invoke($service,910001,'e2e',true);$changes=[];$after_values=json_decode($rows[0]['row_data'],true);
+  foreach($allowed as $position=>$field){$old=$after_values[$position];$after=$position===1?null:'Aggiornato '.$field.' a Alfa, più chiarezza <strong>utile</strong> {{token}}';$changes[]=['authoring_geo_id'=>'g1','url_path'=>$urls[0],'city'=>'Alfa','province'=>'Test','field'=>$field,'before_hash'=>$cell_hash($old),'after_hash'=>$cell_hash($after),'after'=>$after];$after_values[$position]=$after;}
+  $new_rows=$rows;$new_rows[0]['row_data']=$json($after_values);$new_rows[0]['row_sha256']=hash('sha256',$new_rows[0]['row_data']);$after_digest=$ordered($new_rows);
+  $candidate=['source_sha256'=>$source,'dataset_sha256'=>$after_digest,'header_sha256'=>hash('sha256',$header_json),'urls_sha256'=>hash('sha256',$urls_json),'row_count'=>3,'column_count'=>count($headers),'ordered_digest'=>$after_digest,'changed_cell_count'=>count($changes),'declared_changes'=>$changes];
+  $candidate=$methods['validate_candidate']->invoke($service,$candidate,910001,'e2e');$target=['project_id'=>910001,'dataset_id'=>'e2e','candidate'=>$candidate];
+  $wpdb->query('START TRANSACTION');
+  $receipt=$methods['insert_candidate']->invoke($service,'full-text-clone-success-0001',$target,$previous);
+  $expect(false!==$wpdb->query('COMMIT'),'Fixture clone commit failed.');
+  $new_id=$receipt['new_version_id'];$cloned=$wpdb->get_results($wpdb->prepare("SELECT * FROM `{$tables[1]}` WHERE version_id=%d ORDER BY row_index",$new_id),ARRAY_A);
+  foreach($cloned as $i=>$row){$expected=$new_rows[$i];$expected['version_id']=$new_id;foreach($expected as $key=>$value)$expect((string)$row[$key]===(string)$value,'Unexpected cloned value: '.$i.' '.$key);}
+  $expect(count($cloned)===3&&$read_base()===$original_rows,'Clone changed the base or omitted rows.');
+  $clone_values=json_decode($cloned[0]['row_data'],true);foreach($protected as $field){$pos=array_search($field,$headers,true);$expect($clone_values[$pos]===json_decode($rows[0]['row_data'],true)[$pos],'Protected field changed: '.$field);}
+  $expect($wpdb->get_row("SELECT * FROM `{$tables[2]}`",ARRAY_A)===$original_pointer,'Clone changed the active pointer.');
+  $results=['all_text_fields'=>['passed'=>true,'changed_cells'=>count($allowed),'all_protected_fields_unchanged'=>count($protected),'base_rows_unchanged'=>true,'untouched_clone_rows_byte_identical'=>2,'null_and_utf8_values_verified'=>true,'ordered_digest_verified'=>true]];
+  foreach(['stale-before','wrong-after-hash','wrong-geography','protected-field','wrong-digest','cas-zero'] as $case){
+   $bad=$target;$expected_error=['stale-before'=>'before_hash','wrong-after-hash'=>'after value','wrong-geography'=>'geography','protected-field'=>'allowlist','wrong-digest'=>'digest','cas-zero'=>'exact V4MPG delta row'][$case];
+   if($case==='stale-before')$bad['candidate']['declared_changes'][0]['before_hash']=str_repeat('a',64);
+   if($case==='wrong-after-hash')$bad['candidate']['declared_changes'][0]['after_hash']=str_repeat('b',64);
+   if($case==='wrong-geography')$bad['candidate']['declared_changes'][0]['city']='Wrong';
+   if($case==='protected-field')$bad['candidate']['declared_changes'][0]['field']='city';
+   if($case==='wrong-digest')$bad['candidate']['dataset_sha256']=$bad['candidate']['ordered_digest']=str_repeat('c',64);
+   $adapter->cas_fault=$case==='cas-zero';$count_before=(int)$wpdb->get_var("SELECT COUNT(*) FROM `{$tables[0]}`");$wpdb->query('START TRANSACTION');$failed=false;
+   try{$methods['insert_candidate']->invoke($service,'full-text-clone-'.$case.'-0001',$bad,$previous);}catch(\Throwable $error){$failed=true;$expect(strpos($error->getMessage(),$expected_error)!==false,'Wrong rejection for '.$case.': '.$error->getMessage());}finally{$wpdb->query('ROLLBACK');$adapter->cas_fault=false;}
+   $expect($failed,'Invalid candidate accepted: '.$case);$expect((int)$wpdb->get_var("SELECT COUNT(*) FROM `{$tables[0]}`")===$count_before,'Failed clone retained a staging version.');$expect($read_base()===$original_rows&&$wpdb->get_row("SELECT * FROM `{$tables[2]}`",ARRAY_A)===$original_pointer,'Failed clone changed base or active pointer.');$results[$case]=['passed'=>true,'staging_rolled_back'=>true,'base_and_pointer_unchanged'=>true];
+  }
+  $artifact=['status'=>'passed','isolated_fixture'=>true,'tested_method'=>'insert_candidate with real InnoDB clone, delta application and SQL ordered-digest verification','cases'=>$results,'service_sha256'=>hash_file('sha256',dirname(__DIR__).'/includes/class-v4mpg-table-deploy-service.php'),'limits'=>'Clone-stage proof only; public HTTP, pointer switch, rendering and actual site content release are not covered.'];
+ }finally{
+  $wpdb->query('ROLLBACK');foreach($tables as $table){if(!preg_match('/^agsb_fte2e_[a-f0-9]{8}_mpg_(?:runtime_dataset_versions|runtime_dataset_rows|runtime_projects|projects|location_index)$/',$table))throw new \RuntimeException('Unsafe fixture cleanup target.');$wpdb->query("DROP TABLE IF EXISTS `$table`");}
+  $remaining=$wpdb->get_col($wpdb->prepare('SHOW TABLES LIKE %s',$prefix.'%'));$expect(!$remaining,'Fixture tables remain.');$artifact['fixture_tables_after_cleanup']=count($remaining);
+  @rmdir($storage.'/temp');@rmdir($storage);
+ }
+ $receipt_path=getenv('AGSB_E2E_RECEIPT');if($receipt_path){$expect(!file_exists($receipt_path),'Receipt already exists.');$expect(file_put_contents($receipt_path,wp_json_encode($artifact,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES))!==false,'Receipt could not be persisted.');}
+ echo wp_json_encode($artifact,JSON_UNESCAPED_SLASHES);
+}

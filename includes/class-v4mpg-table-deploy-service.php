@@ -22,7 +22,19 @@ class V4MPG_Table_Deploy_Service {
 	const MAX_CHANGES       = 5000;
 	const MAX_BODY_BYTES    = 16777216;
 	const BACKUP_TTL        = 1800;
-	const ALLOWED_CONTENT_FIELDS = array( 'h1_variant','intro_variant','meta_desc','meta_title','section_problem','city_custom_intro','hero_h1','local_business_context','meta_description','seo_title' );
+	// Explicit text cells only. Geographic keys, URLs, image fields, structured
+	// schema identifiers and link-bearing utility fields remain excluded.
+	const ALLOWED_CONTENT_FIELDS = array(
+		'h1_variant','intro_variant','meta_desc','meta_title','section_problem',
+		'city_custom_intro','hero_h1','local_business_context','meta_description','seo_title',
+		'label-testo-1','testo-1','label-testo-2','testo-2','label-testo-3','testo-3',
+		'schema_name','schema_desc','faq_local','local_section_heading',
+		'assessment_heading','assessment_intro','local_context_intro','section_method',
+		'seo_intro','local_problem','faq_1_q','faq_2_q','faq_3_q','cta_note','primary_query',
+		'intent_focus_note','cluster_support_note','query_disambiguation','province_focus',
+		'serp_snippet_angle','city_custom_meta','indexing_recovery_note',
+		'service_specific_angle','local_use_case','priority_context',
+	);
 
 	/** @var Config */
 	private $config;

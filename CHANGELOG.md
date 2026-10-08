@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Extend the immutable text-field allowlist to existing section headings, body copy, FAQ questions and plain service schema name/description. Geographic keys, URL fields, schema identifiers, images and link utility fields remain excluded.
+- Verify the complete text-field clone against isolated InnoDB tables, including unchanged rows, protected columns, typed NULL/UTF-8 values and rollback on failed cell or dataset preconditions.
+
 ## 0.1.86
 
 - Add explicit authenticated V4MPG digest metadata maintenance with full ordered-row preflight, exact active-version conditions, durable metadata preimages, transactional updates and recovery that never repeats the UPDATE.
