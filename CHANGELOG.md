@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.85
+
+- Include bounded version and checksum evidence in authenticated V4MPG ordered-digest failures. Mismatched datasets remain blocked; no content values or URL paths are included and no metadata is automatically repaired.
+
 ## 0.1.84
 
 - Preserve target-side Google Site Kit user authentication metadata across full database imports, matching users by login and removing imported source credentials transactionally.

@@ -503,7 +503,12 @@ class V4MPG_Table_Deploy_Service {
 		$sql=$this->wpdb->prepare("SELECT COUNT(*),SUM(CASE WHEN SHA2(row_data,256)<>row_sha256 THEN 1 ELSE 0 END),COUNT(DISTINCT url_path),SHA2(GROUP_CONCAT(CONCAT(CAST(row_index AS CHAR),CHAR(0),url_path,CHAR(0),row_sha256,CHAR(10)) ORDER BY row_index SEPARATOR ''),256) FROM `{$tables['rows']}` WHERE version_id=%d",$version_id);
 		$proof=$this->wpdb->get_row($sql,ARRAY_N);if(!is_array($proof)||4!==count($proof)||(int)$proof[0]!==$stored['row_count']||0!==(int)$proof[1]||(int)$proof[2]!==$stored['row_count']){throw new RuntimeException('Remote V4MPG database proof failed.');}
 		$stored['ordered_digest']=strtolower((string)$proof[3]);$stored['url_paths']=json_decode((string)$stored['urls_json'],true);
-		if(!hash_equals($stored['dataset_sha256'],$stored['ordered_digest'])||!is_array($stored['url_paths'])||count($stored['url_paths'])!==$stored['row_count']){throw new RuntimeException('Remote V4MPG ordered digest proof failed.');}
+		if(!hash_equals($stored['dataset_sha256'],$stored['ordered_digest'])||!is_array($stored['url_paths'])||count($stored['url_paths'])!==$stored['row_count']){
+			// These diagnostics reach only the authenticated, explicitly allowed target caller.
+			// Keep the failure closed: never repair metadata or accept a mismatched version here.
+			$evidence=array('project_id'=>(int)$project_id,'dataset_id'=>(string)$dataset_id,'version_id'=>(int)$version_id,'stored_dataset_sha256'=>$stored['dataset_sha256'],'measured_dataset_sha256'=>$stored['ordered_digest'],'row_count'=>(int)$stored['row_count'],'declared_url_count'=>is_array($stored['url_paths'])?count($stored['url_paths']):null);
+			throw new RuntimeException('Remote V4MPG ordered digest proof failed. Evidence: '.wp_json_encode($evidence,JSON_UNESCAPED_SLASHES));
+		}
 		return $stored;
 	}
 
