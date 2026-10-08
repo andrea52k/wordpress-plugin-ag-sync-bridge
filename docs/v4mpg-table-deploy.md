@@ -58,6 +58,23 @@ present for signed, receipt-bound rollback.
 
 ## CLI
 
+### Current native runtime provenance
+
+A reviewed overlay of the current runtime can declare `source_type` as
+`current-native-runtime`. Its release evidence contains `release_id`,
+`activation_receipt_sha256`, `native_manifest_sha256`,
+`candidate_summary_sha256`, `source_preimages`, and `datasets`.
+Every source preimage contains a unique opaque `source_id` and a SHA-256;
+local paths are never sent. The client must verify the exact source files,
+local activation evidence, and remote row preimages before constructing this
+release. Native releases reject catalog fields rather than inventing a catalog
+generation. Dataset identities, final digests, and changed cell counts must
+match each declared target. Authentication, peer allowlists, field allowlists,
+remote cell preimages, scoped backups, final complete dataset verification,
+transactional pointer switches, and rollback remain required.
+
+### Commands
+
 ```text
 wp agsync v4mpg plan --request=plan.json
 wp agsync v4mpg backup --request=backup.json --output=D:/AHBackups/V4MPG/live/site.jsonl

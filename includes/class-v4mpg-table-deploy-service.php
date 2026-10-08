@@ -752,6 +752,9 @@ class V4MPG_Table_Deploy_Service {
 
 	private function validate_release( $raw, array $targets ) {
 		if(!is_array($raw)){throw new RuntimeException('Release evidence must be an object.');}
+		if ( isset( $raw['source_type'] ) ) {
+			return $this->validate_native_release( $raw, $targets );
+		}
 		$this->assert_request_keys($raw,array('release_id','activation_receipt_sha256','catalog_generation','catalog_sha256','candidate_summary_sha256','authoring_runs','datasets'));
 		if(!is_string($raw['release_id'])||!preg_match('/^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/',$raw['release_id'])||!is_string($raw['catalog_generation'])||''===$raw['catalog_generation']){throw new RuntimeException('Release identity is invalid.');}
 		foreach(array('activation_receipt_sha256','catalog_sha256','candidate_summary_sha256') as $key){$this->assert_hash($raw[$key]);}
@@ -761,6 +764,48 @@ class V4MPG_Table_Deploy_Service {
 		$release_datasets=array();foreach($raw['datasets'] as $dataset){$this->assert_request_keys($dataset,array('dataset_id','final_dataset_sha256','changed_cell_count'));$this->assert_hash($dataset['final_dataset_sha256']);$release_datasets[(string)$dataset['dataset_id']]=$dataset;}
 		foreach($targets as $target){$id=$target['dataset_id'];if(!isset($release_datasets[$id])||!hash_equals(strtolower($release_datasets[$id]['final_dataset_sha256']),$target['candidate']['dataset_sha256'])||(int)$release_datasets[$id]['changed_cell_count']!==(int)$target['candidate']['changed_cell_count']){throw new RuntimeException('Release evidence is not bound to the declared dataset candidate.');}}
 		return array_merge($raw,array('authoring_runs'=>$runs,'datasets'=>array_values($raw['datasets'])));
+	}
+
+	/** Bind a current-native overlay without attributing it to a catalog generation. */
+	private function validate_native_release( array $raw, array $targets ) {
+		$this->assert_request_keys( $raw, array( 'source_type', 'release_id', 'activation_receipt_sha256', 'native_manifest_sha256', 'source_preimages', 'candidate_summary_sha256', 'datasets' ) );
+		if ( 'current-native-runtime' !== $raw['source_type'] || ! is_string( $raw['release_id'] ) || ! preg_match( '/^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/', $raw['release_id'] ) ) {
+			throw new RuntimeException( 'Native release identity is invalid.' );
+		}
+		foreach ( array( 'activation_receipt_sha256', 'native_manifest_sha256', 'candidate_summary_sha256' ) as $key ) {
+			$this->assert_hash( $raw[$key] );
+		}
+		if ( ! is_array( $raw['source_preimages'] ) || ! self::is_list( $raw['source_preimages'] ) || empty( $raw['source_preimages'] ) || count( $raw['source_preimages'] ) > 256 ) {
+			throw new RuntimeException( 'Native source preimage evidence is missing or unbounded.' );
+		}
+		$seen = array();
+		foreach ( $raw['source_preimages'] as $source ) {
+			$this->assert_request_keys( $source, array( 'source_id', 'sha256' ) );
+			if ( ! is_string( $source['source_id'] ) || ! preg_match( '/^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/', $source['source_id'] ) || isset( $seen[$source['source_id']] ) ) {
+				throw new RuntimeException( 'Native source preimage identity is invalid or duplicate.' );
+			}
+			$this->assert_hash( $source['sha256'] );
+			$seen[$source['source_id']] = true;
+		}
+		if ( ! is_array( $raw['datasets'] ) || ! self::is_list( $raw['datasets'] ) || count( $raw['datasets'] ) !== count( $targets ) ) {
+			throw new RuntimeException( 'Native release dataset evidence does not match target count.' );
+		}
+		$datasets = array();
+		foreach ( $raw['datasets'] as $dataset ) {
+			$this->assert_request_keys( $dataset, array( 'dataset_id', 'final_dataset_sha256', 'changed_cell_count' ) );
+			if ( ! is_string( $dataset['dataset_id'] ) || isset( $datasets[$dataset['dataset_id']] ) ) {
+				throw new RuntimeException( 'Native release dataset identity is invalid or duplicate.' );
+			}
+			$this->assert_hash( $dataset['final_dataset_sha256'] );
+			$datasets[$dataset['dataset_id']] = $dataset;
+		}
+		foreach ( $targets as $target ) {
+			$id = $target['dataset_id'];
+			if ( ! isset( $datasets[$id] ) || ! hash_equals( strtolower( $datasets[$id]['final_dataset_sha256'] ), $target['candidate']['dataset_sha256'] ) || (int) $datasets[$id]['changed_cell_count'] !== (int) $target['candidate']['changed_cell_count'] ) {
+				throw new RuntimeException( 'Native release evidence is not bound to the declared dataset candidate.' );
+			}
+		}
+		return $raw;
 	}
 
 	private function validate_targets( $raw, $with_candidate = false ) {
