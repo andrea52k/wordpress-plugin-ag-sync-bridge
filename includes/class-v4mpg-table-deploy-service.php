@@ -249,7 +249,10 @@ class V4MPG_Table_Deploy_Service {
 	/** Export a checksum-bound backup in the response; the caller must persist it locally. */
 	public function backup( array $request ) {
 		$this->assert_remote_role();
-		$this->assert_request_keys( $request, array( 'protocol', 'operation_id', 'expected_site', 'targets' ) );
+		$keys = array( 'protocol', 'operation_id', 'expected_site', 'targets' );
+		if ( array_key_exists( 'page_size', $request ) ) { $keys[] = 'page_size'; }
+		$this->assert_request_keys( $request, $keys );
+		$page_size = self::backup_page_size( array_key_exists('page_size',$request) ? $request['page_size'] : 100 );
 		$this->assert_protocol( $request );
 		$this->assert_operation_id( $request['operation_id'] );
 		$this->assert_site_identity( $request['expected_site'] );
@@ -270,6 +273,7 @@ class V4MPG_Table_Deploy_Service {
 			$active = $this->read_active( $target['project_id'], $target['dataset_id'], false );
 			$this->assert_expected_matches( $active, $target['expected_previous'] );
 			$exported = $this->export_active( $active );
+			$exported['rows_download']['page_size'] = $page_size;
 			$exported['derived_evidence'] = $this->read_derived_evidence( $target['project_id'], $active );
 			$artifact['datasets'][] = $exported;
 		}
@@ -285,6 +289,7 @@ class V4MPG_Table_Deploy_Service {
 				'target_sha256'=> self::sha256( $this->target_identity( $targets ) ),
 				'site_sha256'  => self::sha256( $this->site_identity() ),
 				'targets'      => $targets,
+				'page_size'    => $page_size,
 				'served'       => array(),
 			),
 			self::BACKUP_TTL
@@ -309,12 +314,13 @@ class V4MPG_Table_Deploy_Service {
 		if(!is_array($state)||'open'!==($state['kind']??'')||!hash_equals((string)$state['operation_id'],(string)$request['operation_id'])){throw new RuntimeException('Scoped backup session is missing or expired.');}
 		$this->heartbeat_remote_operation($request['operation_id'],'backup-page',min(90,10+count($state['served'])));
 		$project_id=(int)$request['project_id'];$dataset_id=(string)$request['dataset_id'];$offset=(int)$request['offset'];$limit=(int)$request['limit'];
-		if($offset<0||0!==$offset%100||100!==$limit){throw new RuntimeException('Scoped backup pages use exact 100-row boundaries.');}
+		$page_size=self::backup_page_size($state['page_size']??100);
+		if($offset<0||0!==$offset%$page_size||$page_size!==$limit){throw new RuntimeException('Scoped backup pages must use the negotiated exact row boundaries.');}
 		$target=null;foreach($state['targets'] as $item){if((int)$item['project_id']===$project_id&&$item['dataset_id']===$dataset_id){$target=$item;break;}}
 		if(!is_array($target)){throw new RuntimeException('Scoped backup page is outside declared targets.');}
 		$active=$this->read_active($project_id,$dataset_id,false);$this->assert_expected_matches($active,$target['expected_previous']);
 		$tables=$this->tables();$rows=$this->wpdb->get_results($this->wpdb->prepare("SELECT row_index,url_path,city,province,row_data,row_sha256 FROM `{$tables['rows']}` WHERE version_id=%d ORDER BY row_index LIMIT %d OFFSET %d",$active['active_version_id'],$limit,$offset),ARRAY_A);
-		$expected_count=min(100,$active['row_count']-$offset);if($expected_count<1||!is_array($rows)||count($rows)!==$expected_count){throw new RuntimeException('Scoped backup page is incomplete.');}
+		$expected_count=min($page_size,$active['row_count']-$offset);if($expected_count<1||!is_array($rows)||count($rows)!==$expected_count){throw new RuntimeException('Scoped backup page is incomplete.');}
 		foreach($rows as $position=>&$row){$row['row_index']=(int)$row['row_index'];if($row['row_index']!==$offset+$position||!hash_equals(strtolower((string)$row['row_sha256']),hash('sha256',(string)$row['row_data']))){throw new RuntimeException('Scoped backup row ordering or hash mismatch.');}}unset($row);
 		$page=array('project_id'=>$project_id,'dataset_id'=>$dataset_id,'active_version_id'=>$active['active_version_id'],'offset'=>$offset,'row_count'=>count($rows),'rows'=>$rows);
 		$page_sha=self::sha256($page);$state['served'][$project_id.':'.$offset]=array('row_count'=>count($rows),'first_row_index'=>$offset,'last_row_index'=>$offset+count($rows)-1,'page_sha256'=>$page_sha);if(!set_transient($key,$state,self::BACKUP_TTL)){throw new RuntimeException('Unable to persist scoped backup page proof.');}
@@ -328,7 +334,8 @@ class V4MPG_Table_Deploy_Service {
 		$open_key='ag_sync_v4mpg_backup_'.md5((string)$request['backup_token']);$state=get_transient($open_key);
 		if(!is_array($state)||'open'!==($state['kind']??'')||!hash_equals((string)$state['operation_id'],(string)$request['operation_id'])){throw new RuntimeException('Scoped backup session cannot be sealed.');}
 		$proofs=array();foreach($request['datasets'] as $proof){$this->assert_request_keys($proof,array('project_id','dataset_id','row_count','ordered_digest','pages_sha256'));$this->assert_hash($proof['ordered_digest']);$this->assert_hash($proof['pages_sha256']);$proofs[(string)$proof['dataset_id']]=$proof;}
-		$expected_page_keys=array();foreach($state['targets'] as $target){$active=$this->read_active($target['project_id'],$target['dataset_id'],false);$this->assert_expected_matches($active,$target['expected_previous']);$proof=$proofs[$target['dataset_id']]??null;if(!is_array($proof)||(int)$proof['project_id']!==(int)$target['project_id']||(int)$proof['row_count']!==(int)$active['row_count']||!hash_equals(strtolower($proof['ordered_digest']),$active['dataset_sha256'])){throw new RuntimeException('Local scoped backup proof does not match live metadata.');}$page_hashes=array();for($offset=0;$offset<$active['row_count'];$offset+=100){$page_key=$target['project_id'].':'.$offset;$expected_page_keys[]=$page_key;$served=$state['served'][$page_key]??null;$count=min(100,$active['row_count']-$offset);if(!is_array($served)||(int)$served['row_count']!==$count||(int)$served['first_row_index']!==$offset||(int)$served['last_row_index']!==$offset+$count-1){throw new RuntimeException('Scoped backup cannot be sealed before every exact page was downloaded.');}$page_hashes[]=$served['page_sha256'];}if(!hash_equals(strtolower($proof['pages_sha256']),self::sha256($page_hashes))){throw new RuntimeException('Local scoped backup page-hash proof mismatch.');}}
+		$page_size=self::backup_page_size($state['page_size']??100);
+		$expected_page_keys=array();foreach($state['targets'] as $target){$active=$this->read_active($target['project_id'],$target['dataset_id'],false);$this->assert_expected_matches($active,$target['expected_previous']);$proof=$proofs[$target['dataset_id']]??null;if(!is_array($proof)||(int)$proof['project_id']!==(int)$target['project_id']||(int)$proof['row_count']!==(int)$active['row_count']||!hash_equals(strtolower($proof['ordered_digest']),$active['dataset_sha256'])){throw new RuntimeException('Local scoped backup proof does not match live metadata.');}$page_hashes=array();for($offset=0;$offset<$active['row_count'];$offset+=$page_size){$page_key=$target['project_id'].':'.$offset;$expected_page_keys[]=$page_key;$served=$state['served'][$page_key]??null;$count=min($page_size,$active['row_count']-$offset);if(!is_array($served)||(int)$served['row_count']!==$count||(int)$served['first_row_index']!==$offset||(int)$served['last_row_index']!==$offset+$count-1){throw new RuntimeException('Scoped backup cannot be sealed before every exact page was downloaded.');}$page_hashes[]=$served['page_sha256'];}if(!hash_equals(strtolower($proof['pages_sha256']),self::sha256($page_hashes))){throw new RuntimeException('Local scoped backup page-hash proof mismatch.');}}
 		sort($expected_page_keys);$actual_page_keys=array_keys($state['served']);sort($actual_page_keys);if($expected_page_keys!==$actual_page_keys){throw new RuntimeException('Scoped backup page set contains gaps or extras.');}
 		$sealed=wp_generate_uuid4();$sealed_key='ag_sync_v4mpg_backup_'.md5($sealed);if(!set_transient($sealed_key,array('kind'=>'sealed','operation_id'=>$state['operation_id'],'sha256'=>strtolower($request['local_backup_sha256']),'target_sha256'=>$state['target_sha256'],'site_sha256'=>$state['site_sha256']),self::BACKUP_TTL)){throw new RuntimeException('Unable to persist sealed scoped backup proof.');}delete_transient($open_key);if(false!==get_transient($open_key)||!is_array(get_transient($sealed_key))){delete_transient($sealed_key);throw new RuntimeException('Scoped backup seal transition could not be verified.');}
 		$this->finalize_remote_operation($request['operation_id'],'complete',array('stage'=>'backup-sealed','target_mutated'=>false,'local_backup_sha256'=>strtolower($request['local_backup_sha256'])));
@@ -889,6 +896,7 @@ class V4MPG_Table_Deploy_Service {
 	private function assert_operation_id($value){if(!is_string($value)||!preg_match('/^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/',$value)){throw new RuntimeException('Invalid operation id.');}}
 	private function assert_hash($value){if(!is_string($value)||!preg_match('/^[a-f0-9]{64}$/',strtolower($value))){throw new RuntimeException('Invalid SHA-256 value.');}}
 	private function assert_request_keys($value,$expected){if(!is_array($value)){throw new RuntimeException('JSON object expected.');}$actual=array_keys($value);sort($actual);sort($expected);if($actual!==$expected){throw new RuntimeException('Unexpected or missing JSON fields.');}}
+	public static function backup_page_size($value){if(!is_int($value)||!in_array($value,array(100,500),true)){throw new RuntimeException('Scoped backup page size must be integer 100 or 500.');}return $value;}
 	private function assert_body_size($value){if(strlen(self::canonical_json($value))>self::MAX_BODY_BYTES){throw new RuntimeException('V4MPG deployment body exceeds limit.');}}
 	private function assert_target_allowed($project_id,$dataset_id){$policy=defined('AG_SYNC_BRIDGE_V4MPG_ALLOWED_TARGETS')?(string)AG_SYNC_BRIDGE_V4MPG_ALLOWED_TARGETS:'';$allowed=array_filter(array_map('trim',explode(',',$policy)));if(empty($allowed)||!in_array((int)$project_id.':'.(string)$dataset_id,$allowed,true)){throw new RuntimeException('V4MPG target is not present in the explicit remote allowlist.');}}
 	private function target_identity(array $targets){return array_map(static function($target){return array('project_id'=>(int)$target['project_id'],'dataset_id'=>(string)$target['dataset_id'],'expected_previous'=>$target['expected_previous']);},$targets);}

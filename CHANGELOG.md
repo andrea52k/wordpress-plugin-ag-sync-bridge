@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.90
+
+- Add an explicit 500-row option for authenticated scoped V4MPG backup pages. Existing clients and open sessions retain the 100-row default.
+- Bind the negotiated page size to the backup manifest and server session; retain complete ordered row checksums, exact page coverage, local persistence verification and sealed deployment preconditions.
+- Verify both page sizes through isolated InnoDB fixtures and the actual CLI persistence path, including short final pages, tampered page proofs, successful sealing and abort cleanup.
+
 ## 0.1.87
 
 - Extend the immutable text-field allowlist to existing section headings, body copy, FAQ questions and plain service schema name/description. Geographic keys, URL fields, schema identifiers, images and link utility fields remain excluded.
