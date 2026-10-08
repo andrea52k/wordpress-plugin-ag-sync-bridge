@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.87
 
 - Extend the immutable text-field allowlist to existing section headings, body copy, FAQ questions and plain service schema name/description. Geographic keys, URL fields, schema identifiers, images and link utility fields remain excluded.
 - Verify the complete text-field clone against isolated InnoDB tables, including unchanged rows, protected columns, typed NULL/UTF-8 values and rollback on failed cell or dataset preconditions.
