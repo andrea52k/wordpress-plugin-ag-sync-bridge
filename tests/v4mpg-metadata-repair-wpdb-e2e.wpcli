@@ -1,0 +1,70 @@
+<?php
+namespace AGSyncBridge {
+ class Config {private $dir;public function __construct($dir){$this->dir=$dir;}public function get_role(){return 'remote';}public function get_storage_dir(){return $this->dir;}}
+ class Logger {}
+ class Remote_Operation_Runtime {
+  public $state=[];
+  public function reserve($kind,$state){if($this->state&&!in_array($this->state['status'],['complete','failed','reconciled'],true))return new \WP_Error('busy','busy');$this->state=$state+['kind'=>$kind,'status'=>'queued','updated_at'=>gmdate('c')];return $this->state;}
+  public function claim($id){$this->state['status']='running';return $this->state;}
+  public function finalize($id,$status,$changes){$this->state=array_merge($this->state,$changes,['status'=>$status==='failed'&&!empty($changes['target_mutated'])?'rollback_required':$status]);return $this->state;}
+  public function inspect(){return $this->state;}
+  public function resolve_recovery($id,$kind,$updated,$proof){$this->state['status']='reconciled';return $this->state;}
+ }
+ class MetadataDb {
+  public $prefix;public $fault='none';public $updates=0;private $db;
+  public function __construct($db,$prefix){$this->db=$db;$this->prefix=$prefix;}
+  public function __get($key){return $this->db->$key;}
+  public function __call($name,$args){return $this->db->$name(...$args);}
+  public function query($sql){
+   if(strpos($sql,'UPDATE ')===0){$this->updates++;if($this->fault==='cas'){$this->fault='none';return 0;}}
+   if(strtoupper(trim($sql))==='COMMIT'&&in_array($this->fault,['before','after'],true)){$fault=$this->fault;$this->fault='none';if($fault==='after')$this->db->query($sql);return false;}
+   return $this->db->query($sql);
+  }
+ }
+}
+namespace {
+ $expected_root=getenv('AG_SYNC_E2E_WP_ROOT');$host=(string)wp_parse_url(home_url(),PHP_URL_HOST);
+ if(!defined('WP_CLI')||!WP_CLI||!$expected_root||realpath(ABSPATH)!==realpath($expected_root)||!($host==='localhost'||$host==='127.0.0.1'||substr($host,-10)==='.localhost'))throw new \RuntimeException('Explicit local E2E root required.');
+ require_once dirname(__DIR__).'/includes/class-v4mpg-table-deploy-service.php';
+ global $wpdb;
+ $prefix='agsb_mre2e_'.bin2hex(random_bytes(4)).'_';$tables=[$prefix.'mpg_runtime_dataset_versions',$prefix.'mpg_runtime_dataset_rows',$prefix.'mpg_runtime_projects'];
+ $storage=sys_get_temp_dir().'/agsb-mre2e-'.bin2hex(random_bytes(4));wp_mkdir_p($storage.'/temp');$results=[];
+ $expect=function($ok,$message){if(!$ok)throw new \RuntimeException($message);};
+ try {
+  $wpdb->query("CREATE TABLE `{$tables[0]}` (id BIGINT NOT NULL PRIMARY KEY,project_id BIGINT NOT NULL,dataset_id VARCHAR(64) NOT NULL,version_key VARCHAR(190) NOT NULL,source_sha256 CHAR(64) NOT NULL,dataset_sha256 CHAR(64) NOT NULL,header_sha256 CHAR(64) NOT NULL,header_json LONGTEXT NOT NULL,urls_sha256 CHAR(64) NOT NULL,urls_json LONGTEXT NOT NULL,url_change_count INT NOT NULL,row_count INT NOT NULL,column_count INT NOT NULL,status VARCHAR(32) NOT NULL) ENGINE=InnoDB");
+  $wpdb->query("CREATE TABLE `{$tables[1]}` (version_id BIGINT NOT NULL,project_id BIGINT NOT NULL,row_index INT NOT NULL,url_path VARCHAR(255) NOT NULL,city VARCHAR(120) NOT NULL,province VARCHAR(120) NOT NULL,row_data LONGTEXT NOT NULL,row_sha256 CHAR(64) NOT NULL,PRIMARY KEY(version_id,row_index)) ENGINE=InnoDB");
+  $wpdb->query("CREATE TABLE `{$tables[2]}` (project_id BIGINT NOT NULL PRIMARY KEY,active_version_id BIGINT NOT NULL,enabled TINYINT NOT NULL) ENGINE=InnoDB");
+  $expect(!$wpdb->last_error,'Fixture schema failed.');
+  $headers='["city","meta_title"]';$urls='["/e2e-a/","/e2e-b/"]';$rows=[];$ctx=hash_init('sha256');
+  foreach(['Alfa','Beta'] as $i=>$city){$data=wp_json_encode([$city,'Titolo '.$city],JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);$path=$i?'/e2e-b/':'/e2e-a/';$hash=hash('sha256',$data);$rows[]=['version_id'=>42,'project_id'=>910001,'row_index'=>$i,'url_path'=>$path,'city'=>$city,'province'=>'Test','row_data'=>$data,'row_sha256'=>$hash];hash_update($ctx,$i."\0".$path."\0".$hash."\n");}
+  $measured=hash_final($ctx);$stale=str_repeat('a',64);
+  $wpdb->insert($tables[0],['id'=>42,'project_id'=>910001,'dataset_id'=>'e2e','version_key'=>'fixture','source_sha256'=>hash('sha256','source'),'dataset_sha256'=>$stale,'header_sha256'=>hash('sha256',$headers),'header_json'=>$headers,'urls_sha256'=>hash('sha256',$urls),'urls_json'=>$urls,'url_change_count'=>0,'row_count'=>2,'column_count'=>2,'status'=>'active']);
+  foreach($rows as $row)$wpdb->insert($tables[1],$row);$wpdb->insert($tables[2],['project_id'=>910001,'active_version_id'=>42,'enabled'=>1]);
+  $expect(!$wpdb->last_error,'Fixture inserts failed.');
+  $read_rows=function()use($wpdb,$tables){return $wpdb->get_results("SELECT * FROM `{$tables[1]}` ORDER BY row_index",ARRAY_A);};$read_pointer=function()use($wpdb,$tables){return $wpdb->get_row("SELECT * FROM `{$tables[2]}`",ARRAY_A);};
+  $original_rows=$read_rows();$original_pointer=$read_pointer();$original_meta=$wpdb->get_row("SELECT * FROM `{$tables[0]}`",ARRAY_A);
+  foreach(['success','cas','before','after','stale-preimage'] as $case){
+   $wpdb->update($tables[0],['dataset_sha256'=>$stale],['id'=>42]);
+   $adapter=new \AGSyncBridge\MetadataDb($wpdb,$prefix);$runtime=new \AGSyncBridge\Remote_Operation_Runtime();$service=new \AGSyncBridge\V4MPG_Table_Deploy_Service(new \AGSyncBridge\Config($storage),new \AGSyncBridge\Logger(),$adapter,$runtime);
+   $site=['home_url'=>untrailingslashit(home_url()),'site_url'=>untrailingslashit(site_url()),'home_host'=>strtolower(wp_parse_url(home_url(),PHP_URL_HOST))];
+   $target=['project_id'=>910001,'dataset_id'=>'e2e','expected_previous'=>['project_id'=>910001,'dataset_id'=>'e2e','active_version_id'=>42,'dataset_sha256'=>$stale,'urls_sha256'=>hash('sha256',$urls),'row_count'=>2],'expected_measured_sha256'=>$measured];
+   $plan=$service->metadata_repair_plan(['protocol'=>1,'expected_site'=>$site,'targets'=>[$target]]);
+   $request=['protocol'=>1,'expected_site'=>$site,'operation_id'=>'e2e-metadata-'.$case.'-0001','targets'=>[$target],'before_metadata_sha256'=>$plan['before_metadata_sha256'],'confirmation'=>'REPAIR V4MPG DIGESTS'];
+   $adapter->fault=in_array($case,['cas','before','after'],true)?$case:'none';if($case==='stale-preimage')$request['before_metadata_sha256']=str_repeat('b',64);
+   $failed=false;try{$receipt=$service->metadata_repair($request);}catch(\Throwable $e){$failed=true;}
+   $expect($failed===($case!=='success'),'Unexpected success/failure for '.$case);
+   if($case!=='stale-preimage'){
+    $updates=$adapter->updates;$receipt=$service->metadata_repair_recover($request);
+    $changed=in_array($case,['success','after'],true);$expect($receipt['status']===($changed?'metadata-repaired':'metadata-not-changed'),'Recovery misclassified '.$case);$expect($adapter->updates===$updates,'Recovery repeated UPDATE.');
+    $again=$service->metadata_repair_recover($request);$expect($again['status']===$receipt['status'],'Repeated recovery changed outcome.');
+   }
+   $expected_meta=$original_meta;if(in_array($case,['success','after'],true))$expected_meta['dataset_sha256']=$measured;
+   $expect($wpdb->get_row("SELECT * FROM `{$tables[0]}`",ARRAY_A)===$expected_meta,'Other metadata changed: '.$case);
+   $expect($read_rows()===$original_rows&&$read_pointer()===$original_pointer,'Rows or pointer changed: '.$case);
+   $results[$case]=['passed'=>true,'content_unchanged'=>true,'pointer_unchanged'=>true];
+  }
+  echo wp_json_encode(['isolated_fixture'=>true,'results'=>$results],JSON_UNESCAPED_SLASHES);
+ } finally {
+  $wpdb->query('ROLLBACK');foreach($tables as $table){if(!preg_match('/^agsb_mre2e_[a-f0-9]{8}_mpg_runtime_(dataset_versions|dataset_rows|projects)$/',$table))throw new \RuntimeException('Unsafe fixture cleanup target.');$wpdb->query("DROP TABLE IF EXISTS `$table`");}
+ }
+}

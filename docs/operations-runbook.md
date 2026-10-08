@@ -1,5 +1,18 @@
 # Operations Runbook
 
+## Explicit V4MPG digest metadata maintenance
+
+Use this only after independently diagnosing a stale aggregate digest. The normal editorial plan continues to reject incoherent datasets. Keep the explicit target allowlist; never replace content or URL paths to reproduce an old checksum.
+
+1. Prepare `metadata_repair_plan` request JSON with protocol, exact expected site and bounded targets. Each target contains project ID, dataset ID, exact `expected_previous` active metadata and `expected_measured_sha256`.
+2. Run `wp agsync v4mpg metadata_repair_plan --request=<absolute-json> --output-receipt=<absolute-backup-path>`. The output must be outside the webroot and within `AG_SYNC_BRIDGE_LOCAL_BACKUP_ROOT`. Preserve that receipt.
+3. Prepare the repair request with the same fields plus a unique operation ID, the receipt's `before_metadata_sha256` and confirmation `REPAIR V4MPG DIGESTS`.
+4. Run `wp agsync v4mpg metadata_repair --request=<absolute-json> --before-receipt=<saved-plan> --output-receipt=<new-absolute-backup-path>`.
+5. If the response is interrupted, inspect the process and use `metadata_repair_recover` with the identical request, before receipt and output path. It verifies the exact old/new state without repeating UPDATE. Never start another mutation solely because an observation timed out.
+6. Preserve before/after receipts, verify the normal editorial plan and check the site after maintenance. No full database transfer is needed for this operation.
+
+The isolated transaction fixture requires `AG_SYNC_E2E_WP_ROOT` set explicitly to a localhost WordPress root. It creates and removes only randomly prefixed fixture tables. Never distribute the E2E bootstrap as site configuration.
+
 This runbook is for agents or developers operating AG Sync Bridge on the four
 WordPress sites.
 

@@ -20,6 +20,8 @@ class V4MPG_Table_REST_Controller {
 	}
 
 	public function register_routes() {
+		register_rest_route('ag-sync-bridge/v1','/v4mpg-table/metadata-repair-plan',array('methods'=>'POST','callback'=>array($this,'metadata_repair_plan'),'permission_callback'=>array($this,'check_permission')));
+		foreach(array('metadata-repair'=>'metadata_repair','metadata-repair-recover'=>'metadata_repair_recover') as $route=>$action){register_rest_route('ag-sync-bridge/v1','/v4mpg-table/'.$route,array('methods'=>'POST','callback'=>array($this,$action),'permission_callback'=>array($this,'check_permission')));}
 		$routes = array( 'plan' => 'plan', 'backup' => 'backup', 'backup-page' => 'backup_page', 'backup-seal' => 'backup_seal', 'backup-abort' => 'backup_abort', 'deploy' => 'deploy', 'verify' => 'verify', 'rollback' => 'rollback', 'status' => 'status', 'recover' => 'recover' );
 		foreach ( $routes as $route => $action ) {
 			register_rest_route(
@@ -39,6 +41,9 @@ class V4MPG_Table_REST_Controller {
 	}
 
 	public function plan( WP_REST_Request $request ) { return $this->dispatch( 'plan', $request ); }
+	public function metadata_repair_plan( WP_REST_Request $request ) { return $this->dispatch( 'metadata_repair_plan', $request ); }
+	public function metadata_repair( WP_REST_Request $request ) { return $this->dispatch( 'metadata_repair', $request ); }
+	public function metadata_repair_recover( WP_REST_Request $request ) { return $this->dispatch( 'metadata_repair_recover', $request ); }
 	public function backup( WP_REST_Request $request ) { return $this->dispatch( 'backup', $request ); }
 	public function backup_page( WP_REST_Request $request ) { return $this->dispatch( 'backup_page', $request ); }
 	public function backup_seal( WP_REST_Request $request ) { return $this->dispatch( 'backup_seal', $request ); }

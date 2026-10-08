@@ -100,6 +100,140 @@ class V4MPG_Table_Deploy_Service {
 		);
 	}
 
+	/** Read-only preflight for a separately authorized, metadata-only maintenance operation. */
+	public function metadata_repair_plan( array $request ) {
+		$this->assert_remote_role();
+		$this->assert_request_keys($request,array('protocol','expected_site','targets'));
+		$this->assert_protocol($request);
+		$this->assert_site_identity($request['expected_site']);
+		$this->assert_tables_exist();
+		$targets=$this->validate_metadata_repair_targets($request['targets']);
+		$proofs=array();
+		foreach($targets as $target){$proofs[]=$this->prove_metadata_repair_target($target,false);}
+		$before=array_map(static function($proof){return $proof['before'];},$proofs);
+		return array('protocol'=>self::PROTOCOL_VERSION,'status'=>'metadata-repair-plan-verified','site'=>$this->site_identity(),'request_sha256'=>self::sha256($request),'before_metadata_sha256'=>self::sha256($before),'datasets'=>$proofs,'mutated'=>false);
+	}
+
+	private function validate_metadata_repair_targets($raw) {
+		if(!is_array($raw)||!self::is_list($raw)||empty($raw)||count($raw)>self::MAX_DATASETS){throw new RuntimeException('Metadata repair targets must be a bounded non-empty list.');}
+		$basic=array();$measured=array();
+		foreach($raw as $target){
+			$this->assert_request_keys($target,array('project_id','dataset_id','expected_previous','expected_measured_sha256'));
+			$this->assert_hash($target['expected_measured_sha256']);
+			$basic[]=array_diff_key($target,array('expected_measured_sha256'=>true));
+			$measured[]=strtolower($target['expected_measured_sha256']);
+		}
+		$targets=$this->validate_targets($basic);
+		foreach($targets as $index=>&$target){
+			$target['expected_measured_sha256']=$measured[$index];
+			if(hash_equals($target['expected_previous']['dataset_sha256'],$measured[$index])){throw new RuntimeException('Metadata repair requires an actual digest discrepancy.');}
+		}unset($target);
+		return $targets;
+	}
+
+	/** Change only declared active-version digests after a durable preimage and locked proof. */
+	public function metadata_repair(array $request) {
+		$targets=$this->validate_metadata_repair_request($request);
+		$original_file=$this->state_file;
+		$this->state_file=dirname($original_file).'/v4mpg-metadata-repair-'.hash('sha256',$request['operation_id']).'.json';
+		$reserved=false;$transaction=false;$commit_attempted=false;
+		try {
+			if($this->read_state()){throw new RuntimeException('Metadata repair journal already exists; use metadata-repair-recover.');}
+			$this->reserve_remote_operation($request['operation_id'],'v4mpg-metadata-repair','metadata-preflight');$reserved=true;
+			$this->begin_transaction();$transaction=true;$proofs=array();
+			foreach($targets as $target){$proofs[]=$this->prove_metadata_repair_target($target,true);}
+			$before=array_map(static function($proof){return $proof['before'];},$proofs);
+			if(!hash_equals($request['before_metadata_sha256'],self::sha256($before))){throw new RuntimeException('Metadata repair preimage fingerprint changed.');}
+			$journal=array('status'=>'prepared-to-commit','operation_id'=>$request['operation_id'],'request_sha256'=>self::sha256($request),'site'=>$this->site_identity(),'datasets'=>$proofs,'before_metadata_sha256'=>self::sha256($before),'prepared_at'=>gmdate('c'));
+			$this->write_state($journal);
+			$tables=$this->tables();
+			foreach($proofs as $proof){
+				$old=$proof['before'];
+				$changed=$this->wpdb->query($this->wpdb->prepare("UPDATE `{$tables['versions']}` SET dataset_sha256=%s WHERE id=%d AND project_id=%d AND dataset_id=%s AND dataset_sha256=%s AND status='active'",$proof['measured_dataset_sha256'],$old['active_version_id'],$old['project_id'],$old['dataset_id'],$old['dataset_sha256']));
+				if(1!==(int)$changed){throw new RuntimeException('Metadata repair compare-and-swap failed.');}
+			}
+			// Verify every value and every row under the same transaction, before COMMIT.
+			$this->verify_metadata_repair_outcome($targets,$proofs,true,true);
+			$commit_attempted=true;$this->commit_transaction();$transaction=false;
+			$journal['status']='committed-needs-verify';$this->write_state($journal);
+			$verified=$this->verify_metadata_repair_outcome($targets,$proofs,true,false);
+			$receipt=$this->metadata_repair_receipt($journal,$verified,'metadata-repaired');
+			$journal['status']='verified';$journal['receipt']=$receipt;$this->write_state($journal);
+			$this->finalize_remote_operation($request['operation_id'],'complete',array('stage'=>'metadata-repaired','target_mutated'=>true));
+			return $receipt;
+		} catch(Throwable $error) {
+			if($transaction){$this->wpdb->query('ROLLBACK');}
+			if($reserved){$this->finalize_remote_operation($request['operation_id'],'failed',array('stage'=>'metadata-repair-failed','target_mutated'=>$commit_attempted,'rollback_required'=>$commit_attempted,'error'=>$error->getMessage()));}
+			throw $error;
+		} finally {$this->state_file=$original_file;}
+	}
+
+	/** Classify the exact interrupted operation; this never repeats its UPDATE. */
+	public function metadata_repair_recover(array $request) {
+		$targets=$this->validate_metadata_repair_request($request);$original_file=$this->state_file;
+		$this->state_file=dirname($original_file).'/v4mpg-metadata-repair-'.hash('sha256',$request['operation_id']).'.json';
+		$transaction=false;
+		try {
+			$journal=$this->read_state();
+			if(!$journal||!hash_equals((string)($journal['request_sha256']??''),self::sha256($request))||!hash_equals((string)($journal['before_metadata_sha256']??''),$request['before_metadata_sha256'])||self::sha256($journal['site']??array())!==self::sha256($this->site_identity())){throw new RuntimeException('Metadata repair recovery journal binding failed.');}
+			// Locks serialize recovery with a worker that may still be finishing its transaction.
+			$this->begin_transaction();$transaction=true;$outcomes=array();
+			foreach($targets as $target){$active=$this->read_active_for_update($target['project_id'],$target['dataset_id']);$outcomes[]=hash_equals($active['dataset_sha256'],$target['expected_measured_sha256'])?'new':(hash_equals($active['dataset_sha256'],$target['expected_previous']['dataset_sha256'])?'old':'unknown');}
+			if(count(array_unique($outcomes))!==1||$outcomes[0]==='unknown'){throw new RuntimeException('Metadata repair recovery found mixed or unknown state.');}
+			$changed=$outcomes[0]==='new';$verified=$this->verify_metadata_repair_outcome($targets,$journal['datasets'],$changed,true);
+			$receipt=$this->metadata_repair_receipt($journal,$verified,$changed?'metadata-repaired':'metadata-not-changed');
+			$operation=$this->runtime->inspect();if(is_wp_error($operation)){throw new RuntimeException($operation->get_error_message());}
+			if(is_array($operation)&&($operation['id']??'')===$request['operation_id']){
+				if(($operation['kind']??'')!=='v4mpg-metadata-repair'){throw new RuntimeException('Metadata repair operation kind changed.');}
+				if(($operation['status']??'')==='rollback_required'){$resolved=$this->runtime->resolve_recovery($request['operation_id'],'v4mpg-metadata-repair',$operation['updated_at'],array('note'=>'Exact metadata and full row proof verified.','target_integrity_verified'=>$changed,'rollback_verified'=>!$changed));if(is_wp_error($resolved)){throw new RuntimeException($resolved->get_error_message());}}
+				elseif(!in_array($operation['status']??'',array('complete','failed','error','cancelled','reconciled'),true)){$this->finalize_remote_operation($request['operation_id'],$changed?'complete':'failed',array('target_mutated'=>false,'rollback_required'=>false,'stage'=>'metadata-repair-recovered'));}
+			} elseif(($journal['status']??'')!=='verified'){throw new RuntimeException('Another remote operation prevents repair recovery.');}
+			$journal['status']='verified';$journal['receipt']=$receipt;$this->write_state($journal);$this->commit_transaction();$transaction=false;return $receipt;
+		} finally {if($transaction){$this->wpdb->query('ROLLBACK');}$this->state_file=$original_file;}
+	}
+
+	private function validate_metadata_repair_request(array $request) {
+		$this->assert_remote_role();$this->assert_request_keys($request,array('protocol','expected_site','operation_id','targets','before_metadata_sha256','confirmation'));
+		$this->assert_protocol($request);$this->assert_site_identity($request['expected_site']);$this->assert_operation_id($request['operation_id']);$this->assert_hash($request['before_metadata_sha256']);
+		if($request['confirmation']!=='REPAIR V4MPG DIGESTS'){throw new RuntimeException('Explicit metadata-only repair confirmation required.');}
+		$this->assert_tables_exist();return $this->validate_metadata_repair_targets($request['targets']);
+	}
+
+	private function verify_metadata_repair_outcome(array $targets,array $proofs,$changed,$for_update) {
+		if(count($targets)!==count($proofs)){throw new RuntimeException('Metadata repair receipt cardinality changed.');}$result=array();
+		foreach($targets as $index=>$target){
+			$before=$proofs[$index]['before'];$expected=$before;
+			if($changed){$target['expected_previous']['dataset_sha256']=$target['expected_measured_sha256'];$expected['dataset_sha256']=$target['expected_measured_sha256'];}
+			$current=$this->prove_metadata_repair_target($target,$for_update);
+			if(self::sha256($current['before'])!==self::sha256($expected)){throw new RuntimeException('Metadata repair changed fields outside the declared digest.');}
+			$result[]=$current;
+		}return $result;
+	}
+
+	private function metadata_repair_receipt(array $journal,array $verified,$status) {
+		return array('protocol'=>self::PROTOCOL_VERSION,'status'=>$status,'operation_id'=>$journal['operation_id'],'request_sha256'=>$journal['request_sha256'],'site'=>$journal['site'],'before_metadata_sha256'=>$journal['before_metadata_sha256'],'before'=>$journal['datasets'],'after'=>$verified,'content_writes'=>0,'url_writes'=>0,'active_pointer_writes'=>0,'verified_at'=>gmdate('c'));
+	}
+
+	private function prove_metadata_repair_target(array $target,$for_update) {
+		$before=$for_update?$this->read_active_for_update($target['project_id'],$target['dataset_id']):$this->read_active($target['project_id'],$target['dataset_id'],false);
+		$this->assert_expected_matches($before,$target['expected_previous']);
+		$headers=json_decode($before['header_json'],true);$urls=json_decode($before['urls_json'],true);
+		if(!is_array($headers)||!self::is_list($headers)||!is_array($urls)||!self::is_list($urls)||count($headers)!==$before['column_count']||count($urls)!==$before['row_count']||$before['row_count']<1||$before['row_count']>self::MAX_ROWS||!hash_equals($before['header_sha256'],hash('sha256',$before['header_json']))||!hash_equals($before['urls_sha256'],hash('sha256',$before['urls_json']))){throw new RuntimeException('Metadata repair header or URL proof failed.');}
+		$tables=$this->tables();
+		$rows=$this->wpdb->get_results($this->wpdb->prepare("SELECT row_index,url_path,row_data,row_sha256 FROM `{$tables['rows']}` WHERE project_id=%d AND version_id=%d ORDER BY row_index ASC".($for_update?' FOR UPDATE':''),$target['project_id'],$before['active_version_id']),ARRAY_A);
+		if(!is_array($rows)||count($rows)!==$before['row_count']||$this->wpdb->last_error){throw new RuntimeException('Metadata repair row read failed.');}
+		$digest=hash_init('sha256');$paths=array();
+		foreach($rows as $index=>$row){
+			$values=json_decode($row['row_data'],true);
+			if((int)$row['row_index']!==$index||!is_string($urls[$index])||$row['url_path']!==$urls[$index]||isset($paths[$row['url_path']])||!is_array($values)||!self::is_list($values)||count($values)!==count($headers)||!hash_equals(strtolower($row['row_sha256']),hash('sha256',$row['row_data']))){throw new RuntimeException('Metadata repair ordered row integrity failed.');}
+			$paths[$row['url_path']]=true;
+			hash_update($digest,$index."\0".$row['url_path']."\0".$row['row_sha256']."\n");
+		}
+		$measured=hash_final($digest);
+		if(!hash_equals($target['expected_measured_sha256'],$measured)){throw new RuntimeException('Metadata repair measured digest precondition failed.');}
+		return array('before'=>$before,'measured_dataset_sha256'=>$measured,'verified_row_count'=>count($rows),'content_writes'=>0,'url_writes'=>0,'active_pointer_writes'=>0);
+	}
+
 	/** Export a checksum-bound backup in the response; the caller must persist it locally. */
 	public function backup( array $request ) {
 		$this->assert_remote_role();

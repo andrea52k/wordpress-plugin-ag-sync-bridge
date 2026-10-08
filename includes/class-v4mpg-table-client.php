@@ -17,7 +17,7 @@ class V4MPG_Table_Client {
 	}
 
 	public function request( $action, array $body ) {
-		if ( ! in_array( $action, array( 'plan','backup','backup-page','backup-seal','backup-abort','deploy','verify','rollback','status','recover' ), true ) ) {
+		if ( ! in_array( $action, array( 'plan','metadata-repair-plan','metadata-repair','metadata-repair-recover','backup','backup-page','backup-seal','backup-abort','deploy','verify','rollback','status','recover' ), true ) ) {
 			throw new RuntimeException( 'Unsupported V4MPG table action.' );
 		}
 		$route   = '/ag-sync-bridge/v1/v4mpg-table/' . $action;

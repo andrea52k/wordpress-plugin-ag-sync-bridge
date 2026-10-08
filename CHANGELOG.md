@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.86
+
+- Add explicit authenticated V4MPG digest metadata maintenance with full ordered-row preflight, exact active-version conditions, durable metadata preimages, transactional updates and recovery that never repeats the UPDATE.
+- Require a saved local preflight receipt before the repair command, preserve interrupted-operation journals and bind recovered receipts to the same request and site. Content, URLs and active pointers are unchanged.
+
 ## 0.1.85
 
 - Include bounded version and checksum evidence in authenticated V4MPG ordered-digest failures. Mismatched datasets remain blocked; no content values or URL paths are included and no metadata is automatically repaired.
