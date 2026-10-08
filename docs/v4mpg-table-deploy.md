@@ -32,6 +32,19 @@ releases it. A missing or failed API blocks the mutation.
 
 ## Protocol
 
+### Full snapshot URL remapping
+
+From version 0.1.89, full snapshot URL replacement refreshes the dataset
+digest of each native runtime version whose row content was remapped.
+After row hashes are updated, the importer re-reads the complete affected
+version in bounded batches, verifies row identity, JSON schema, hashes and
+count, and persists and re-reads its ordered dataset digest. Source fingerprints,
+routes, geography and active project pointers are not changed by this step.
+Progress and cancellation callbacks remain active during the digest scan.
+A failed verification propagates an import failure requiring recovery.
+
+### Table-scoped native releases
+
 All endpoints are POST-only and require nonce HMAC authentication bound to the
 exact JSON bytes. The deployment payload contains release receipt hashes,
 final dataset/header/URL digests, and the declared cell deltas. It never sends

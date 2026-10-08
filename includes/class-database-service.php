@@ -9,6 +9,8 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 class Database_Service {
+	/** Runtime versions whose row content changed during this URL replacement. */
+	private $runtime_digest_refresh = array();
 	const IMPORT_MAX_ALLOWED_PACKET       = 268435456;
 	const IMPORT_NET_TIMEOUT              = 120;
 	const URL_REPLACE_BATCH_SIZE          = 500;
@@ -1025,6 +1027,7 @@ class Database_Service {
 
 	public function replace_urls( array $replacements, $table_prefix = '', array $options = array() ) {
 		global $wpdb;
+		$this->runtime_digest_refresh = array();
 		$progress_callback   = array_get( $options, 'progress_callback', null );
 		$cancellation_check  = array_get( $options, 'cancellation_check', null );
 
@@ -1165,11 +1168,16 @@ class Database_Service {
 			$this->report_url_replace_progress( $progress_callback, $table, 'table-complete', $rows_updated, $last_key );
 		}
 
+		$runtime_refreshed = $this->refresh_replaced_runtime_digests( $progress_callback, $cancellation_check );
+		if ( is_wp_error( $runtime_refreshed ) ) {
+			return $runtime_refreshed;
+		}
 		wp_cache_flush();
 
 		return array(
 			'tables_scanned' => $tables_count,
 			'rows_updated'   => $rows_updated,
+			'runtime_versions_refreshed' => $runtime_refreshed,
 		);
 	}
 
@@ -1250,6 +1258,14 @@ class Database_Service {
 						return new WP_Error( 'ag_sync_bridge_url_replace_fast_failed', $wpdb->last_error ? $wpdb->last_error : __( 'Fast URL replacement failed.', 'ag-sync-bridge' ), array( 'table' => $table, 'column' => $column ) );
 					}
 					$rows_updated += (int) $result;
+					if ( $this->is_runtime_dataset_rows_table( $table ) && 'row_data' === $column && $result > 0 ) {
+						foreach ( $key_rows as $key_row ) {
+							if ( ! isset( $key_row['version_id'] ) || (int) $key_row['version_id'] < 1 ) {
+								return new WP_Error( 'ag_sync_bridge_runtime_version_key_missing', 'Runtime URL replacement lost its version identity.' );
+							}
+							$this->runtime_digest_refresh[$table][(int) $key_row['version_id']] = true;
+						}
+					}
 					$last_key = end( $key_rows );
 					$this->report_url_replace_progress( $progress_callback, $table, 'fast-batch-complete', $rows_updated, $last_key );
 				} while ( count( $key_rows ) === self::URL_REPLACE_BATCH_SIZE );
@@ -1272,6 +1288,53 @@ class Database_Service {
 
 	private function is_runtime_dataset_rows_table( $table ) {
 		return (bool) preg_match( '/(^|_)mpg_runtime_dataset_rows$/', strtolower( (string) $table ) );
+	}
+
+	/** Re-read every row of changed versions before publishing their new digest. */
+	private function refresh_replaced_runtime_digests( $progress_callback, $cancellation_check ) {
+		global $wpdb;
+		$refreshed = 0;
+		foreach ( $this->runtime_digest_refresh as $rows_table => $ids ) {
+			$versions_table = preg_replace( '/dataset_rows$/i', 'dataset_versions', $rows_table );
+			foreach ( array_keys( $ids ) as $id ) {
+				$version = $wpdb->get_row( 'SELECT id,project_id,row_count,column_count,dataset_sha256 FROM ' . $this->quote_identifier( $versions_table ) . ' WHERE id=' . (int) $id, ARRAY_A );
+				if ( ! is_array( $version ) || ! empty( $wpdb->last_error ) || (int) array_get( $version, 'id', 0 ) !== (int) $id || (int) array_get( $version, 'row_count', 0 ) < 1 || (int) array_get( $version, 'column_count', 0 ) < 1 || ! preg_match( '/^[a-f0-9]{64}$/', (string) array_get( $version, 'dataset_sha256', '' ) ) ) {
+					return new WP_Error( 'ag_sync_bridge_runtime_digest_version_invalid', 'Runtime version metadata is missing or invalid after URL replacement.' );
+				}
+				$digest = hash_init( 'sha256' );
+				$seen = 0;
+				do {
+					$cancelled = $this->check_url_replace_cancellation( $cancellation_check, $rows_table, array( 'version_id' => $id, 'row_index' => $seen ) );
+					if ( is_wp_error( $cancelled ) ) { return $cancelled; }
+					$rows = $wpdb->get_results( 'SELECT row_index,project_id,url_path,row_data,row_sha256 FROM ' . $this->quote_identifier( $rows_table ) . ' WHERE version_id=' . (int) $id . ' AND row_index>=' . $seen . ' ORDER BY row_index ASC LIMIT ' . self::URL_REPLACE_BATCH_SIZE, ARRAY_A );
+					if ( ! is_array( $rows ) || ! empty( $wpdb->last_error ) ) {
+						return new WP_Error( 'ag_sync_bridge_runtime_digest_read_failed', 'Unable to verify runtime rows after URL replacement.' );
+					}
+					foreach ( $rows as $row ) {
+						$values = json_decode( $row['row_data'], true );
+						if ( (int) $row['row_index'] !== $seen || (int) $row['project_id'] !== (int) $version['project_id'] || '[' !== substr( ltrim( $row['row_data'] ), 0, 1 ) || ! is_array( $values ) || array_keys( $values ) !== range( 0, count( $values ) - 1 ) || count( $values ) !== (int) $version['column_count'] || ! hash_equals( hash( 'sha256', $row['row_data'] ), $row['row_sha256'] ) ) {
+							return new WP_Error( 'ag_sync_bridge_runtime_digest_row_invalid', 'Runtime row identity, schema or checksum mismatch after URL replacement.' );
+						}
+						hash_update( $digest, $seen . "\0" . $row['url_path'] . "\0" . $row['row_sha256'] . "\n" );
+						$seen++;
+					}
+					$this->report_url_replace_progress( $progress_callback, $rows_table, 'runtime-digest-batch-complete', $seen, array( 'version_id' => $id, 'row_index' => $seen ) );
+				} while ( count( $rows ) === self::URL_REPLACE_BATCH_SIZE );
+				if ( $seen !== (int) $version['row_count'] ) {
+					return new WP_Error( 'ag_sync_bridge_runtime_digest_count_invalid', 'Runtime row count mismatch after URL replacement.' );
+				}
+				$hash = hash_final( $digest );
+				if ( false === $wpdb->update( $versions_table, array( 'dataset_sha256' => $hash ), array( 'id' => $id, 'dataset_sha256' => $version['dataset_sha256'] ) ) ) {
+					return new WP_Error( 'ag_sync_bridge_runtime_digest_write_failed', 'Unable to store the verified runtime dataset checksum.' );
+				}
+				$stored = $wpdb->get_row( 'SELECT dataset_sha256 FROM ' . $this->quote_identifier( $versions_table ) . ' WHERE id=' . (int) $id, ARRAY_A );
+				if ( ! is_array( $stored ) || ! empty( $wpdb->last_error ) || ! hash_equals( $hash, (string) array_get( $stored, 'dataset_sha256', '' ) ) ) {
+					return new WP_Error( 'ag_sync_bridge_runtime_digest_postverify_failed', 'Runtime dataset checksum postverification failed.' );
+				}
+				$refreshed++;
+			}
+		}
+		return $refreshed;
 	}
 
 	private function build_primary_key_after_sql( array $primary_keys, $last_key ) {
